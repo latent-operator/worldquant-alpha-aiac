@@ -1,0 +1,30 @@
+# Copy to compose.local.yaml and set POSTGRES_PASSWORD in an ignored .env file.
+# Existing installations must keep their current compose.local.yaml and DB volume.
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: aiac_local
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: alpha_gpt_local
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      - aiac_local_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiac_local -d alpha_gpt_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "127.0.0.1:56579:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  aiac_local_postgres:
