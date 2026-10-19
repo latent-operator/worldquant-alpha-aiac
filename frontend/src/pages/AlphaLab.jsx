@@ -5,7 +5,6 @@ import {
   Col, 
   Card, 
   Table, 
-  Tag, 
   Space, 
   Typography,
   Select,
@@ -15,8 +14,6 @@ import {
 } from 'antd'
 import {
   ExperimentOutlined,
-  LikeOutlined,
-  DislikeOutlined,
   SyncOutlined,
 } from '@ant-design/icons'
 import { useState } from 'react'

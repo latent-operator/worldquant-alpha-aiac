@@ -110,6 +110,7 @@ class MiningState(BaseModel):
     # -------------------------------------------------------------------------
     patterns: List[Dict] = Field(default_factory=list)
     pitfalls: List[Dict] = Field(default_factory=list)
+    family_plans: List[Dict] = Field(default_factory=list)
     dataset_description: str = ""
     dataset_category: str = ""
     

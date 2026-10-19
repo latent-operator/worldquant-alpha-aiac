@@ -30,9 +30,10 @@ def _debug_log(hypo_id, location, message, data=None):
     except: pass
 # #endregion
 
-from backend.models import MiningTask, Alpha, AlphaFailure, TraceStep
+from backend.models import MiningTask, ExperimentRun, Alpha, AlphaFailure, TraceStep
 from backend.agents.graph import MiningWorkflow, create_mining_graph
 from backend.agents.services import LLMService, get_llm_service
+from backend.agents.services.llm_service import LLMBlockedError
 from backend.agents.services.trace_service import TraceService
 from backend.agents.strategy_agent import StrategyAgent, create_strategy_agent
 from backend.agents.evolution_strategy import (
@@ -42,6 +43,11 @@ from backend.agents.evolution_strategy import (
 from backend.agents.feedback_agent import FeedbackAgent
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
+
+
+def _next_no_new_streak(previous: int, new_candidates: int) -> int:
+    """Count consecutive generation flows with no novel expression."""
+    return 0 if new_candidates > 0 else previous + 1
 
 
 class MiningAgent:
@@ -461,7 +467,7 @@ class MiningAgent:
 
         failure_rows = (
             await self.db.execute(
-                select(AlphaFailure.expression, MiningTask)
+                select(AlphaFailure.expression, AlphaFailure.error_message, MiningTask)
                 .join(MiningTask, AlphaFailure.task_id == MiningTask.id)
                 .where(
                     MiningTask.region == task.region,
@@ -471,8 +477,16 @@ class MiningAgent:
                 .limit(limit)
             )
         ).all()
-        for expression, failure_task in failure_rows:
-            if dataset_id not in (failure_task.target_datasets or []):
+        for expression, error_message, failure_task in failure_rows:
+            if failure_task.id != task.id and dataset_id not in (failure_task.target_datasets or []):
+                continue
+            if (
+                (task.config or {}).get("allow_parameter_variants", False)
+                and failure_task.id == task.id
+                and str(error_message or "").startswith("Duplicate: Structurally similar")
+            ):
+                # Parameter-sweep candidates rejected by the old batch rule
+                # are eligible for a fresh validation after the rule changes.
                 continue
             expression = str(expression or "").strip()
             if expression and expression not in seen:
@@ -1101,17 +1115,42 @@ class MiningAgent:
         # #endregion
         
         # Initialize state
-        iteration = 0
-        total_success = 0
+        checkpoint = {}
+        if run_id is not None:
+            run = await self.db.get(ExperimentRun, run_id)
+            if run and (run.checkpoint or {}).get("dataset_id") == dataset_id:
+                checkpoint = run.checkpoint or {}
+        iteration = int(checkpoint.get("iteration", 0))
+        total_success = int(checkpoint.get("total_success", 0))
         all_alphas: List[Alpha] = []
         all_failures: List[Dict] = []
         strategy_history: List[EvolutionStrategy] = []
         bad_round_streak = 0
         weak_round_streak = 0
         dataset_stop_reason = None
+        no_new_streak = int(checkpoint.get("no_new_streak", 0))
         
         # Start with provided, task-config-derived, or default strategy
-        current_strategy = initial_strategy or self._initial_strategy_from_task_config(task)
+        current_strategy = (
+            EvolutionStrategy.from_dict(checkpoint["strategy"])
+            if checkpoint.get("strategy") else
+            (initial_strategy or self._initial_strategy_from_task_config(task))
+        )
+
+        async def save_checkpoint(completed_iteration: int):
+            if run_id is None:
+                return
+            run_state = await self.db.get(ExperimentRun, run_id)
+            if run_state:
+                run_state.checkpoint = {
+                    **(run_state.checkpoint or {}),
+                    "dataset_id": dataset_id,
+                    "iteration": completed_iteration,
+                    "total_success": total_success,
+                    "no_new_streak": no_new_streak,
+                    "strategy": current_strategy.to_dict(),
+                }
+                await self.db.commit()
         diversity_tracker = None
         metrics_tracker = None
         metrics_report = None
@@ -1138,6 +1177,15 @@ class MiningAgent:
                 int(task_config.get("min_iterations_before_goal_stop", 1) or 1),
             )
             while iteration < max_iterations:
+                # Refresh worker-local clients once per round. The shared DB
+                # revision lets API-side credential changes reach this process.
+                refresh_brain_credentials = getattr(self.brain, "_load_credentials_from_db", None)
+                if callable(refresh_brain_credentials):
+                    await refresh_brain_credentials()
+                refresh_llm_credentials = getattr(self.llm_service, "_ensure_credentials_loaded", None)
+                if callable(refresh_llm_credentials):
+                    await refresh_llm_credentials()
+
                 iteration += 1
                 round_strategy = self._apply_diversity_guidance(current_strategy, diversity_tracker)
                 await self.db.execute(
@@ -1177,11 +1225,31 @@ class MiningAgent:
                         task_config=task.config or {},
                         run_id=run_id,
                     )
+
+                    generation_trace = (await self.db.execute(
+                        select(TraceStep)
+                        .where(TraceStep.task_id == task.id, TraceStep.run_id == run_id,
+                               TraceStep.iteration == iteration, TraceStep.step_type == "CODE_GEN")
+                        .order_by(TraceStep.id.desc()).limit(1)
+                    )).scalar_one_or_none()
+                    new_candidates = int((generation_trace.output_data or {}).get("alphas_generated", 0)) if generation_trace else 0
+                    no_new_streak = _next_no_new_streak(no_new_streak, new_candidates)
                     
                     # Update counters
                     total_success += round_result.passed_count
                     all_alphas.extend(alphas)
                     strategy_history.append(round_strategy)
+
+                    if no_new_streak >= 3:
+                        dataset_stop_reason = "NO_NEW_CANDIDATES: three consecutive rounds produced no new expression candidate"
+                        await save_checkpoint(iteration)
+                        await self.db.execute(
+                            update(MiningTask).where(MiningTask.id == task.id)
+                            .values(status="PAUSED", updated_at=datetime.utcnow())
+                        )
+                        await self.db.commit()
+                        logger.warning(f"[MiningAgent] {dataset_stop_reason} | task={task.id} run={run_id}")
+                        break
 
                     await self._record_observability(
                         task=task,
@@ -1274,6 +1342,7 @@ class MiningAgent:
                     # Check termination: task stopped externally
                     await self.db.refresh(task)
                     if task.status in ["STOPPED", "PAUSED"]:
+                        await save_checkpoint(iteration)
                         logger.info(f"[MiningAgent] Task {task.status}, stopping")
                         break
                     
@@ -1354,7 +1423,13 @@ class MiningAgent:
                             f"until minimum iterations | success={total_success}/{target_alphas} "
                             f"iteration={iteration}/{min_iterations_before_goal_stop}"
                         )
+
+                    await save_checkpoint(iteration)
                     
+                except LLMBlockedError:
+                    await self.db.rollback()
+                    await save_checkpoint(iteration - 1)
+                    raise
                 except Exception as e:
                     logger.error(f"[MiningAgent] Round {iteration} error: {e}")
                     # Rollback any failed transaction

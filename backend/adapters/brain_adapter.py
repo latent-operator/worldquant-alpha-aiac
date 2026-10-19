@@ -73,62 +73,52 @@ class BrainAdapter:
         self.email = email or settings.BRAIN_EMAIL
         self.password = password or settings.BRAIN_PASSWORD
         self.session_token = None
+        self._credentials_revision = -1
+        self._loaded_db_email = self.email
+        self._loaded_db_password = self.password
+
+    def _safe_error(self, error: Any) -> str:
+        from backend.services.credentials_service import CredentialsService
+        return CredentialsService.sanitize_error(error, [self.email, self.password])
     
     async def _load_credentials_from_db(self) -> bool:
-        """
-        Load credentials from database if not already loaded.
-        Returns True if credentials were loaded/updated.
-        """
-        # Skip if explicit credentials were provided in constructor
+        """Refresh credentials when the shared credential revision changes."""
         if self._explicit_email and self._explicit_password:
             return False
-        
-        # Skip if already loaded
-        if BrainAdapter._credentials_loaded:
-            if BrainAdapter._cached_email:
-                self.email = BrainAdapter._cached_email
-            if BrainAdapter._cached_password:
-                self.password = BrainAdapter._cached_password
-            return bool(BrainAdapter._cached_email)
-        
+
         try:
-            from backend.services.credentials_service import (
-                CredentialsService, 
-                CredentialKey
-            )
-            
+            from backend.services.credentials_service import CredentialsService, CredentialKey
+
             async with AsyncSessionLocal() as db:
                 service = CredentialsService(db)
-                
-                # Load email
-                db_email = await service.get_credential(
-                    CredentialKey.BRAIN_EMAIL,
-                    fallback_env="BRAIN_EMAIL"
-                )
-                if db_email:
-                    BrainAdapter._cached_email = db_email
-                    self.email = db_email
-                
-                # Load password
-                db_password = await service.get_credential(
-                    CredentialKey.BRAIN_PASSWORD,
-                    fallback_env="BRAIN_PASSWORD"
-                )
-                if db_password:
-                    BrainAdapter._cached_password = db_password
-                    self.password = db_password
-                
-                BrainAdapter._credentials_loaded = True
-                
-                if db_email or db_password:
-                    logger.info("Loaded Brain credentials from database")
-                    return True
-                
-        except Exception as e:
-            logger.warning(f"Failed to load credentials from DB: {e}")
-        
-        return False
-    
+                revision = await service.get_revision()
+                if revision == self._credentials_revision:
+                    return False
+                db_email = await service.get_credential(CredentialKey.BRAIN_EMAIL)
+                db_password = await service.get_credential(CredentialKey.BRAIN_PASSWORD)
+
+            new_email = db_email or settings.BRAIN_EMAIL
+            new_password = db_password or settings.BRAIN_PASSWORD
+            changed = (new_email, new_password) != (self._loaded_db_email, self._loaded_db_password)
+            self.email, self.password = new_email, new_password
+            self._loaded_db_email, self._loaded_db_password = new_email, new_password
+            self._credentials_revision = revision
+            if changed:
+                try:
+                    self.client.cookies.clear()
+                except Exception:
+                    pass
+                try:
+                    redis_client = await self._get_redis()
+                    await redis_client.delete(self.REDIS_SESSION_KEY)
+                    await redis_client.aclose()
+                except Exception as exc:
+                    logger.warning(f"Could not clear cached Brain session ({type(exc).__name__})")
+            return bool(db_email and db_password)
+        except Exception as exc:
+            logger.warning(f"Failed to refresh Brain credentials ({type(exc).__name__})")
+            return False
+
     @classmethod
     def invalidate_credentials_cache(cls):
         """Invalidate cached credentials (call after updating credentials)."""
@@ -313,7 +303,7 @@ class BrainAdapter:
                 raise Exception(f"Auth failed: {response.status_code}")
                 
         except Exception as e:
-            logger.error(f"Authentication error: {e}")
+            logger.error(f"Authentication error: {self._safe_error(e)}")
             raise
 
     # ... Methods (simulate_alpha, get_datasets, etc.) need to use self.client ...

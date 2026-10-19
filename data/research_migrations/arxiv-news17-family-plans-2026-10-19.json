@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "migration_id": "arxiv-news17-family-plans-2026-10-19",
+  "source_system": "arXiv primary abstracts and AIAC news17 field catalog",
+  "captured_on": "2026-10-19",
+  "evidence_status": "PAPER_TRANSFER_UNVALIDATED",
+  "guardrails": [
+    "These are exploratory hypotheses, not reproduced paper signals or validated Alphas.",
+    "The news17 recurrence field is not the paper's press-release/call-text novelty measure.",
+    "Use D1 News fields only; do not use post-event prices or predicted impact as input.",
+    "Compare the novelty interaction to a sentiment-only control under identical simulation settings."
+  ],
+  "families": [
+    {
+      "family_id": "arxiv_2610_04094_news17_recurrence_sentiment_v1",
+      "role": "explore",
+      "evidence_status": "AIAC_THREE_MATCHED_PAIRS_FAILED_QUALITY",
+      "paper_title": "Measuring What is Repeated and Novel in Earnings Disclosures Using Optimal Transport",
+      "paper_submitted_on": "2026-10-02",
+      "source_refs": ["https://arxiv.org/abs/2610.04094"],
+      "target_dataset_ids": ["news17"],
+      "source_fields": ["nws17_d1_event_sentiment_score", "nws17_d1_event_similarity_days"],
+      "source_categories": ["news"],
+      "source_delay": 1,
+      "attempted_candidates": 3,
+      "completed_candidates": 3,
+      "gate_pass_count": 0,
+      "aiac_evaluation": {"task_id": 5, "run_id": 7, "alpha_id": "O0JZkaK7", "region": "USA", "universe": "TOP3000", "dataset_id": "news17", "delay": 1, "quality_status": "FAIL", "sharpe": 0.19, "fitness": 0.02, "turnover": 1.197},
+      "aiac_followup_evaluations": [
+        {"task_id": 6, "run_id": 8, "window_days": 5, "alpha_id": "O0JZ5POg", "quality_status": "FAIL", "sharpe": -0.09, "fitness": -0.01, "turnover": 0.4105},
+        {"task_id": 6, "run_id": 8, "window_days": 10, "alpha_id": "ZYmn2RKY", "quality_status": "FAIL", "sharpe": -0.19, "fitness": -0.03, "turnover": 0.2368}
+      ],
+      "economic_mechanism": "The paper separates repeated from novel earnings-disclosure text. As a transfer experiment, test whether the sentiment effect differs when a similar event was seen less recently. news17 event_similarity_days measures recurrence timing only and cannot reproduce paired-text novelty.",
+      "expected_direction": "Sentiment times longer time since a similar event may outperform a sentiment-only control; the interaction sign is exploratory.",
+      "falsification_conditions": [
+        "Under matched WQ settings, the recurrence-conditioned signal does not improve over the sentiment-only control.",
+        "The interaction's sign or quality changes materially across adjacent windows or coverage strata.",
+        "Mandatory WQ quality gates fail."
+      ],
+      "source_skeletons": [
+        "vec_avg(nws17_d1_event_sentiment_score)*rank(vec_avg(nws17_d1_event_similarity_days))"
+      ],
+      "aiac_field_mappings": [
+        {"field_id": "nws17_d1_event_sentiment_score", "role": "event sentiment", "category": "news", "delay": 1, "mapping_status": "DIRECT_CATALOG_FIELD"},
+        {"field_id": "nws17_d1_event_similarity_days", "role": "event recurrence timing proxy", "category": "news", "delay": 1, "mapping_status": "PROXY_NOT_PAPER_NOVELTY"}
+      ],
+      "mapping_limitations": "The paper compares press releases and earnings-call text using optimal transport. AIAC has neither paired texts nor this novelty score; event_similarity_days is a weaker, non-equivalent proxy.",
+      "migration_note": "WQ-compatible proxy experiment only. Do not claim reproduction of the paper's return result."
+    },
+    {
+      "family_id": "arxiv_2609_20198_news17_sentiment_control_v1",
+      "role": "control",
+      "evidence_status": "AIAC_THREE_MATCHED_PAIRS_FAILED_QUALITY_CONTROL",
+      "paper_title": "Evaluating Financial Sentiment in the Age of AI",
+      "paper_submitted_on": "2026-07-29",
+      "source_refs": ["https://arxiv.org/abs/2609.20198"],
+      "target_dataset_ids": ["news17"],
+      "source_fields": ["nws17_d1_event_sentiment_score"],
+      "source_categories": ["news"],
+      "source_delay": 1,
+      "attempted_candidates": 3,
+      "completed_candidates": 3,
+      "gate_pass_count": 0,
+      "aiac_evaluation": {"task_id": 5, "run_id": 7, "alpha_id": "kqJ0Xled", "region": "USA", "universe": "TOP3000", "dataset_id": "news17", "delay": 1, "quality_status": "FAIL", "sharpe": 0.06, "fitness": 0.0, "turnover": 1.0233},
+      "aiac_followup_evaluations": [
+        {"task_id": 6, "run_id": 8, "window_days": 5, "alpha_id": "2rjLnzMN", "quality_status": "FAIL", "sharpe": -0.10, "fitness": -0.01, "turnover": 0.3677},
+        {"task_id": 6, "run_id": 8, "window_days": 10, "alpha_id": "omol31lJ", "quality_status": "FAIL", "sharpe": -0.24, "fitness": -0.05, "turnover": 0.2176}
+      ],
+      "economic_mechanism": "Sentiment measures can track earnings-surprise information without producing a next-day return signal. Use raw event sentiment as a matched control, not as a claimed alpha.",
+      "expected_direction": "No positive next-day return effect is assumed; the control establishes whether recurrence conditioning adds value.",
+      "falsification_conditions": [
+        "The comparison is invalid if control and interaction use different WQ settings or data coverage.",
+        "A result cannot be credited to novelty if the conditioned expression performs no better than this control."
+      ],
+      "source_skeletons": ["vec_avg(nws17_d1_event_sentiment_score)"],
+      "aiac_field_mappings": [
+        {"field_id": "nws17_d1_event_sentiment_score", "role": "event sentiment control", "category": "news", "delay": 1, "mapping_status": "DIRECT_CATALOG_FIELD"}
+      ],
+      "mapping_limitations": "The paper evaluates text-derived sentiment metrics; AIAC news17 supplies a vendor event-sentiment score, so this is an analogous control rather than its exact measure.",
+      "migration_note": "Null/control family, not a validated predictive signal."
+    }
+  ]
+}

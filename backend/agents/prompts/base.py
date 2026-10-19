@@ -274,3 +274,42 @@ Use this as a mechanism library, not as formulas to copy blindly:
 - **Low-operator discipline**: prefer one clean transformation plus one normalization/grouping step over nested wrappers.
 {region_hint}
 """
+
+
+def build_research_family_context(family_plans: List[Dict]) -> str:
+    """Render migrated research hypotheses without presenting them as validated patterns."""
+    if not family_plans:
+        return ""
+
+    lines = [
+        "## Research Hypotheses (Exploration Seeds Only)",
+        "These research families have no locally passing candidates. They are hypotheses, not successful patterns or evidence of predictive performance.",
+    ]
+    for family in family_plans:
+        refs = ", ".join(family.get("source_refs", [])) or "source reference unavailable"
+        mapped = family.get("available_mapped_fields", [])
+        mapping_text = (
+            ", ".join(mapped) + " (unreviewed semantic proxy candidates; not equivalent to source fields)"
+            if mapped else "no exact AIAC field mapping"
+        )
+        limitations = family.get("mapping_limitations") or family.get("migration_note", "")
+        mechanism = family.get("economic_mechanism", "")
+        direction = family.get("expected_direction", "")
+        falsification = "; ".join(family.get("falsification_conditions", []))
+        usable_skeletons = family.get("aiac_usable_skeletons", [])
+        skeleton_text = (
+            " Compatible source skeletons: " + " | ".join(f"`{item}`" for item in usable_skeletons)
+            if usable_skeletons else " No source skeleton is reusable with exact fields from this dataset."
+        )
+        lines.append(
+            f"- {family.get('family_id', 'unknown family')} ({family.get('role', 'research')}; "
+            f"{family.get('evidence_status', 'UNVALIDATED')}; source {refs}). Evidence: "
+            f"{family.get('completed_candidates', 0)} completed / {family.get('attempted_candidates', 0)} attempted, "
+            f"{family.get('gate_pass_count', 0)} gate passes. Mechanism: {mechanism} Direction: {direction} "
+            f"Candidate mappings: {mapping_text}. Falsification: {falsification}. "
+            f"{limitations}.{skeleton_text}"
+        )
+    lines.append(
+        "Use only exact field IDs listed in the current dataset. Do not copy source expressions when their fields are absent, infer equivalent fields, or mix categories in a single-category theme. Existing validation and simulation gates decide all outcomes."
+    )
+    return "\n".join(lines)

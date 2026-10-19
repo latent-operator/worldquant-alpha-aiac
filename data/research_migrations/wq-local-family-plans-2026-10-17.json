@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "migration_id": "wq-local-family-plans-2026-10-17",
+  "source_system": "F:/wq-capability-loop",
+  "source_snapshot": {
+    "record": "current iteration-round ledger (read-only snapshot)",
+    "captured_on": "2026-10-17",
+    "loop_state": "PAUSED",
+    "mode": "shadow",
+    "auto_submit": false,
+    "worker_alive": false,
+    "active_count": 0,
+    "inflight": false,
+    "queue_depth": 1,
+    "ready_candidates": 1,
+    "submit_count": 0,
+    "provider_scheduler_state": "RUNNING",
+    "family_plan_file_state": "LEGACY_INVALID",
+    "family_plan_issue": "Stored plan hash does not match its payload; current round ledger was used instead."
+  },
+  "evidence_summary": {
+    "family_count": 4,
+    "attempted_candidates": 122,
+    "completed_candidates": 81,
+    "gate_pass_count": 0,
+    "near_pass_count": 7,
+    "evidence_status": "HYPOTHESIS_NO_PASS",
+    "interpretation": "These are research directions, not validated alpha patterns. Counts are source-loop observations and are not AIAC performance claims."
+  },
+  "guardrails": [
+    "Do not classify these entries as SUCCESS_PATTERN or validated knowledge.",
+    "Use only exact field IDs present in the current AIAC dataset.",
+    "Do not mix data categories when the active theme requires one category.",
+    "Honor the active task delay; a delay mismatch makes a family ineligible.",
+    "AIAC validation, simulation, and evaluation results remain authoritative."
+  ],
+  "aiac_quality_gates_reference": {
+    "source": "AIAC alpha-generation production quality targets; reference only, not a claim that these are source-loop gate values",
+    "is_sharpe_min_exclusive": 1.58,
+    "fitness_min_exclusive": 1.0,
+    "margin_min": 0.001,
+    "turnover_min_exclusive": 0.05,
+    "turnover_max_exclusive": 0.30,
+    "latest_two_year_sharpe_min_exclusive": 1.6,
+    "risk_neutralized_sharpe_min_exclusive": 1.58,
+    "risk_neutralized_fitness_min_exclusive": 1.0,
+    "max_operator_calls": 5,
+    "brain_or_ra_failures_allowed": 0,
+    "self_correlation_max_exclusive": 0.50,
+    "production_correlation_max_exclusive": 0.70
+  },
+  "families": [
+    {
+      "family_id": "reversal_liquidity_change_pivot_v1",
+      "role": "exploit",
+      "status": "ACTIVE_IN_SOURCE_SNAPSHOT",
+      "evidence_status": "HYPOTHESIS_NO_PASS",
+      "source_refs": ["paper:ssrn:7523679"],
+      "source_hashes": ["888ef6c60b19261e8928e3ab8585eb6018325de7053fbd9bf68d711ffb3d2c59"],
+      "source_fields": ["returns", "volume"],
+      "source_categories": ["pv"],
+      "source_delay": 1,
+      "attempted_candidates": 29,
+      "completed_candidates": 21,
+      "gate_pass_count": 0,
+      "near_pass_count": 7,
+      "economic_mechanism": "Short-horizon reversal may depend on a recent activity shock rather than persistently high trading volume. Volume change is a liquidity-state proxy, not a direct transaction-cost measure.",
+      "expected_direction": "Negative recent returns predict recovery more strongly after increasing trading activity.",
+      "falsification_conditions": [
+        "At 16 completed candidates, cool down this footprint if neither activity-conditioned skeleton improves IS results over its matched unconditioned reversal baseline or produces a near-pass.",
+        "Reject candidates whose activity normalization produces invalid values or fails mandatory quality checks."
+      ],
+      "source_skeletons": [
+        "rank(-ts_sum(returns,3))*(rank(ts_delta(volume,5)/ts_mean(volume,20))-0.5)",
+        "rank(-returns)*(rank(volume/ts_mean(volume,20))-0.5)"
+      ],
+      "migration_note": "PV family. Excluded from single-category News theme retrieval. Skeletons are source evidence, not executable AIAC expressions."
+    },
+    {
+      "family_id": "profitability_attention_residual_pivot_v1",
+      "role": "repair",
+      "status": "ACTIVE_IN_SOURCE_SNAPSHOT",
+      "evidence_status": "HYPOTHESIS_NO_PASS",
+      "source_refs": ["paper:ssrn:7038458"],
+      "source_hashes": ["a1a94587f829f3ccd0c71f633f8cfb9f139f8a33ef7154db95d7b619a171790b"],
+      "source_fields": ["operating_income", "equity", "abnormal_news_sentiment_1d", "abnormal_news_volume_1d"],
+      "source_categories": ["fundamental", "news"],
+      "source_delay": 1,
+      "attempted_candidates": 33,
+      "completed_candidates": 24,
+      "gate_pass_count": 0,
+      "near_pass_count": 0,
+      "economic_mechanism": "Attention deviations from a stock's own baseline may distinguish temporary mispricing from persistent news exposure when conditioning profitability. The supplied near-pass records support investigating profitability fields but do not establish a passed quality gate.",
+      "expected_direction": "Mixed; profitability exposure should differ between above-baseline and below-baseline attention.",
+      "falsification_conditions": [
+        "Cool down if centered attention interactions fail to improve over matched profitability-only baselines and yield no near-pass.",
+        "Treat nonpositive equity and missing attention as explicit validity checks; invalidate results that depend on unstable denominators or imputed attention.",
+        "The sign-change interpretation fails if attention strata do not show a reproducible difference in profitability exposure."
+      ],
+      "source_skeletons": [
+        "(rank(operating_income / equity) - 0.5) * (rank(abnormal_news_sentiment_1d - ts_mean(abnormal_news_sentiment_1d, 20)) - 0.5)",
+        "(rank(operating_income / equity) - 0.5) * (0.5 - rank(abnormal_news_volume_1d - ts_mean(abnormal_news_volume_1d, 20)))"
+      ],
+      "migration_note": "Uses fields from multiple categories; excluded when a theme requires fields from one category only."
+    },
+    {
+      "family_id": "momentum_activity_acceleration_pivot_v1",
+      "role": "explore",
+      "status": "ACTIVE_IN_SOURCE_SNAPSHOT",
+      "evidence_status": "HYPOTHESIS_NO_PASS",
+      "source_refs": ["paper:ssrn:6483840"],
+      "source_hashes": ["6502a73c252126c602416afd517c472bd16bf4e6700e4adf177d4ae5494370ea"],
+      "source_fields": ["returns", "volume"],
+      "source_categories": ["pv"],
+      "source_delay": 1,
+      "attempted_candidates": 33,
+      "completed_candidates": 19,
+      "gate_pass_count": 0,
+      "near_pass_count": 0,
+      "economic_mechanism": "Continuation may strengthen when recent average trading activity increases relative to its longer baseline. Return aggregation replaces price levels and absolute oscillators.",
+      "expected_direction": "Positive medium-horizon continuation conditional on increasing activity.",
+      "falsification_conditions": [
+        "Cool down if activity acceleration does not improve matched return-momentum baselines and produces no near-pass.",
+        "The mechanism fails if improvements disappear after excluding the most recent five days or if turnover fails the applicable gate."
+      ],
+      "source_skeletons": [
+        "(rank(ts_sum(returns, 20)) - 0.5) * rank(ts_mean(volume, 5) / ts_mean(volume, 60))",
+        "(rank(ts_sum(returns, 60) - ts_sum(returns, 5)) - 0.5) * rank(ts_delta(ts_mean(volume, 20), 20))"
+      ],
+      "migration_note": "PV family. Excluded from single-category News theme retrieval."
+    },
+    {
+      "family_id": "smoothed_attention_main_effect_control_v1",
+      "role": "control",
+      "status": "ACTIVE_IN_SOURCE_SNAPSHOT",
+      "evidence_status": "HYPOTHESIS_NO_PASS",
+      "source_refs": ["paper:doi:10.1111/j.1540-6261.2011.01679.x"],
+      "source_hashes": ["471ad223a664af0264c921c2730f6129d49bb6c30522c24c4e5477d6b4fe7d68"],
+      "source_fields": ["abnormal_news_sentiment_1d", "abnormal_news_volume_1d"],
+      "source_categories": ["news"],
+      "source_delay": 1,
+      "attempted_candidates": 27,
+      "completed_candidates": 17,
+      "gate_pass_count": 0,
+      "near_pass_count": 0,
+      "economic_mechanism": "Short temporal averaging tests whether attention pressure persists beyond a noisy one-day observation. Separate sentiment and volume main effects provide controls for interaction lanes.",
+      "expected_direction": "Negative exposure to smoothed sentiment or abnormal news volume; direction remains unverified.",
+      "falsification_conditions": [
+        "Cool down if temporal aggregation fails to improve its matched one-day main-effect baseline and yields no near-pass.",
+        "The proposed negative direction is falsified if its sign is unstable across aggregation windows under matched settings.",
+        "Any performance gain must survive mandatory quality checks before qualification."
+      ],
+      "source_skeletons": [
+        "rank(-ts_mean(abnormal_news_sentiment_1d, 3))",
+        "rank(-ts_mean(abnormal_news_volume_1d, 5))"
+      ],
+      "aiac_field_mappings": [
+        {
+          "field_id": "main_trading_volume_deviation_std",
+          "role": "possible news-attention proxy",
+          "category": "news",
+          "delay": 1,
+          "mapping_status": "SEMANTIC_CANDIDATE_UNREVIEWED"
+        },
+        {
+          "field_id": "stddev_of_trading_volume",
+          "role": "possible news-attention proxy",
+          "category": "news",
+          "delay": 1,
+          "mapping_status": "SEMANTIC_CANDIDATE_UNREVIEWED"
+        }
+      ],
+      "mapping_limitations": "No exact sentiment-field mapping was found in the active news12 catalog. Candidate volume proxies are not equivalent to the source fields and must be present in the active dataset field list before use.",
+      "migration_note": "Only family exposed to News-only retrieval; this is a partial semantic mapping and must remain an exploratory control, not a validated result."
+    }
+  ],
+  "guardrails": [
+    "Do not classify these entries as SUCCESS_PATTERN or validated knowledge.",
+    "Use only exact field IDs present in the current AIAC dataset field list.",
+    "Do not mix data categories when the active theme requires one category.",
+    "Honor the active task delay; a delay mismatch makes a family ineligible.",
+    "AIAC validation, simulation, and evaluation results remain authoritative."
+  ]
+}

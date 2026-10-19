@@ -46,6 +46,9 @@ class ExperimentRunDetailResponse(BaseModel):
     started_at: datetime
     finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+    checkpoint: dict = {}
 
     class Config:
         from_attributes = True
@@ -118,6 +121,9 @@ async def get_run(
         started_at=run.started_at,
         finished_at=run.finished_at,
         error_message=run.error_message,
+        block_reason=run.block_reason,
+        next_retry_at=run.next_retry_at,
+        checkpoint=run.checkpoint or {},
     )
 
 

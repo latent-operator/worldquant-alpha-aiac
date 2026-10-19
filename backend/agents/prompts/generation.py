@@ -21,6 +21,7 @@ from backend.agents.prompts.base import (
     build_operators_context,
     build_patterns_context,
     build_strategy_constraints,
+    build_research_family_context,
 )
 
 
@@ -49,7 +50,8 @@ Output must be valid JSON matching the specified schema."""
 def build_alpha_generation_prompt(
     ctx: PromptContext,
     target_hypothesis: Optional[Dict] = None,
-    experiment_feedback: Optional[List[Dict]] = None
+    experiment_feedback: Optional[List[Dict]] = None,
+    family_plans: Optional[List[Dict]] = None
 ) -> str:
     """
     Build user prompt for alpha generation.
@@ -166,6 +168,7 @@ These are historical observations. Context matters - what failed in one setting 
 {patterns_section}
 {feedback_section}
 {implementation_guidance}
+{build_research_family_context(family_plans or [])}
 {build_factor_construction_context(ctx)}
 
 ## Constraints

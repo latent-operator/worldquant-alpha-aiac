@@ -248,6 +248,11 @@ const api = {
     return data
   },
 
+  testLLMCredentials: async () => {
+    const { data } = await client.post('/config/credentials/llm/test')
+    return data
+  },
+
   deleteCredential: async (key) => {
     const { data } = await client.delete(`/config/credentials/${key}`)
     return data

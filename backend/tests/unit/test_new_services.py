@@ -10,6 +10,7 @@ Tests cover:
 """
 
 import pytest
+import pytest_asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -74,14 +75,14 @@ class TestDatasetService:
         assert isinstance(categories, list)
     
     @pytest.mark.asyncio
-    async def test_trigger_dataset_sync(self, db_session, mocker):
+    async def test_trigger_dataset_sync(self, db_session, monkeypatch):
         """Test triggering dataset sync."""
         # Mock the celery task
         mock_task = MagicMock()
         mock_task.id = "test-task-id"
-        mocker.patch(
-            "backend.services.dataset_service.sync_datasets_from_brain",
-            MagicMock(delay=MagicMock(return_value=mock_task))
+        monkeypatch.setattr(
+            "backend.tasks.sync_datasets_from_brain",
+            MagicMock(delay=MagicMock(return_value=mock_task)),
         )
         
         service = DatasetService(db_session)
@@ -244,13 +245,13 @@ class TestOperatorService:
         assert len(operators) >= 0  # May find or not depending on sample
     
     @pytest.mark.asyncio
-    async def test_trigger_operator_sync(self, db_session, mocker):
+    async def test_trigger_operator_sync(self, db_session, monkeypatch):
         """Test triggering operator sync."""
         mock_task = MagicMock()
         mock_task.id = "sync-task-id"
-        mocker.patch(
-            "backend.services.operator_service.sync_operators_from_brain",
-            MagicMock(delay=MagicMock(return_value=mock_task))
+        monkeypatch.setattr(
+            "backend.tasks.sync_operators_from_brain",
+            MagicMock(delay=MagicMock(return_value=mock_task)),
         )
         
         service = OperatorService(db_session)
@@ -274,9 +275,7 @@ class TestConfigService:
         thresholds = await service.get_thresholds()
         
         # Should return defaults
-        assert thresholds.sharpe_min == 1.5
-        assert thresholds.turnover_max == 0.7
-        assert thresholds.fitness_min == 0.6
+        assert thresholds == ThresholdsConfig()
     
     @pytest.mark.asyncio
     async def test_update_thresholds(self, db_session):
@@ -358,7 +357,7 @@ class TestConfigService:
 # Fixtures for Tests (add to conftest.py if not present)
 # =============================================================================
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sample_dataset(db_session):
     """Create a sample dataset for testing."""
     from backend.models import DatasetMetadata
@@ -379,7 +378,7 @@ async def sample_dataset(db_session):
     return dataset
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sample_operator(db_session):
     """Create a sample operator for testing."""
     from backend.models import Operator

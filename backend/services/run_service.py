@@ -38,6 +38,9 @@ class RunDetailInfo:
     started_at: datetime
     finished_at: Optional[datetime]
     error_message: Optional[str]
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+    checkpoint: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -123,6 +126,9 @@ class RunService(BaseService):
             started_at=run.started_at,
             finished_at=run.finished_at,
             error_message=run.error_message,
+            block_reason=run.block_reason,
+            next_retry_at=run.next_retry_at,
+            checkpoint=run.checkpoint or {},
         )
     
     # =========================================================================

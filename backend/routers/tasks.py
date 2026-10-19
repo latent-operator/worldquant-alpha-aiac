@@ -96,6 +96,9 @@ class ExperimentRunResponse(BaseModel):
     started_at: datetime
     finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+    checkpoint: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -288,6 +291,9 @@ async def list_task_runs(
             started_at=r.started_at,
             finished_at=r.finished_at,
             error_message=r.error_message,
+            block_reason=r.block_reason,
+            next_retry_at=r.next_retry_at,
+            checkpoint=r.checkpoint,
         )
         for r in runs
     ]

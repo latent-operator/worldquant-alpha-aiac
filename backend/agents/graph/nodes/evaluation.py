@@ -362,15 +362,14 @@ async def node_simulate(
             )
         
         new_expr_set = set(new_exprs)
+        seen_new = set()
         for idx in valid_indices:
             expr = state.pending_alphas[idx].expression
-            if expr in new_expr_set:
+            if expr in new_expr_set and expr not in seen_new:
                 indices_to_simulate.append(idx)
+                seen_new.add(expr)
             else:
                 db_duplicates += 1
-                state.pending_alphas[idx].simulation_error = "DB duplicate: already simulated"
-                state.pending_alphas[idx].is_simulated = True
-                state.pending_alphas[idx].simulation_success = False
         
         logger.info(
             f"[{node_name}] DB dedup: {db_duplicates} duplicates skipped, "
@@ -383,7 +382,13 @@ async def node_simulate(
     
     if not indices_to_simulate:
         logger.warning(f"[{node_name}] All expressions already in DB")
-        return {"pending_alphas": state.pending_alphas}
+        trace_update = await record_trace(
+            state, trace_service, node_name,
+            {"batch_size": 0, "db_duplicates_skipped": db_duplicates},
+            {"simulated_count": 0, "db_duplicates": db_duplicates, "reason": "NO_NEW_CANDIDATES"},
+            int((time.time() - start_time) * 1000), "SKIPPED", None,
+        )
+        return {"pending_alphas": [a for i, a in enumerate(state.pending_alphas) if i not in valid_indices], **trace_update}
     
     logger.info(f"[{node_name}] Starting batch simulation | count={len(indices_to_simulate)} region={state.region}")
     
@@ -572,7 +577,7 @@ async def node_simulate(
     )
     
     return {
-        "pending_alphas": updated_alphas,
+        "pending_alphas": [a for i, a in enumerate(updated_alphas) if i not in valid_indices or i in indices_to_simulate],
         **trace_update
     }
 

@@ -20,6 +20,7 @@ from backend.agents.prompts.base import (
     PromptContext,
     build_fields_context,
     build_patterns_context,
+    build_research_family_context,
 )
 
 
@@ -58,7 +59,8 @@ Selection should be based on evidence, not assumptions."""
 
 def build_hypothesis_prompt(
     ctx: PromptContext,
-    experiment_trace: Optional[List[Dict]] = None
+    experiment_trace: Optional[List[Dict]] = None,
+    family_plans: Optional[List[Dict]] = None
 ) -> str:
     """
     Build prompt for hypothesis generation.
@@ -138,6 +140,7 @@ The balance depends on current progress:
 Note: These are observations, not rules. What failed before may work in different contexts.
 {trace_section}
 {strategy_section}
+{build_research_family_context(family_plans or [])}
 
 ## Task
 

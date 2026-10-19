@@ -687,10 +687,19 @@ class ExpressionDeduplicator:
     P0-2: Deduplication gate before simulation
     """
     
-    def __init__(self, similarity_threshold: float = 0.85):
+    def __init__(self, similarity_threshold: float = 0.85, allow_parameter_variants: bool = False):
         self.seen_hashes: Set[str] = set()
         self.seen_expressions: List[str] = []
         self.similarity_threshold = similarity_threshold
+        self.allow_parameter_variants = allow_parameter_variants
+
+    @staticmethod
+    def _numeric_literals(expression: str) -> Tuple[str, ...]:
+        """Return numeric arguments/constants, excluding digits in field IDs."""
+        return tuple(re.findall(
+            r"(?<![A-Za-z0-9_])(?:\d+(?:\.\d+)?|\.\d+)(?![A-Za-z0-9_])",
+            expression,
+        ))
         
     def is_duplicate(self, expression: str) -> Tuple[bool, Optional[str]]:
         """
@@ -708,6 +717,11 @@ class ExpressionDeduplicator:
         # Structural similarity check (expensive, limit to recent)
         recent = self.seen_expressions[-100:]  # Only check last 100
         for seen in recent:
+            if (
+                self.allow_parameter_variants
+                and self._numeric_literals(expression) != self._numeric_literals(seen)
+            ):
+                continue
             sim = compute_structural_similarity(expression, seen)
             if sim >= self.similarity_threshold:
                 return True, f"Structurally similar ({sim:.1%}) to: {seen[:50]}..."

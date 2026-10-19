@@ -9,6 +9,8 @@ from typing import Optional
 
 
 class Settings(BaseSettings):
+    # Used only to derive the encryption key for persisted credentials.
+    CREDENTIALS_SECRET: str = ""
     # Project Info
     PROJECT_NAME: str = "AIAC 2.0 - Alpha-GPT Mining System"
     VERSION: str = "2.0.0"

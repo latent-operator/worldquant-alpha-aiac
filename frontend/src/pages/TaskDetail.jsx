@@ -615,7 +615,7 @@ export default function TaskDetail() {
                                        ellipsis={{ rows: 2, expandable: true, symbol: '展开' }} 
                                        style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', fontStyle: 'italic', marginBottom: 8 }}
                                      >
-                                        "{step.output_data.reasoning}"
+                                        &quot;{step.output_data.reasoning}&quot;
                                      </Paragraph>
                                    )}
                                    {step.output_data?.selected_concepts && (

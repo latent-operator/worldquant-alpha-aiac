@@ -7,12 +7,10 @@ High cohesion: All LLM-related logic in one place.
 
 import asyncio
 import json
-import os
 import time
 from typing import Dict, List, Optional, Any, Type, Tuple
 from pydantic import BaseModel
 import openai
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from loguru import logger
 
 from backend.config import settings
@@ -42,6 +40,31 @@ class LLMResponse(BaseModel):
         )
 
 
+class LLMBlockedError(Exception):
+    """A provider failure that must stop generation before fallback candidates."""
+
+    def __init__(self, kind: str):
+        self.kind = kind
+        super().__init__(f"LLM_{kind}")
+
+
+def classify_llm_error(exc: Exception) -> str:
+    """Return a safe category; never persist provider response bodies or keys."""
+    status = getattr(exc, "status_code", None)
+    message = str(exc).lower()
+    if status == 401 or "invalid api key" in message:
+        return "INVALID_CREDENTIALS"
+    if status == 403 and any(word in message for word in ("daily usage limit", "quota", "usage limit", "insufficient")):
+        return "DAILY_QUOTA"
+    if status == 429 or isinstance(exc, openai.RateLimitError):
+        return "RATE_LIMIT"
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError, TimeoutError, ConnectionError)):
+        return "CONNECTION_ERROR"
+    if status == 403:
+        return "ACCESS_DENIED"
+    return "PROVIDER_ERROR"
+
+
 class LLMService:
     """
     Unified LLM Service implementing LLMProtocol.
@@ -69,9 +92,12 @@ class LLMService:
 
         self._credentials_lock = asyncio.Lock()
         self._credentials_loaded = False
+        self._credentials_revision = -1
         
         self.client = openai.AsyncOpenAI(
-            api_key=self.api_key,
+            # Delay actual credential availability to _ensure_credentials_loaded;
+            # this placeholder is never sent when the credential is absent.
+            api_key=self.api_key or "not-configured",
             base_url=self.base_url,
             timeout=getattr(settings, "LLM_TIMEOUT_SECONDS", 60),
             max_retries=0,
@@ -80,63 +106,52 @@ class LLMService:
         logger.info(f"[LLMService] Initialized | model={self.model} base_url={self.base_url}")
 
     async def _ensure_credentials_loaded(self):
-        if self._credentials_loaded:
-            return
-
-        def usable_env_value(value: Optional[str]) -> Optional[str]:
-            if not value:
-                return None
-            stripped = value.strip()
-            lowered = stripped.lower()
-            placeholder_tokens = ("xxxx", "your_", "example", "placeholder")
-            if any(token in lowered for token in placeholder_tokens):
-                return None
-            return stripped
-
         async with self._credentials_lock:
-            if self._credentials_loaded:
-                return
-
             try:
                 from backend.database import AsyncSessionLocal
                 from backend.services.credentials_service import CredentialsService, CredentialKey
 
-                env_api_key = usable_env_value(os.getenv("OPENAI_API_KEY"))
-                env_base_url = usable_env_value(os.getenv("OPENAI_BASE_URL"))
-                env_model = usable_env_value(os.getenv("OPENAI_MODEL"))
-
                 async with AsyncSessionLocal() as db:
                     service = CredentialsService(db)
-                    db_api_key = None if env_api_key else await service.get_credential(CredentialKey.OPENAI_API_KEY)
-                    db_base_url = None if env_base_url else await service.get_credential(CredentialKey.OPENAI_BASE_URL)
-                    db_model = None if env_model else await service.get_credential(CredentialKey.OPENAI_MODEL)
+                    revision = await service.get_revision()
+                    if self._credentials_loaded and revision == self._credentials_revision:
+                        return
+                    api_key = await service.get_credential(CredentialKey.OPENAI_API_KEY) or settings.OPENAI_API_KEY
+                    base_url = await service.get_credential(CredentialKey.OPENAI_BASE_URL) or settings.OPENAI_BASE_URL
+                    model = await service.get_credential(CredentialKey.OPENAI_MODEL) or getattr(settings, "OPENAI_MODEL", "deepseek-chat")
 
-                if env_api_key or db_api_key:
-                    self.api_key = env_api_key or db_api_key
-                if env_base_url or db_base_url:
-                    self.base_url = env_base_url or db_base_url
-                if env_model or db_model:
-                    self.model = env_model or db_model
-
-                self.client = openai.AsyncOpenAI(
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    timeout=getattr(settings, "LLM_TIMEOUT_SECONDS", 60),
-                    max_retries=0,
-                )
+                changed = (api_key, base_url, model) != (self.api_key, self.base_url, self.model)
+                self.api_key, self.base_url, self.model = api_key, base_url, model
+                if (changed or not self._credentials_loaded) and self.api_key:
+                    old_client = self.client
+                    self.client = openai.AsyncOpenAI(
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                        timeout=getattr(settings, "LLM_TIMEOUT_SECONDS", 60),
+                        max_retries=0,
+                    )
+                    await old_client.close()
+                self._credentials_revision = revision
             except Exception as e:
-                logger.warning(f"[LLMService] Failed to load DB credentials, using settings/env | error={e}")
+                logger.warning(f"[LLMService] Credential refresh failed ({type(e).__name__})")
             finally:
                 self._credentials_loaded = True
 
     def invalidate_credentials_cache(self):
         self._credentials_loaded = False
+
+    async def test_connection(self) -> Dict[str, Any]:
+        """Check provider authentication via the models endpoint; does not run generation."""
+        await self._ensure_credentials_loaded()
+        if not self.api_key:
+            return {"success": False, "error": "LLM API credentials are not configured"}
+        try:
+            await asyncio.wait_for(self.client.models.list(), timeout=15)
+            return {"success": True, "message": "LLM API connection successful"}
+        except Exception as exc:
+            from backend.services.credentials_service import CredentialsService
+            return {"success": False, "error": CredentialsService.sanitize_error(exc, [self.api_key])}
     
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((openai.APIConnectionError, openai.RateLimitError))
-    )
     async def call(
         self,
         system_prompt: str,
@@ -188,7 +203,16 @@ class LLMService:
             if disable_thinking:
                 request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
-            response = await self.client.chat.completions.create(**request_kwargs)
+            for attempt in range(3):
+                try:
+                    response = await self.client.chat.completions.create(**request_kwargs)
+                    break
+                except Exception as exc:
+                    kind = classify_llm_error(exc)
+                    if kind in {"RATE_LIMIT", "CONNECTION_ERROR"} and attempt < 2:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    raise LLMBlockedError(kind) from None
             
             # Defensive: handle empty/malformed responses
             choices = getattr(response, "choices", None)
@@ -246,16 +270,21 @@ class LLMService:
                 error=parse_error
             )
             
+        except LLMBlockedError as exc:
+            logger.warning(f"[LLMService] Call blocked | id={call_id} kind={exc.kind}")
+            raise
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"[LLMService] Call failed | id={call_id} error={e}")
+            from backend.services.credentials_service import CredentialsService
+            safe_error = CredentialsService.sanitize_error(e, [self.api_key, self.base_url])
+            logger.error(f"[LLMService] Call failed | id={call_id} error={safe_error}")
             
             return LLMResponse(
                 content="",
                 model=self.model,
                 latency_ms=latency_ms,
                 success=False,
-                error=str(e)
+                error=safe_error
             )
     
     async def call_with_schema(
