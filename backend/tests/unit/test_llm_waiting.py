@@ -12,12 +12,13 @@ from backend.agents.graph.nodes import generation
 from backend.agents.graph.nodes.evaluation import node_simulate
 from backend.agents.graph.nodes.persistence import node_save_results
 from backend.tasks.mining_tasks import _next_wait_minutes, _wait_is_due
+from backend.tasks import mining_tasks
 from backend.services.task_service import TaskService
 from backend.services.run_service import RunService
 from backend.routers.runs import ExperimentRunDetailResponse
 from backend.services.dashboard_service import DashboardService
 from backend.agents.mining_agent import _next_no_new_streak
-from backend.celery_app import _recover_waiting_llm_runs, celery_app
+from backend.celery_app import _recover_unfinished_runs, celery_app
 
 
 class ProviderError(Exception):
@@ -134,6 +135,73 @@ def test_quota_backoff_and_revision_wakeup():
     assert not _wait_is_due(None, 4, 4)
 
 
+def test_malformed_output_gets_fast_bounded_backoff():
+    for kind in ("MALFORMED_HYPOTHESIS", "MALFORMED_RESPONSE"):
+        assert [mining_tasks._next_wait_seconds(kind, n) for n in range(7)] == [
+            30, 120, 300, 900, 1800, 3600, 3600,
+        ]
+    assert mining_tasks._next_wait_seconds("DAILY_QUOTA", 0) == 900
+    assert mining_tasks._next_wait_seconds("NO_NEW_CANDIDATES", 0) == 300
+    assert mining_tasks._next_wait_seconds("INVALID_CREDENTIALS", 0) is None
+
+
+@pytest.mark.asyncio
+async def test_connection_failure_tracks_safe_type_and_separate_bounded_backoff(monkeypatch):
+    service = LLMService(api_key="sk-test-key", base_url="https://example.invalid/v1", model="MiniMax-M2.5")
+    service._ensure_credentials_loaded = AsyncMock()
+    service.client.chat.completions.create = AsyncMock(side_effect=TimeoutError("private sk-test-key"))
+    monkeypatch.setattr("backend.agents.services.llm_service.asyncio.sleep", AsyncMock())
+    with pytest.raises(LLMBlockedError) as raised:
+        await service.call("system", "user")
+    assert raised.value.kind == "CONNECTION_ERROR"
+    assert raised.value.safe_detail == "TIMEOUT"
+    assert "sk-test-key" not in str(raised.value)
+
+    task = SimpleNamespace(id=10, status="RUNNING")
+    run = SimpleNamespace(id=13, status="RUNNING", checkpoint={"iteration": 8},
+                          block_reason=None, next_retry_at=None)
+    db = SimpleNamespace(commit=AsyncMock())
+    expected = [30, 120, 300, 900, 900]
+    for attempt, delay in enumerate(expected, start=1):
+        before = datetime.now(timezone.utc)
+        await mining_tasks._schedule_llm_wait(
+            db, task, run, "CONNECTION_ERROR", revision=2, safe_detail=raised.value.safe_detail,
+        )
+        actual = (run.next_retry_at - before).total_seconds()
+        assert delay <= actual <= delay + 2
+        assert run.checkpoint["connection_attempts"] == attempt
+        assert run.checkpoint["connection_error_type"] == "TIMEOUT"
+        assert run.block_reason == "CONNECTION_ERROR"
+
+    await mining_tasks._schedule_llm_wait(db, task, run, "NO_NEW_CANDIDATES", revision=2)
+    assert run.checkpoint["connection_attempts"] == 0
+    assert run.checkpoint["connection_error_type"] is None
+    assert mining_tasks._next_wait_seconds("DAILY_QUOTA", 0) == 900
+
+
+def test_retry_poll_follows_short_deadline_and_caps_long_wait():
+    now = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    assert mining_tasks._retry_poll_seconds(now + timedelta(seconds=30), now=now) == 30
+    assert mining_tasks._retry_poll_seconds(now + timedelta(minutes=2), now=now) == 120
+    assert mining_tasks._retry_poll_seconds(now + timedelta(hours=1), now=now) == 300
+    assert mining_tasks._retry_poll_seconds(None, now=now) == 300
+
+
+def test_celery_retry_uses_short_wait_deadline(monkeypatch):
+    def completed_run(coroutine):
+        coroutine.close()
+        return {"_retry": True, "run_id": 13, "retry_countdown": 30}
+
+    retry = Mock(return_value=RuntimeError("scheduled"))
+    monkeypatch.setattr(mining_tasks, "run_async", completed_run)
+    monkeypatch.setattr(mining_tasks.run_mining_task, "retry", retry)
+
+    with pytest.raises(RuntimeError, match="scheduled"):
+        mining_tasks.run_mining_task.run(10, 13)
+
+    retry.assert_called_once_with(countdown=30, args=(10, 13), max_retries=None)
+
+
 def test_three_generation_flows_without_novel_candidate_reach_pause_threshold():
     streak = 0
     for expected in (1, 2, 3):
@@ -166,6 +234,32 @@ async def test_pause_then_resume_waiting_task_reuses_run(monkeypatch):
     assert resumed["run_id"] == 9
     queued.assert_called_once_with(3, 9)
     assert run.celery_task_id == "new-dispatch"
+
+
+@pytest.mark.asyncio
+async def test_pause_then_resume_running_task_reuses_run(monkeypatch):
+    run = SimpleNamespace(id=13, status="RUNNING", block_reason=None,
+                          next_retry_at=None, celery_task_id="old-dispatch")
+    task = SimpleNamespace(id=10, status="RUNNING")
+    db = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: run)),
+        commit=AsyncMock(), rollback=AsyncMock(),
+    )
+    service = TaskService(db)
+    service.task_repo.get_by_id = AsyncMock(return_value=task)
+    service.task_repo.update_status = AsyncMock()
+
+    paused = await service.intervene_task(10, "PAUSE")
+    assert paused["new_status"] == "PAUSED"
+    assert run.status == "PAUSED"
+
+    task.status = "PAUSED"
+    queued = Mock(return_value=SimpleNamespace(id="new-dispatch"))
+    monkeypatch.setattr("backend.tasks.run_mining_task.delay", queued)
+    resumed = await service.intervene_task(10, "RESUME")
+    assert resumed["run_id"] == 13
+    assert run.celery_task_id == "new-dispatch"
+    queued.assert_called_once_with(10, 13)
 
 
 @pytest.mark.asyncio
@@ -244,9 +338,39 @@ async def test_worker_startup_requeues_wait_without_creating_a_new_run(monkeypat
     monkeypatch.setattr("backend.database.AsyncSessionLocal", lambda: db)
     sent = Mock()
     monkeypatch.setattr(celery_app, "send_task", sent)
-    assert await _recover_waiting_llm_runs() == 1
+    assert await _recover_unfinished_runs() == 1
     assert run.id == 5 and run.task_id == 3
     assert run.celery_task_id != "old-dispatch"
     sent.assert_called_once_with(
         "backend.tasks.run_mining_task", args=[3, 5], task_id=run.celery_task_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_startup_also_selects_running_run_for_recovery(monkeypatch):
+    run = SimpleNamespace(id=13, task_id=10, status="RUNNING", celery_task_id="old-dispatch")
+
+    class Session:
+        execute = AsyncMock(return_value=SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: [run])
+        ))
+        commit = AsyncMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+    db = Session()
+    monkeypatch.setattr("backend.database.AsyncSessionLocal", lambda: db)
+    sent = Mock()
+    monkeypatch.setattr(celery_app, "send_task", sent)
+
+    assert await _recover_unfinished_runs() == 1
+    query = str(db.execute.await_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "RUNNING" in query and "WAITING_LLM" in query
+    assert "mining_tasks.status = experiment_runs.status" in query
+    sent.assert_called_once_with(
+        "backend.tasks.run_mining_task", args=[10, 13], task_id=run.celery_task_id,
     )

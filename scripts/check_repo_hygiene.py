@@ -18,14 +18,19 @@ SECRET_PATTERNS = (
 )
 
 
+def candidate_paths() -> list[str]:
+    paths = subprocess.check_output(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=ROOT,
+    ).split(b"\0")
+    return [raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+            for raw in paths if raw]
+
+
 def main() -> int:
-    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).split(b"\0")
     errors = []
     checked = 0
-    for raw in tracked:
-        if not raw:
-            continue
-        relative = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+    for relative in candidate_paths():
         path = Path(relative)
         parts = set(path.parts)
         local_env_file = path.name.startswith(".env.") and path.name != ".env.example"
@@ -48,7 +53,7 @@ def main() -> int:
     if errors:
         print(f"Repository hygiene failed: {len(errors)} issue(s).", file=sys.stderr)
         return 1
-    print(f"Repository hygiene passed: {checked} tracked files checked.")
+    print(f"Repository hygiene passed: {checked} tracked and new files checked.")
     return 0
 
 

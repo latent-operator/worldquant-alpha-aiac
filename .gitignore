@@ -5,6 +5,7 @@
 __pycache__
 frontend/node_modules
 venv
+.venv/
 *.log
 *.log.*
 logs/
@@ -21,6 +22,7 @@ keys.txt
 compose.local.yaml
 work/
 frontend/dist/
+ops/secret-attestation.json
 parsetab.py
 *.pem
 *.key

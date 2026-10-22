@@ -89,3 +89,53 @@ The historical public Git record contained `keys.txt`. Removing it from the
 current index does not erase that history. Treat those values as sensitive
 until their owner confirms they are invalid or revokes and rotates them; do
 not publish this baseline before that review.
+
+## Versioned software operations
+
+The legacy commands above describe the existing host setup. The release path
+keeps the same PostgreSQL/Redis containers and anonymous volume, then starts
+the API, one Celery worker, and a built static UI through
+`scripts/manage-local.ps1`. The UI remains on `127.0.0.1:5174`; its `/api`
+and SSE requests proxy to `127.0.0.1:8003`. All three services read the same
+ignored `.env` without copying it into a Git worktree or image. Release logs,
+PID records, database backups, task snapshots, and the release journal live
+under `../../runtime/aiac-ops`, outside the repository.
+
+1. Run `.\.venv\Scripts\python.exe scripts/preflight.py` after every code change.
+   It runs offline backend and frontend tests, lint, build, and current-tree
+   credential hygiene. CI repeats this on Ubuntu and Windows; Ubuntu also
+   applies migrations twice to an isolated PostgreSQL service. CI has no WQ or
+   LLM credentials and starts no mining worker.
+2. Confirm the historical `keys.txt` credentials have been revoked or rotated
+   before forking or pushing. The local GitHub account can read the public
+   upstream but cannot push there. Create a writable personal fork, merge via
+   PR with required `offline-ubuntu` and `offline-windows` checks, and record
+   the successful **master push** Actions run ID. See `security-baseline.md`.
+3. Keep the checked-out worktree clean at that exact SHA. The first release
+   also needs `-BootstrapPreviousSource`, pointing at the preserved, built
+   pre-operations snapshot. Subsequent releases read the previous version
+   from `../../runtime/aiac-ops/release-*.json`.
+4. Run `scripts/deploy-local.ps1 -Commit <40-character SHA> -CiRun <run ID>
+   -BootstrapPreviousSource <absolute snapshot path>` for the first release;
+   omit the bootstrap parameter later. The command refuses dirty code,
+   unconfirmed historical keys, missing CI, a different DB volume, unmanaged
+   services, or an unavailable rollback source. It stages code and UI before
+   pausing active tasks, waits for an idle worker, verifies a database dump by
+   restoring it into a separate database, then starts the new services and
+   resumes only the original active run IDs. A failed deployment restores
+   previous code when the schema revision is unchanged. It never restores a
+   live database automatically.
+5. After the first successful deployment, register the periodic local
+   supervisor with `scripts/install-autostart.ps1`. It reads
+   `../../runtime/aiac-ops/current.json`, starts only that release, and skips
+   startup while `maintenance.lock` exists. Inspect status with
+   `scripts/manage-local.ps1 -Action Status`, the `/health` and
+   `/__ui_health` endpoints, and the release journal. The old loop remains
+   paused.
+
+The first deployment must be explicitly checked after the prior manual
+runtime: the previous source is the preserved worktree snapshot, not merely
+the older clean Git commit. If the historical keys remain unconfirmed or the
+desktop blocks local process control, do not weaken the gate or use another
+command to bypass it; leave the prepared release unstarted and report the
+blocker.

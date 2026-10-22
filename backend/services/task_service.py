@@ -392,14 +392,13 @@ class TaskService(BaseService):
         if action == "PAUSE":
             if task.status not in {"RUNNING", "WAITING_LLM"}:
                 raise ValueError("Can only pause running tasks")
-            if task.status == "WAITING_LLM":
-                waiting_run = (await self.db.execute(
-                    select(ExperimentRun).where(ExperimentRun.task_id == task_id)
-                    .order_by(ExperimentRun.id.desc()).limit(1)
-                )).scalar_one_or_none()
-                if waiting_run and waiting_run.status == "WAITING_LLM":
-                    waiting_run.status = "PAUSED"
-                    waiting_run.next_retry_at = None
+            active_run = (await self.db.execute(
+                select(ExperimentRun).where(ExperimentRun.task_id == task_id)
+                .order_by(ExperimentRun.id.desc()).limit(1)
+            )).scalar_one_or_none()
+            if active_run and active_run.status in {"RUNNING", "WAITING_LLM"}:
+                active_run.status = "PAUSED"
+                active_run.next_retry_at = None
             await self.task_repo.update_status(task_id, "PAUSED")
             await self.commit()
             return {"action": "paused", "new_status": "PAUSED"}

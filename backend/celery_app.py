@@ -59,8 +59,8 @@ def _publish_worker_credentials_status(hostname: str, remove: bool = False) -> N
             client.close()
 
 
-async def _recover_waiting_llm_runs() -> int:
-    """Requeue DB-backed waits after a worker restart, retaining each run id."""
+async def _recover_unfinished_runs() -> int:
+    """Requeue active DB-backed runs after a sole worker restart."""
     from sqlalchemy import select
     from backend.database import AsyncSessionLocal
     from backend.models import ExperimentRun, MiningTask
@@ -70,7 +70,10 @@ async def _recover_waiting_llm_runs() -> int:
         runs = (await db.execute(
             select(ExperimentRun)
             .join(MiningTask, ExperimentRun.task_id == MiningTask.id)
-            .where(ExperimentRun.status == "WAITING_LLM", MiningTask.status == "WAITING_LLM")
+            .where(
+                ExperimentRun.status.in_(("RUNNING", "WAITING_LLM")),
+                MiningTask.status == ExperimentRun.status,
+            )
         )).scalars().all()
         for run in runs:
             old_dispatch_id = run.celery_task_id
@@ -87,7 +90,7 @@ async def _recover_waiting_llm_runs() -> int:
             except Exception:
                 run.celery_task_id = old_dispatch_id
                 await db.commit()
-                logger.error(f"Could not restore LLM wait | run={run.id}")
+                logger.error(f"Could not restore active run | run={run.id}")
     return recovered
 
 
@@ -97,11 +100,11 @@ def _on_worker_ready(sender=None, **kwargs):
     if hostname:
         _publish_worker_credentials_status(hostname)
     try:
-        recovered = asyncio.run(_recover_waiting_llm_runs())
+        recovered = asyncio.run(_recover_unfinished_runs())
         if recovered:
-            logger.info(f"Restored {recovered} waiting LLM run(s) on worker startup")
+            logger.info(f"Restored {recovered} active run(s) on worker startup")
     except Exception as exc:
-        logger.error(f"Could not scan waiting LLM runs on worker startup ({type(exc).__name__})")
+        logger.error(f"Could not scan active runs on worker startup ({type(exc).__name__})")
 
 
 @worker_shutdown.connect

@@ -1,11 +1,17 @@
 name: AIAC offline checks
 
 on:
+  push:
+    branches: [master]
   pull_request:
+    branches: [master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  backend:
+  offline-ubuntu:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -37,35 +43,42 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - name: Reject runtime files and recognizable credentials
-        run: python scripts/check_repo_hygiene.py
-      - name: Install backend dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Offline unit tests
-        env:
-          POSTGRES_PORT: "1"
-          REDIS_URL: redis://127.0.0.1:1/0
-        run: python -m pytest backend/tests/unit -q --disable-warnings
-      - name: Fresh database migrations
-        run: |
-          python -m alembic -c backend/alembic.ini upgrade head
-          python -c "import os, psycopg2; c=psycopg2.connect(host=os.environ['POSTGRES_SERVER'], port=os.environ['POSTGRES_PORT'], user=os.environ['POSTGRES_USER'], password=os.environ['POSTGRES_PASSWORD'], dbname=os.environ['POSTGRES_DB']); v=c.cursor(); v.execute('SELECT version_num FROM alembic_version'); assert v.fetchone()[0] == '0002_llm_wait_checkpoint'; c.close()"
-
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Install frontend dependencies
+      - run: python -m pip install -r requirements.txt
+      - run: npm ci
         working-directory: frontend
-        run: npm ci
-      - name: Lint source
+      - name: Offline preflight
+        run: python scripts/preflight.py
+      - name: Fresh and repeatable migrations
+        run: |
+          python -m alembic -c backend/alembic.ini upgrade head
+          python -m alembic -c backend/alembic.ini upgrade head
+          python -m alembic -c backend/alembic.ini current --check
+
+  offline-windows:
+    runs-on: windows-latest
+    env:
+      BRAIN_EMAIL: ""
+      BRAIN_PASSWORD: ""
+      OPENAI_API_KEY: ""
+      CREDENTIALS_SECRET: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: python -m pip install -r requirements.txt
+      - run: npm ci
         working-directory: frontend
-        run: npm run lint
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
+      - name: Offline preflight
+        run: python scripts/preflight.py
