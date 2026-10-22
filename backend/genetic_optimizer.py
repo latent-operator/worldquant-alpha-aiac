@@ -15,6 +15,7 @@ to find high-quality variants of promising alphas.
 import re
 import random
 import hashlib
+import math
 from typing import List, Dict, Optional, Tuple, Any, Set
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -61,6 +62,21 @@ WRAPPER_PATTERNS = [
 # Data Structures
 # =============================================================================
 
+def _finite_metric(value: Any) -> Optional[float]:
+    """Keep missing or invalid WQ metrics distinct from measured zero."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _rounded_metric(value: Optional[float]) -> Optional[float]:
+    return round(value, 4) if value is not None else None
+
+
 @dataclass
 class Individual:
     """Represents an alpha expression individual in the population."""
@@ -69,10 +85,10 @@ class Individual:
     parent_expression: str = ""
     
     # Fitness metrics
-    sharpe: float = 0.0
-    fitness: float = 0.0
-    turnover: float = 0.0
-    os_sharpe: float = 0.0
+    sharpe: Optional[float] = None
+    fitness: Optional[float] = None
+    turnover: Optional[float] = None
+    os_sharpe: Optional[float] = None
     
     # Derived scores
     overall_fitness: float = 0.0
@@ -93,6 +109,10 @@ class Individual:
     
     def calculate_fitness(self, weights: Dict[str, float] = None):
         """Calculate overall fitness from component metrics."""
+        self.sharpe = _finite_metric(self.sharpe)
+        self.fitness = _finite_metric(self.fitness)
+        self.turnover = _finite_metric(self.turnover)
+        self.os_sharpe = _finite_metric(self.os_sharpe)
         w = weights or {
             "sharpe": 0.50,
             "fitness": 0.20,
@@ -101,10 +121,10 @@ class Individual:
         }
         
         # Normalize components
-        sharpe_score = min(1.0, self.sharpe / 2.0) if self.sharpe > 0 else 0
-        fitness_score = min(1.0, self.fitness / 1.5) if self.fitness > 0 else 0
-        turnover_score = max(0, 1.0 - self.turnover) if self.turnover < 1.0 else 0
-        os_score = min(1.0, self.os_sharpe / 1.5) if self.os_sharpe > 0 else 0
+        sharpe_score = min(1.0, self.sharpe / 2.0) if self.sharpe is not None and self.sharpe > 0 else 0
+        fitness_score = min(1.0, self.fitness / 1.5) if self.fitness is not None and self.fitness > 0 else 0
+        turnover_score = max(0, 1.0 - self.turnover) if self.turnover is not None and self.turnover < 1.0 else 0
+        os_score = min(1.0, self.os_sharpe / 1.5) if self.os_sharpe is not None and self.os_sharpe > 0 else 0
         
         self.overall_fitness = (
             w["sharpe"] * sharpe_score +
@@ -117,10 +137,10 @@ class Individual:
         return {
             "expression": self.expression,
             "generation": self.generation,
-            "sharpe": round(self.sharpe, 4),
-            "fitness": round(self.fitness, 4),
-            "turnover": round(self.turnover, 4),
-            "os_sharpe": round(self.os_sharpe, 4),
+            "sharpe": _rounded_metric(self.sharpe),
+            "fitness": _rounded_metric(self.fitness),
+            "turnover": _rounded_metric(self.turnover),
+            "os_sharpe": _rounded_metric(self.os_sharpe),
             "overall_fitness": round(self.overall_fitness, 4),
             "alpha_id": self.alpha_id,
             "mutation_type": self.mutation_type,
@@ -427,6 +447,7 @@ class GeneticOptimizer:
         self.population = Population()
         self.all_fingerprints: Set[str] = set()  # Global dedup
         self.simulations_used = 0
+        self.attempts_used = 0
         
         # Adaptive mutation rates
         self.mutation_rates = {
@@ -465,10 +486,10 @@ class GeneticOptimizer:
         )
         
         if seed_metrics:
-            seed.sharpe = seed_metrics.get("sharpe", 0)
-            seed.fitness = seed_metrics.get("fitness", 0)
-            seed.turnover = seed_metrics.get("turnover", 0)
-            seed.os_sharpe = seed_metrics.get("os_sharpe", 0)
+            seed.sharpe = _finite_metric(seed_metrics.get("sharpe"))
+            seed.fitness = _finite_metric(seed_metrics.get("fitness"))
+            seed.turnover = _finite_metric(seed_metrics.get("turnover"))
+            seed.os_sharpe = _finite_metric(seed_metrics.get("os_sharpe"))
             seed.calculate_fitness()
             seed.simulated = True
         
@@ -558,16 +579,19 @@ class GeneticOptimizer:
         
         individual.alpha_id = sim_result.get("alpha_id") or ""
         individual.raw_result = sim_result
-        individual.sharpe = float(is_stats.get("sharpe", is_stats.get("Sharpe", 0)) or 0)
-        individual.fitness = float(is_stats.get("fitness", is_stats.get("Fitness", 0)) or 0)
-        individual.turnover = float(is_stats.get("turnover", is_stats.get("Turnover", 0)) or 0)
-        individual.os_sharpe = float(os_stats.get("sharpe", os_stats.get("Sharpe", 0)) or 0)
+        individual.sharpe = _finite_metric(is_stats.get("sharpe", is_stats.get("Sharpe")))
+        individual.fitness = _finite_metric(is_stats.get("fitness", is_stats.get("Fitness")))
+        individual.turnover = _finite_metric(is_stats.get("turnover", is_stats.get("Turnover")))
+        individual.os_sharpe = _finite_metric(os_stats.get("sharpe", os_stats.get("Sharpe")))
         
         individual.calculate_fitness()
         individual.simulated = True
         
         # Check if passed thresholds
         individual.passed = (
+            individual.sharpe is not None and
+            individual.fitness is not None and
+            individual.turnover is not None and
             individual.sharpe >= self.config.sharpe_threshold and
             individual.fitness >= self.config.fitness_threshold and
             individual.turnover <= self.config.turnover_threshold
@@ -722,6 +746,7 @@ class GeneticOptimizer:
         return {
             "generations": self.population.generation,
             "simulations_used": self.simulations_used,
+            "attempts_used": self.attempts_used,
             "population_stats": self.population.stats(),
             "generation_history": self.generation_stats,
             "best_individuals": [i.to_dict() for i in self.get_best_individuals(5)],
@@ -803,19 +828,21 @@ async def run_genetic_optimization(
     # Evolution loop
     for gen in range(config.generations):
         # Get candidates to simulate
-        candidates = optimizer.get_simulation_candidates(batch_size=10)
+        remaining_budget = max(0, config.max_simulations - optimizer.attempts_used)
+        candidates = optimizer.get_simulation_candidates(batch_size=min(10, remaining_budget)) if remaining_budget else []
         
         if not candidates:
             logger.info(f"[GeneticOpt] No more candidates at generation {gen}")
             break
         
         # Check budget
-        if optimizer.simulations_used >= config.max_simulations:
-            logger.info(f"[GeneticOpt] Simulation budget exhausted at {optimizer.simulations_used}")
+        if optimizer.attempts_used >= config.max_simulations:
+            logger.info(f"[GeneticOpt] Simulation budget exhausted at {optimizer.attempts_used}")
             break
         
         # Simulate candidates
         for ind in candidates:
+            optimizer.attempts_used += 1
             try:
                 result = await simulate_func(
                     expression=ind.expression,

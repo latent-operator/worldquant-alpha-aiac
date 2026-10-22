@@ -76,6 +76,7 @@ def _load_research_family_manifest() -> Dict:
     for name in (
         "wq-local-family-plans-2026-10-17.json",
         "arxiv-news17-family-plans-2026-10-19.json",
+        "arxiv-2512-19484-news17-family-plan-2026-10-21.json",
     ):
         try:
             manifest = json.loads((manifest_dir / name).read_text(encoding="utf-8"))
@@ -168,6 +169,7 @@ class RAGService:
         max_pitfalls: int = 10,
         delay: Optional[int] = None,
         available_fields: Optional[List[str]] = None,
+        paper_reference: Optional[str] = None,
     ) -> RAGResult:
         """
         Query knowledge base for relevant patterns and pitfalls.
@@ -217,6 +219,7 @@ class RAGService:
             category=category,
             delay=delay,
             available_fields=available_fields or [],
+            paper_reference=paper_reference,
         )
         
         logger.info(
@@ -240,6 +243,7 @@ class RAGService:
         delay: Optional[int],
         available_fields: List[str],
         dataset_id: Optional[str] = None,
+        paper_reference: Optional[str] = None,
     ) -> List[Dict]:
         """Load compatible, provenance-tracked research hypotheses."""
         manifest = _load_research_family_manifest()
@@ -257,8 +261,18 @@ class RAGService:
             normalized_category = "pv"
 
         available = {str(field_id) for field_id in available_fields}
+        requested_paper_ids = set(re.findall(
+            r"(?<!\d)\d{4}\.\d{4,5}(?!\d)", str(paper_reference or "")
+        ))
         selected = []
         for family in manifest.get("families", []):
+            if paper_reference:
+                family_refs = " ".join(str(ref) for ref in family.get("source_refs", []))
+                family_paper_ids = set(re.findall(
+                    r"(?<!\d)\d{4}\.\d{4,5}(?!\d)", family_refs
+                ))
+                if not requested_paper_ids or not (requested_paper_ids & family_paper_ids):
+                    continue
             target_datasets = family.get("target_dataset_ids") or []
             if target_datasets and dataset_id not in target_datasets:
                 continue

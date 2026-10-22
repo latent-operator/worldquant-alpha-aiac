@@ -5,6 +5,7 @@ Contains the main mining task execution logic.
 """
 
 from datetime import datetime, timedelta, timezone
+from math import ceil
 from sqlalchemy import select, update, desc
 from loguru import logger
 from celery.signals import task_failure
@@ -20,12 +21,115 @@ from backend.models import MiningTask, DatasetMetadata, Operator, DataField, Exp
 from backend.tasks import run_async
 
 
+def _slice_goal_and_prior_success(
+    checkpoint: dict, dataset_id: str, remaining_goal: int,
+) -> tuple[int, int]:
+    """Keep a run's cumulative success target stable across worker yields."""
+    prior_success = (
+        int(checkpoint.get("total_success", 0))
+        if checkpoint.get("dataset_id") == dataset_id else 0
+    )
+    return prior_success, prior_success + remaining_goal
+
+
+def _new_passes_in_slice(result: dict, prior_success: int) -> int:
+    current_success = int(result.get("total_success", 0))
+    if current_success < prior_success:
+        raise ValueError("Run success counter moved backwards across a worker yield")
+    return current_success - prior_success
+
+
 def _next_wait_minutes(kind: str, quota_attempts: int) -> int | None:
     if kind == "DAILY_QUOTA":
         return (15, 30, 60)[min(max(quota_attempts, 0), 2)]
+    if kind in {"NO_NEW_CANDIDATES", "DEDUP_UNAVAILABLE", "WQ_SIMULATION_ERROR"}:
+        return (5, 15, 30, 60)[min(max(quota_attempts, 0), 3)]
     if kind == "INVALID_CREDENTIALS":
         return None
     return 5
+
+
+def _next_wait_seconds(kind: str, attempts: int) -> int | None:
+    if kind in {"MALFORMED_HYPOTHESIS", "MALFORMED_RESPONSE"}:
+        delays = (30, 120, 300, 900, 1800, 3600)
+        return delays[min(max(attempts, 0), len(delays) - 1)]
+    if kind == "CONNECTION_ERROR":
+        delays = (30, 120, 300, 900)
+        return delays[min(max(attempts, 0), len(delays) - 1)]
+    minutes = _next_wait_minutes(kind, attempts)
+    return None if minutes is None else minutes * 60
+
+
+def _retry_poll_seconds(next_retry_at, now=None) -> int:
+    """Poll at the deadline for short waits, and at most every five minutes otherwise."""
+    if next_retry_at is None:
+        return 300
+    now = now or datetime.now(timezone.utc)
+    if next_retry_at.tzinfo is None:
+        next_retry_at = next_retry_at.replace(tzinfo=timezone.utc)
+    return max(1, min(300, ceil((next_retry_at - now).total_seconds())))
+
+
+async def _schedule_llm_wait(
+    db, task: MiningTask, run: ExperimentRun, kind: str, revision: int,
+    safe_detail: str | None = None,
+) -> dict:
+    """Release the worker and retry the same checkpoint without fake candidates."""
+    checkpoint = run.checkpoint or {}
+    quota_attempts = int(checkpoint.get("quota_attempts", 0))
+    malformed_attempts = int(checkpoint.get("malformed_hypothesis_attempts", 0))
+    malformed_response_attempts = int(checkpoint.get("malformed_response_attempts", 0))
+    recovery_wait_attempts = int(checkpoint.get("recovery_wait_attempts", 0))
+    connection_attempts = int(checkpoint.get("connection_attempts", 0))
+    if kind != "CONNECTION_ERROR":
+        connection_attempts = 0
+    if kind == "MALFORMED_HYPOTHESIS":
+        if checkpoint.get("malformed_hypothesis_iteration") != checkpoint.get("iteration"):
+            malformed_attempts = 0
+        delay_seconds = _next_wait_seconds(kind, malformed_attempts)
+        malformed_attempts += 1
+    elif kind == "MALFORMED_RESPONSE":
+        if checkpoint.get("malformed_response_iteration") != checkpoint.get("iteration"):
+            malformed_response_attempts = 0
+        delay_seconds = _next_wait_seconds(kind, malformed_response_attempts)
+        malformed_response_attempts += 1
+    elif kind in {"NO_NEW_CANDIDATES", "DEDUP_UNAVAILABLE", "WQ_SIMULATION_ERROR"}:
+        delay_seconds = _next_wait_seconds(kind, recovery_wait_attempts)
+        recovery_wait_attempts += 1
+    elif kind == "CONNECTION_ERROR":
+        delay_seconds = _next_wait_seconds(kind, connection_attempts)
+        connection_attempts += 1
+    else:
+        delay_seconds = _next_wait_seconds(kind, quota_attempts)
+    if kind == "DAILY_QUOTA":
+        quota_attempts += 1
+    run.checkpoint = {
+        **checkpoint,
+        "quota_attempts": quota_attempts,
+        "malformed_hypothesis_attempts": malformed_attempts,
+        "malformed_hypothesis_iteration": checkpoint.get("iteration"),
+        "malformed_response_attempts": malformed_response_attempts,
+        "malformed_response_iteration": checkpoint.get("iteration"),
+        "recovery_wait_attempts": recovery_wait_attempts,
+        "connection_attempts": connection_attempts,
+        "connection_error_type": safe_detail if kind == "CONNECTION_ERROR" and safe_detail in {"TIMEOUT", "CONNECT"} else None,
+        "credential_revision": revision,
+    }
+    run.status = "WAITING_LLM"
+    run.block_reason = kind
+    run.next_retry_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+        if delay_seconds is not None else None
+    )
+    task.status = "WAITING_LLM"
+    await db.commit()
+    logger.warning(
+        f"LLM wait | task={task.id} run={run.id} reason={kind} "
+        f"detail={run.checkpoint['connection_error_type'] or 'NONE'} "
+        f"next_retry_at={run.next_retry_at}"
+    )
+    return {"_retry": True, "run_id": run.id,
+            "retry_countdown": _retry_poll_seconds(run.next_retry_at)}
 
 
 def _wait_is_due(next_retry_at, saved_revision: int, current_revision: int, now=None) -> bool:
@@ -81,9 +185,18 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                 checkpoint = waiting_run.checkpoint or {}
                 credentials_changed = revision != checkpoint.get("credential_revision")
                 if not _wait_is_due(waiting_run.next_retry_at, checkpoint.get("credential_revision"), revision):
-                    return {"_retry": True, "run_id": run_id}
+                    return {"_retry": True, "run_id": run_id,
+                            "retry_countdown": _retry_poll_seconds(waiting_run.next_retry_at)}
                 if credentials_changed:
-                    waiting_run.checkpoint = {**checkpoint, "quota_attempts": 0, "credential_revision": revision}
+                    waiting_run.checkpoint = {
+                        **checkpoint, "quota_attempts": 0,
+                        "malformed_hypothesis_attempts": 0,
+                        "malformed_response_attempts": 0,
+                        "recovery_wait_attempts": 0,
+                        "connection_attempts": 0,
+                        "connection_error_type": None,
+                        "credential_revision": revision,
+                    }
                     logger.info(f"Credential revision changed; waking task={task_id} run={run_id}")
             
             # Update status to RUNNING
@@ -163,7 +276,10 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                             logger.info(f"Task {task_id} already reached goal, stopping")
                             break
                         
-                        # Run evolution loop
+                        # Run one complete round, then release the solo worker.
+                        prior_success, absolute_goal = _slice_goal_and_prior_success(
+                            run.checkpoint or {}, dataset_id, remaining_goal,
+                        )
                         try:
                             result = await mining_agent.run_evolution_loop(
                                 task=task,
@@ -171,17 +287,29 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                                 fields=fields,
                                 operators=operators,
                                 max_iterations=task.max_iterations or 10,
-                                target_alphas=remaining_goal,
+                                target_alphas=absolute_goal,
                                 num_alphas_per_round=4,
-                                run_id=run.id
+                                run_id=run.id,
+                                max_rounds_per_dispatch=1,
                             )
                             
-                            # Update progress
-                            task.progress_current += result.get("total_success", 0)
+                            # The agent returns cumulative dataset success;
+                            # only the delta belongs to this dispatch.
+                            task.progress_current += _new_passes_in_slice(result, prior_success)
                             await db.commit()
                             
                             total_alphas += len(result.get("all_alphas", []))
                             target_reached = task.progress_current >= task.daily_goal
+
+                            if result.get("yielded_for_dispatch"):
+                                await db.refresh(task)
+                                if task.status in {"PAUSED", "STOPPED"}:
+                                    return {"skipped": task.status}
+                                logger.info(
+                                    f"Continuing task={task_id} run={run.id} "
+                                    f"after completed round={result.get('iterations_completed')}"
+                                )
+                                return {"_retry": True, "run_id": run.id, "retry_countdown": 1}
 
                             if not result.get("target_reached"):
                                 incomplete_reasons.append(
@@ -214,28 +342,9 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                                 return {"skipped": task.status}
                             revision = await CredentialsService(db).get_revision()
                             await db.refresh(run)
-                            checkpoint = run.checkpoint or {}
-                            quota_attempts = int(checkpoint.get("quota_attempts", 0))
-                            delay_minutes = _next_wait_minutes(exc.kind, quota_attempts)
-                            if exc.kind == "DAILY_QUOTA":
-                                quota_attempts += 1
-                            run.checkpoint = {
-                                **checkpoint, "quota_attempts": quota_attempts,
-                                "credential_revision": revision,
-                            }
-                            run.status = "WAITING_LLM"
-                            run.block_reason = exc.kind
-                            run.next_retry_at = (
-                                datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
-                                if delay_minutes is not None else None
+                            return await _schedule_llm_wait(
+                                db, task, run, exc.kind, revision, exc.safe_detail,
                             )
-                            task.status = "WAITING_LLM"
-                            await db.commit()
-                            logger.warning(
-                                f"LLM wait | task={task_id} run={run.id} reason={exc.kind} "
-                                f"next_retry_at={run.next_retry_at}"
-                            )
-                            return {"_retry": True, "run_id": run.id}
                         except Exception as e:
                             logger.error(f"Evolution loop failed for {dataset_id}: {e}")
                             # Rollback any failed transaction before continuing
@@ -299,7 +408,8 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
     outcome = run_async(_run())
     if isinstance(outcome, dict) and outcome.get("_retry"):
         # Celery releases the worker between checks. The same run id is reused.
-        raise self.retry(countdown=300, args=(task_id, outcome["run_id"]), max_retries=None)
+        raise self.retry(countdown=outcome.get("retry_countdown", 300),
+                         args=(task_id, outcome["run_id"]), max_retries=None)
     return outcome
 
 
@@ -428,6 +538,7 @@ async def _get_or_create_run(db, task, run_id, celery_task_id):
             run.error_message = None
             run.block_reason = None
             run.next_retry_at = None
+            run.finished_at = None
             await db.commit()
     else:
         run = ExperimentRun(

@@ -34,6 +34,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import api from '../services/api'
+import { waitingStatusText } from '../utils/recoveryStatus'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -53,6 +54,7 @@ const statusColors = {
   SUCCESS: 'green',
   FAILED: 'red',
   RUNNING: 'processing',
+  WAITING_LLM: 'warning',
   SKIPPED: 'default',
 }
 
@@ -297,7 +299,7 @@ export default function TaskDetail() {
             <Title level={3} style={{ margin: 0 }}>
               {task.task_name}
             </Title>
-            <Tag color={statusColors[task.status] || 'default'}>{task.status}</Tag>
+            <Tag color={statusColors[task.status] || 'default'}>{task.status === 'WAITING_LLM' ? waitingStatusText(selectedRun?.block_reason) : task.status}</Tag>
           </Space>
         </Col>
         <Col>
@@ -312,7 +314,7 @@ export default function TaskDetail() {
                 启动
               </Button>
             )}
-            {task.status === 'RUNNING' && (
+            {['RUNNING', 'WAITING_LLM'].includes(task.status) && (
               <Button 
                 icon={<PauseCircleOutlined />}
                 loading={interveneMutation.isLoading}
@@ -331,7 +333,7 @@ export default function TaskDetail() {
                 恢复
               </Button>
             )}
-            {['RUNNING', 'PAUSED'].includes(task.status) && (
+            {['RUNNING', 'WAITING_LLM', 'PAUSED'].includes(task.status) && (
               <Button 
                 danger 
                 icon={<StopOutlined />}
@@ -409,6 +411,12 @@ export default function TaskDetail() {
                       {selectedRun?.status || '--'}
                     </Tag>
                   </Descriptions.Item>
+                  {selectedRun?.block_reason && (
+                    <Descriptions.Item label="等待原因">{waitingStatusText(selectedRun.block_reason)}</Descriptions.Item>
+                  )}
+                  {selectedRun?.next_retry_at && (
+                    <Descriptions.Item label="下次检查">{new Date(selectedRun.next_retry_at).toLocaleString()}</Descriptions.Item>
+                  )}
                   {selectedRun?.error_message && (
                     <Descriptions.Item label="错误原因">
                       <Text type="danger">{selectedRun.error_message}</Text>

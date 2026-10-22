@@ -332,7 +332,16 @@ async def node_simulate(
     
     if not valid_indices:
         logger.warning(f"[{node_name}] No valid alphas to simulate")
-        return {}
+        reason = "NO_VALID_CANDIDATES"
+        trace_update = await record_trace(
+            state, trace_service, node_name,
+            {"batch_size": 0, "validated_count": 0},
+            {"simulated_count": 0, "eligible_candidate_count": 0,
+             "validated_count": 0, "db_duplicates": 0, "reason": reason},
+            int((time.time() - start_time) * 1000), "SKIPPED", None,
+        )
+        return {"simulated_count": 0, "eligible_candidate_count": 0,
+                "simulation_skip_reason": reason, **trace_update}
     
     # DB-level deduplication check
     db_duplicates = 0
@@ -377,18 +386,32 @@ async def node_simulate(
         )
         
     except Exception as e:
-        logger.warning(f"[{node_name}] DB dedup check failed, proceeding with all: {e}")
-        indices_to_simulate = valid_indices
+        logger.warning(f"[{node_name}] DB dedup check failed; skipping simulation: {type(e).__name__}")
+        reason = "DEDUP_UNAVAILABLE"
+        trace_update = await record_trace(
+            state, trace_service, node_name,
+            {"batch_size": 0, "validated_count": len(valid_indices)},
+            {"simulated_count": 0, "eligible_candidate_count": 0,
+             "validated_count": len(valid_indices), "db_duplicates": 0, "reason": reason},
+            int((time.time() - start_time) * 1000), "SKIPPED", None,
+        )
+        return {"pending_alphas": [a for i, a in enumerate(state.pending_alphas) if i not in valid_indices],
+                "simulated_count": 0, "eligible_candidate_count": 0,
+                "simulation_skip_reason": reason, **trace_update}
     
     if not indices_to_simulate:
         logger.warning(f"[{node_name}] All expressions already in DB")
         trace_update = await record_trace(
             state, trace_service, node_name,
             {"batch_size": 0, "db_duplicates_skipped": db_duplicates},
-            {"simulated_count": 0, "db_duplicates": db_duplicates, "reason": "NO_NEW_CANDIDATES"},
+            {"simulated_count": 0, "eligible_candidate_count": 0,
+             "validated_count": len(valid_indices), "db_duplicates": db_duplicates,
+             "reason": "NO_NEW_CANDIDATES"},
             int((time.time() - start_time) * 1000), "SKIPPED", None,
         )
-        return {"pending_alphas": [a for i, a in enumerate(state.pending_alphas) if i not in valid_indices], **trace_update}
+        return {"pending_alphas": [a for i, a in enumerate(state.pending_alphas) if i not in valid_indices],
+                "simulated_count": 0, "eligible_candidate_count": 0,
+                "simulation_skip_reason": "NO_NEW_CANDIDATES", **trace_update}
     
     logger.info(f"[{node_name}] Starting batch simulation | count={len(indices_to_simulate)} region={state.region}")
     
@@ -569,6 +592,8 @@ async def node_simulate(
         {
             "success_count": success_count,
             "simulated_count": len(indices_to_simulate),
+            "eligible_candidate_count": len(indices_to_simulate),
+            "validated_count": len(valid_indices),
             "db_duplicates": db_duplicates,
             "results": [{"id": r.get("alpha_id"), "err": r.get("error")} for r in results[:20]]
         },
@@ -578,6 +603,8 @@ async def node_simulate(
     
     return {
         "pending_alphas": [a for i, a in enumerate(updated_alphas) if i not in valid_indices or i in indices_to_simulate],
+        "simulated_count": len(indices_to_simulate),
+        "eligible_candidate_count": len(indices_to_simulate),
         **trace_update
     }
 

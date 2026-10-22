@@ -179,6 +179,35 @@ class RunService(BaseService):
         ]
         normalize_round_summary_metrics(trace_steps)
         return trace_steps
+
+    async def get_run_trace_page(
+        self, run_id: int, limit: int = 50, offset: int = 0,
+        iteration: Optional[int] = None, step_type: Optional[str] = None,
+    ) -> PaginatedResult:
+        """Return a stable, bounded trace page without loading the whole run."""
+        if not await self.run_repo.get_by_id(run_id):
+            raise ValueError(f"Run {run_id} not found")
+        filters = [TraceStep.run_id == run_id]
+        if iteration is not None:
+            filters.append(TraceStep.iteration == iteration)
+        if step_type:
+            filters.append(TraceStep.step_type == step_type)
+        total = (await self.db.execute(
+            select(func.count()).select_from(TraceStep).where(*filters)
+        )).scalar_one()
+        rows = (await self.db.execute(
+            select(TraceStep).where(*filters)
+            .order_by(TraceStep.iteration, TraceStep.step_order, TraceStep.id)
+            .limit(limit).offset(offset)
+        )).scalars().all()
+        return PaginatedResult(total=total, items=[TraceStepInfo(
+            id=s.id, task_id=s.task_id, run_id=s.run_id,
+            step_type=s.step_type, step_order=s.step_order,
+            iteration=s.iteration, input_data=s.input_data or {},
+            output_data=s.output_data or {}, duration_ms=s.duration_ms,
+            status=s.status, error_message=s.error_message,
+            created_at=s.created_at,
+        ) for s in rows])
     
     # =========================================================================
     # Alpha Operations
@@ -230,7 +259,7 @@ class RunService(BaseService):
         total = total_result.scalar_one()
         
         # Apply pagination
-        query = query.order_by(Alpha.created_at.desc()).limit(limit).offset(offset)
+        query = query.order_by(Alpha.created_at.desc(), Alpha.id.desc()).limit(limit).offset(offset)
         result = await self.db.execute(query)
         alphas = result.scalars().all()
         

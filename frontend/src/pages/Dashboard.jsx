@@ -29,6 +29,7 @@ import {
   ResponsiveContainer 
 } from 'recharts'
 import api from '../services/api'
+import { waitingStatusText, waitingHealthText } from '../utils/recoveryStatus'
 
 const { Title, Text } = Typography
 
@@ -140,7 +141,7 @@ export default function Dashboard() {
                 <Space direction="vertical" style={{ width: '100%' }}>
                   <div>
                     <Tag color={tasks[0].status === 'WAITING_LLM' ? 'warning' : tasks[0].status === 'PAUSED' ? 'default' : 'processing'} icon={<ThunderboltOutlined />}>
-                      {tasks[0].status === 'WAITING_LLM' ? '等待 LLM 额度' : tasks[0].status === 'PAUSED' ? '已暂停' : '运行中'}
+                      {tasks[0].status === 'WAITING_LLM' ? waitingStatusText(tasks[0].block_reason) : tasks[0].status === 'PAUSED' ? '已暂停' : '运行中'}
                     </Tag>
                     <Text strong style={{ marginLeft: 8 }}>
                       {tasks[0].task_name}
@@ -181,7 +182,7 @@ export default function Dashboard() {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>LLM 服务</Text>
-                  <Tag color={llmWaiting ? 'warning' : llmTest?.success ? 'success' : 'default'}>{llmWaiting ? '额度待恢复' : llmTest ? (llmTest.success ? '最近测试通过' : '最近测试失败') : '尚未测试'}</Tag>
+                  <Tag color={llmWaiting ? 'warning' : llmTest?.success ? 'success' : 'default'}>{llmWaiting ? waitingHealthText(tasks.find(task => task.status === 'WAITING_LLM')?.block_reason) : llmTest ? (llmTest.success ? '最近测试通过' : '最近测试失败') : '尚未测试'}</Tag>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>数据库</Text>

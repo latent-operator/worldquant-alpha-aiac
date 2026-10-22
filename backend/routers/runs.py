@@ -12,6 +12,7 @@ from datetime import datetime
 
 from backend.database import get_db
 from backend.services.run_service import RunService
+from backend.services.credentials_service import CredentialsService
 
 router = APIRouter(
     prefix="/runs",
@@ -54,6 +55,18 @@ class ExperimentRunDetailResponse(BaseModel):
         from_attributes = True
 
 
+class RunSummaryResponse(BaseModel):
+    id: int
+    task_id: int
+    status: str
+    trigger_source: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+
+
 class TraceStepResponse(BaseModel):
     id: int
     task_id: int
@@ -93,6 +106,14 @@ class AlphaListResponse(BaseModel):
     total: int
 
 
+class TracePageResponse(BaseModel):
+    items: List[TraceStepResponse]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
 # =============================================================================
 # ENDPOINTS
 # =============================================================================
@@ -127,6 +148,25 @@ async def get_run(
     )
 
 
+@router.get("/{run_id}/summary", response_model=RunSummaryResponse)
+async def get_run_summary(
+    run_id: int,
+    service: RunService = Depends(get_run_service),
+):
+    """Run status without config, strategy, checkpoint, or Celery metadata."""
+    run = await service.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return RunSummaryResponse(
+        id=run.id, task_id=run.task_id, status=run.status,
+        trigger_source=run.trigger_source, started_at=run.started_at,
+        finished_at=run.finished_at,
+        error_message=CredentialsService.sanitize_error(run.error_message) if run.error_message else None,
+        block_reason=CredentialsService.sanitize_error(run.block_reason) if run.block_reason else None,
+        next_retry_at=run.next_retry_at,
+    )
+
+
 @router.get("/{run_id}/trace", response_model=List[TraceStepResponse])
 async def get_run_trace(
     run_id: int,
@@ -155,6 +195,27 @@ async def get_run_trace(
         )
         for s in steps
     ]
+
+
+@router.get("/{run_id}/trace-page", response_model=TracePageResponse)
+async def get_run_trace_page(
+    run_id: int,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    iteration: Optional[int] = Query(None, ge=1),
+    step_type: Optional[str] = Query(None, max_length=50),
+    service: RunService = Depends(get_run_service),
+):
+    """Read a bounded trace page; the original full trace endpoint remains available."""
+    try:
+        page = await service.get_run_trace_page(run_id, limit, offset, iteration, step_type)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return TracePageResponse(
+        items=[TraceStepResponse(**vars(s)) for s in page.items],
+        total=page.total, limit=limit, offset=offset,
+        has_more=offset + len(page.items) < page.total,
+    )
 
 
 @router.get("/{run_id}/alphas", response_model=AlphaListResponse)

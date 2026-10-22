@@ -23,6 +23,9 @@ class LLMResponse(BaseModel):
     parsed: Optional[Dict] = None
     model: str
     tokens_used: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    finish_reason: Optional[str] = None
     latency_ms: int = 0
     success: bool = True
     error: Optional[str] = None
@@ -34,6 +37,9 @@ class LLMResponse(BaseModel):
             parsed=self.parsed,
             model=self.model,
             tokens_used=self.tokens_used,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            finish_reason=self.finish_reason,
             latency_ms=self.latency_ms,
             success=self.success,
             error=self.error,
@@ -43,8 +49,9 @@ class LLMResponse(BaseModel):
 class LLMBlockedError(Exception):
     """A provider failure that must stop generation before fallback candidates."""
 
-    def __init__(self, kind: str):
+    def __init__(self, kind: str, safe_detail: Optional[str] = None):
         self.kind = kind
+        self.safe_detail = safe_detail if safe_detail in {"TIMEOUT", "CONNECT"} else None
         super().__init__(f"LLM_{kind}")
 
 
@@ -63,6 +70,14 @@ def classify_llm_error(exc: Exception) -> str:
     if status == 403:
         return "ACCESS_DENIED"
     return "PROVIDER_ERROR"
+
+
+def _safe_connection_detail(exc: Exception) -> Optional[str]:
+    if isinstance(exc, (openai.APITimeoutError, TimeoutError)):
+        return "TIMEOUT"
+    if isinstance(exc, (openai.APIConnectionError, ConnectionError)):
+        return "CONNECT"
+    return None
 
 
 class LLMService:
@@ -212,7 +227,9 @@ class LLMService:
                     if kind in {"RATE_LIMIT", "CONNECTION_ERROR"} and attempt < 2:
                         await asyncio.sleep(2 ** attempt)
                         continue
-                    raise LLMBlockedError(kind) from None
+                    raise LLMBlockedError(
+                        kind, _safe_connection_detail(exc) if kind == "CONNECTION_ERROR" else None
+                    ) from None
             
             # Defensive: handle empty/malformed responses
             choices = getattr(response, "choices", None)
@@ -230,15 +247,21 @@ class LLMService:
                 raise ValueError("No message in LLM response")
                 
             content = message.content or ""
-            if json_mode and not content.strip():
-                finish_reason = getattr(response.choices[0], "finish_reason", None)
-                reasoning_content = getattr(message, "reasoning_content", None)
-                extra = f"finish_reason={finish_reason}" if finish_reason else ""
-                if reasoning_content:
-                    extra = (extra + " | reasoning_content_present=True").strip()
-                raise ValueError(f"Empty content in LLM response ({extra})")
-            tokens_used = response.usage.total_tokens if response.usage else 0
+            usage = getattr(response, "usage", None)
+            tokens_used = getattr(usage, "total_tokens", 0) or 0
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
             latency_ms = int((time.time() - start_time) * 1000)
+            if json_mode and not content.strip():
+                reason = "TRUNCATED_JSON" if finish_reason == "length" else "EMPTY_LLM_CONTENT"
+                logger.warning(f"[LLMService] Empty JSON response | id={call_id} reason={reason} finish_reason={finish_reason}")
+                return LLMResponse(
+                    content="", model=self.model, tokens_used=tokens_used,
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                    finish_reason=finish_reason, latency_ms=latency_ms,
+                    success=False, error=reason,
+                )
             
             # Parse JSON if requested
             parsed = None
@@ -248,16 +271,23 @@ class LLMService:
                     cleaned = self._clean_json(content)
                     parsed = json.loads(cleaned)
                 except json.JSONDecodeError as e:
-                    parse_error = str(e)
-                    logger.warning(f"[LLMService] JSON parse failed | id={call_id} error={e}")
+                    parse_error = "TRUNCATED_JSON" if finish_reason == "length" else f"INVALID_JSON: {e}"
+                    logger.warning(
+                        f"[LLMService] JSON parse failed | id={call_id} "
+                        f"reason={parse_error} finish_reason={finish_reason} "
+                        f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens}"
+                    )
                     parsed = self._parse_json_lenient(content)
                     if parsed is not None:
                         parse_error = None
                         logger.info(f"[LLMService] Lenient JSON parse recovered | id={call_id}")
+                if finish_reason == "length":
+                    parse_error = "TRUNCATED_JSON"
             
             logger.info(
-                f"[LLMService] Call success | id={call_id} "
-                f"tokens={tokens_used} latency={latency_ms}ms"
+                f"[LLMService] Call complete | id={call_id} parsed={parsed is not None and finish_reason != 'length' if json_mode else 'N/A'} "
+                f"finish_reason={finish_reason} prompt_tokens={prompt_tokens} "
+                f"completion_tokens={completion_tokens} total_tokens={tokens_used} latency={latency_ms}ms"
             )
             
             return LLMResponse(
@@ -265,13 +295,19 @@ class LLMService:
                 parsed=parsed,
                 model=self.model,
                 tokens_used=tokens_used,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                finish_reason=finish_reason,
                 latency_ms=latency_ms,
-                success=(not json_mode or parsed is not None),
+                success=(not json_mode or (parsed is not None and finish_reason != "length")),
                 error=parse_error
             )
             
         except LLMBlockedError as exc:
-            logger.warning(f"[LLMService] Call blocked | id={call_id} kind={exc.kind}")
+            logger.warning(
+                f"[LLMService] Call blocked | id={call_id} kind={exc.kind} "
+                f"detail={exc.safe_detail or 'NONE'}"
+            )
             raise
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)

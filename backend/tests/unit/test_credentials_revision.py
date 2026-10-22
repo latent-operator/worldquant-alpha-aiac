@@ -13,6 +13,8 @@ from backend.services.credentials_service import (
 async def test_writes_require_explicit_credentials_secret(db_session, monkeypatch):
     monkeypatch.delenv("CREDENTIALS_SECRET", raising=False)
     monkeypatch.delenv("SECRET_KEY", raising=False)
+    from backend.config import settings
+    monkeypatch.setattr(settings, "CREDENTIALS_SECRET", "")
 
     with pytest.raises(CredentialConfigurationError):
         await CredentialsService(db_session).set_credential(

@@ -36,6 +36,38 @@ from backend.agents.prompts import (
     build_distill_prompt,
     PromptContext,
 )
+from backend.agents.prompts.hypothesis import build_compact_hypothesis_prompt
+
+
+def _usable_hypotheses(parsed: object) -> List[Dict]:
+    """Accept only complete, testable 3–5 item hypothesis responses."""
+    if not isinstance(parsed, dict):
+        return []
+    hypotheses = parsed.get("hypotheses")
+    if not isinstance(hypotheses, list) or not 3 <= len(hypotheses) <= 5:
+        return []
+    for item in hypotheses:
+        if not isinstance(item, dict):
+            return []
+        if not str(item.get("statement") or "").strip() or not str(item.get("rationale") or "").strip():
+            return []
+        fields = item.get("key_fields")
+        if not isinstance(fields, list) or not fields or not all(isinstance(field, str) and field.strip() for field in fields):
+            return []
+    return hypotheses
+
+
+def _usable_codegen_response(response: object) -> bool:
+    if not getattr(response, "success", False):
+        return False
+    parsed = getattr(response, "parsed", None)
+    if not isinstance(parsed, dict):
+        return False
+    alphas = parsed.get("alphas")
+    return isinstance(alphas, list) and bool(alphas) and all(
+        isinstance(alpha, dict) and str(alpha.get("expression") or "").strip()
+        for alpha in alphas
+    )
 
 
 # =============================================================================
@@ -86,6 +118,7 @@ async def node_rag_query(
             max_pitfalls=10,
             delay=requested_delay,
             available_fields=available_field_ids,
+            paper_reference=task_config.get("paper_reference"),
         )
         
         duration_ms = int((time.time() - start_time) * 1000)
@@ -379,6 +412,27 @@ async def node_distill_context(
     except Exception as llm_err:
         logger.error(f"[{node_name}] LLM call failed: {llm_err}")
         response = type('obj', (object,), {'success': False, 'parsed': None, 'error': str(llm_err)})()
+
+    retry_attempted = False
+    if not response.success and getattr(response, "finish_reason", None) == "length":
+        retry_attempted = True
+        compact_categories = "; ".join(
+            f"{category}: {', '.join(fields[:3])}"
+            for category, fields in list(categories.items())[:8]
+        )
+        compact_prompt = (
+            f"Dataset {state.dataset_id}; category {state.dataset_category}. "
+            f"Available field categories: {compact_categories}. "
+            "Return only JSON with selected_concepts (3-5 exact category names) "
+            "and reasoning (one short sentence)."
+        )
+        response = await llm_service.call(
+            system_prompt=DISTILL_SYSTEM,
+            user_prompt=compact_prompt,
+            temperature=0.3,
+            json_mode=True,
+            max_tokens=1536,
+        )
     
     duration_ms = int((time.time() - start_time) * 1000)
     
@@ -462,6 +516,8 @@ async def node_distill_context(
             "selected_concepts": selected_concepts,
             "focused_count": len(focused_fields),
             "reasoning": reasoning,
+            "retry_attempted": retry_attempted,
+            "finish_reason": getattr(response, "finish_reason", None),
             "mechanism_groups": {
                 mechanism: [_field_key(field) for field in fields[:8]]
                 for mechanism, fields in mechanism_groups.items()
@@ -542,6 +598,7 @@ async def node_hypothesis(
         prompt_context,
         experiment_trace,
         family_plans=state.family_plans,
+        target_hypothesis=str(task_config.get("target_hypothesis") or ""),
     )
     
     # Adjust temperature based on exploration weight
@@ -553,20 +610,52 @@ async def node_hypothesis(
         user_prompt=prompt,
         temperature=temperature,
         json_mode=True,
-        max_tokens=2048
+        max_tokens=4096
     )
+
+    retry_attempted = False
+    hypotheses = _usable_hypotheses(response.parsed) if response.success else []
+    if not hypotheses:
+        retry_attempted = True
+        compact_prompt = build_compact_hypothesis_prompt(
+            prompt_context,
+            target_hypothesis=str(task_config.get("target_hypothesis") or ""),
+            experiment_trace=experiment_trace,
+        )
+        response = await llm_service.call(
+            system_prompt=HYPOTHESIS_SYSTEM,
+            user_prompt=compact_prompt,
+            temperature=min(temperature, 0.4),
+            json_mode=True,
+            max_tokens=4096,
+        )
+        hypotheses = _usable_hypotheses(response.parsed) if response.success else []
+        if not hypotheses:
+            await record_trace(
+                state, trace_service, node_name,
+                {"dataset_id": state.dataset_id, "mode": "hypothesis_driven"},
+                {"hypotheses_count": 0, "retry_attempted": True,
+                 "finish_reason": getattr(response, "finish_reason", None),
+                 "prompt_tokens": getattr(response, "prompt_tokens", 0),
+                 "completion_tokens": getattr(response, "completion_tokens", 0)},
+                int((time.time() - start_time) * 1000),
+                "FAILED", "MALFORMED_HYPOTHESIS",
+            )
+            raise LLMBlockedError("MALFORMED_HYPOTHESIS")
     
     duration_ms = int((time.time() - start_time) * 1000)
     
-    hypotheses = []
     knowledge_transfer = {}
     analysis = {}
     
     if response.success and response.parsed:
         parsed = response.parsed
-        hypotheses = parsed.get("hypotheses", [])
         knowledge_transfer = parsed.get("knowledge_transfer", {})
+        if not isinstance(knowledge_transfer, dict):
+            knowledge_transfer = {}
         analysis = parsed.get("analysis", {})
+        if not isinstance(analysis, dict):
+            analysis = {}
         
         # Log extracted knowledge for future reference
         if knowledge_transfer:
@@ -576,18 +665,6 @@ async def node_hypothesis(
                 for rule in rules[:3]:
                     logger.debug(f"[{node_name}] Rule: {rule}")
 
-    if not hypotheses:
-        fallback_fields = target_fields[:3] or state.fields[:3]
-        hypotheses = [
-            {
-                "statement": f"{f.get('id', f.get('name', 'field'))} may contain cross-sectional predictive signal.",
-                "rationale": f"Use {f.get('id', f.get('name', 'field'))} with ranking and time-series smoothing as a fallback hypothesis.",
-                "key_fields": [f.get("id", f.get("name", ""))],
-            }
-            for f in fallback_fields
-        ]
-        analysis = {**analysis, "fallback_used": True}
-    
     logger.info(f"[{node_name}] Complete | hypotheses={len(hypotheses)}")
     
     trace_update = await record_trace(
@@ -602,7 +679,11 @@ async def node_hypothesis(
             "hypotheses_count": len(hypotheses),
             "hypotheses": hypotheses[:3],
             "knowledge_transfer": knowledge_transfer,
-            "analysis": analysis
+            "analysis": analysis,
+            "retry_attempted": retry_attempted,
+            "finish_reason": getattr(response, "finish_reason", None),
+            "prompt_tokens": getattr(response, "prompt_tokens", 0),
+            "completion_tokens": getattr(response, "completion_tokens", 0),
         },
         duration_ms,
         "SUCCESS" if response.success else "FAILED",
@@ -1386,7 +1467,12 @@ def _augment_with_template_candidates(
         template_candidates = strengthening_candidates + template_candidates
     if research_seed_candidates:
         template_candidates = research_seed_candidates + template_candidates
-    template_quota = int(task_config.get("template_candidate_quota", pool_size))
+    paper_constrained = bool(task_config.get("paper_reference") and task_config.get("research_only_fields"))
+    if paper_constrained and "template_candidate_quota" not in task_config:
+        # Curated paper seeds are relevant; generic fillers obscure whether
+        # the model found a new expression within the stated research idea.
+        template_candidates = research_seed_candidates
+    template_quota = int(task_config.get("template_candidate_quota", len(template_candidates) if paper_constrained else pool_size))
 
     if deterministic_first:
         augmented = []
@@ -1412,13 +1498,15 @@ def _augment_with_template_candidates(
         if alpha.expression
     } | attempted_expressions
     augmented = list(pending_alphas)
+    templates_added = 0
     for candidate in template_candidates:
-        if len(augmented) >= pool_size:
+        if len(augmented) >= pool_size or templates_added >= template_quota:
             break
         if candidate.expression in existing:
             continue
         augmented.append(candidate)
         existing.add(candidate.expression)
+        templates_added += 1
     return augmented
 
 
@@ -1560,6 +1648,32 @@ async def node_code_gen(
         f"temp={temperature:.2f} explore={exploration_weight:.2f} "
         f"feedback_len={len(experiment_feedback)}"
     )
+
+    research_only_fields = {
+        str(field_id) for field_id in (task_config.get("research_only_fields") or [])
+        if str(field_id).strip()
+    }
+    required_field = str(task_config.get("research_required_field") or "")
+    if research_only_fields:
+        # Distillation may focus on a subset that omits the required field.
+        # Show the full allowed set to the generator instead.
+        prompt_fields = [
+            field for field in state.fields
+            if _field_key(field) in research_only_fields
+        ]
+        known_ids = {_field_key(field) for field in prompt_fields}
+        preferred_fields = [
+            field_id for field_id in preferred_fields if field_id in known_ids
+        ]
+        if required_field and required_field in known_ids:
+            preferred_fields = [required_field] + [
+                field_id for field_id in preferred_fields if field_id != required_field
+            ]
+    else:
+        prompt_fields = (
+            _prefer_numeric_fields(state.focused_fields)
+            if state.focused_fields else _prefer_numeric_fields(state.fields)
+        )[:30] or (state.focused_fields if state.focused_fields else state.fields[:30])
     
     # Build structured prompt context
     prompt_context = PromptContext(
@@ -1568,8 +1682,7 @@ async def node_code_gen(
         dataset_category=state.dataset_category or "",
         region=state.region,
         universe=state.universe,
-        fields=(_prefer_numeric_fields(state.focused_fields) if state.focused_fields else _prefer_numeric_fields(state.fields))[:30]
-        or (state.focused_fields if state.focused_fields else state.fields[:30]),
+        fields=prompt_fields,
         operators=state.operators[:50],
         success_patterns=state.patterns[:5],
         failure_pitfalls=state.pitfalls[:5],
@@ -1596,6 +1709,22 @@ async def node_code_gen(
         experiment_feedback=experiment_feedback,
         family_plans=state.family_plans,
     )
+    if research_only_fields:
+        prompt += (
+            "\n## Mandatory research field boundary\n"
+            f"Use only these data fields: {', '.join(sorted(research_only_fields))}.\n"
+            + (f"Every expression must include {required_field}.\n" if required_field else "")
+            + "Do not invent field IDs or use other dataset fields.\n"
+        )
+        recent_attempts = list(dict.fromkeys(
+            str(expression).strip()
+            for expression in (task_config.get("attempted_expressions") or [])
+            if str(expression).strip()
+        ))[:12]
+        if recent_attempts:
+            prompt += "Avoid repeating these tested expressions:\n" + "\n".join(
+                f"- {expression}" for expression in recent_attempts
+            )
     
     try:
         response = await llm_service.call(
@@ -1603,8 +1732,46 @@ async def node_code_gen(
             user_prompt=prompt,
             temperature=temperature,
             json_mode=True,
-            max_tokens=2048
+            max_tokens=4096
         )
+        if not _usable_codegen_response(response):
+            logger.warning(f"[{node_name}] Invalid LLM JSON; retrying generation once")
+            compact_fields = [
+                f"{_field_key(field)} ({str(field.get('type') or field.get('field_type') or 'unknown')})"
+                for field in prompt_fields[:20]
+            ]
+            compact_ops = [
+                str(op.get("name") if isinstance(op, dict) else op)
+                for op in state.operators[:30]
+            ]
+            compact_attempts = list(dict.fromkeys(
+                str(expression).strip()
+                for expression in (task_config.get("attempted_expressions") or [])
+                if str(expression).strip()
+            ))[:8]
+            compact_prompt = (
+                f"Dataset: {state.dataset_id}; region: {state.region}; universe: {state.universe}.\n"
+                f"Paper hypothesis: {str(task_config.get('target_hypothesis') or target_hypothesis or '')[:600]}\n"
+                f"Allowed fields: {', '.join(compact_fields)}.\n"
+                f"Allowed operators: {', '.join(compact_ops)}.\n"
+                f"Use only these research fields: {', '.join(sorted(research_only_fields)) if research_only_fields else 'the listed dataset fields'}.\n"
+                + (f"Every expression must include {required_field}.\n" if required_field else "")
+                + ("Avoid these prior expressions: " + "; ".join(compact_attempts) + ".\n" if compact_attempts else "")
+                + "Return only compact valid JSON with exactly 2 novel alphas: "
+                '{"alphas":[{"expression":"...","hypothesis_tested":"...","explanation":"...","fields_used":["..."]}]}. '
+                "VECTOR fields require a valid vec_* reduction before scalar operators."
+            )
+            response = await llm_service.call(
+                system_prompt=ALPHA_GENERATION_SYSTEM,
+                user_prompt=compact_prompt,
+                temperature=min(temperature, 0.4),
+                json_mode=True,
+                max_tokens=2048,
+            )
+        if not _usable_codegen_response(response):
+            # Retry this round after a cool-down; a malformed response is not
+            # evidence that the idea space has run out of new candidates.
+            raise LLMBlockedError("MALFORMED_RESPONSE")
     except LLMBlockedError:
         raise
     except Exception as llm_err:
@@ -1617,10 +1784,16 @@ async def node_code_gen(
     pending_alphas = []
     implementation_notes = ""
     alternatives_considered = []
+    raw_llm_count = 0
+    new_llm_count = 0
+    research_rejected_count = 0
     
     if response.success and response.parsed and isinstance(response.parsed, dict):
         parsed = response.parsed
         raw_alphas = parsed.get("alphas", []) or []
+        if not isinstance(raw_alphas, list):
+            raise LLMBlockedError("MALFORMED_RESPONSE")
+        raw_llm_count = len(raw_alphas)
         implementation_notes = parsed.get("implementation_notes", "")
         alternatives_considered = parsed.get("alternatives_considered", [])
         attempted_expressions = {
@@ -1630,6 +1803,8 @@ async def node_code_gen(
         seen_expressions = set()
         
         for alpha_data in raw_alphas:
+            if not isinstance(alpha_data, dict):
+                continue
             # Handle both old format (hypothesis) and new format (hypothesis_tested)
             hypothesis_text = alpha_data.get("hypothesis_tested", alpha_data.get("hypothesis", ""))
             
@@ -1660,9 +1835,12 @@ async def node_code_gen(
             if expression and expression not in attempted_expressions and expression not in seen_expressions:
                 pending_alphas.append(candidate)
                 seen_expressions.add(expression)
+        new_llm_count = len(pending_alphas)
 
     template_source_fields = (
-        _prefer_numeric_fields(state.focused_fields)
+        _prefer_numeric_fields(prompt_fields)
+        if research_only_fields
+        else _prefer_numeric_fields(state.focused_fields)
         if state.focused_fields
         else _prefer_numeric_fields(state.fields)
     )
@@ -1675,15 +1853,12 @@ async def node_code_gen(
         target_count=state.num_alphas_target,
         research_fields=state.fields,
     )
-    research_only_fields = {
-        str(field_id) for field_id in (task_config.get("research_only_fields") or [])
-        if str(field_id).strip()
-    }
+    before_research_filter = len(pending_alphas)
     if research_only_fields:
         known_fields = {
-            str(field.get("id") or field.get("name") or "")
-            for field in state.fields if isinstance(field, dict)
-        }
+            str(field_id) for field_id in (task_config.get("research_known_fields") or [])
+            if str(field_id).strip()
+        } or {_field_key(field) for field in state.fields if isinstance(field, dict)}
         required_field = str(task_config.get("research_required_field") or "")
         filtered = []
         for alpha in pending_alphas:
@@ -1697,7 +1872,8 @@ async def node_code_gen(
             ):
                 filtered.append(alpha)
         pending_alphas = filtered
-    template_added = max(0, len(pending_alphas) - before_template_count)
+    research_rejected_count = before_research_filter - len(pending_alphas)
+    template_added = max(0, before_research_filter - before_template_count)
     if template_added:
         logger.info(f"[{node_name}] Added deterministic template candidates | count={template_added}")
     
@@ -1729,6 +1905,9 @@ async def node_code_gen(
         },
         {
             "alphas_generated": len(pending_alphas),
+            "raw_llm_alphas": raw_llm_count,
+            "new_llm_alphas": new_llm_count,
+            "research_rejected": research_rejected_count,
             "expressions": [a.expression[:200] for a in pending_alphas],
             "implementation_notes": implementation_notes,
             "alternatives_count": len(alternatives_considered),

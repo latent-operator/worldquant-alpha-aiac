@@ -60,7 +60,8 @@ Selection should be based on evidence, not assumptions."""
 def build_hypothesis_prompt(
     ctx: PromptContext,
     experiment_trace: Optional[List[Dict]] = None,
-    family_plans: Optional[List[Dict]] = None
+    family_plans: Optional[List[Dict]] = None,
+    target_hypothesis: str = "",
 ) -> str:
     """
     Build prompt for hypothesis generation.
@@ -124,6 +125,7 @@ The balance depends on current progress:
 **Category**: {ctx.dataset_category or 'General'}
 **Description**: {ctx.dataset_description or 'Not provided'}
 **Region**: {ctx.region} | **Universe**: {ctx.universe}
+**Current research idea**: {target_hypothesis or 'Explore this dataset empirically'}
 
 ## Available Data Fields (Sample)
 
@@ -180,6 +182,34 @@ Generate 3-5 investment hypotheses for this dataset.
   }}
 }}
 ```"""
+
+
+def build_compact_hypothesis_prompt(
+    ctx: PromptContext,
+    target_hypothesis: str = "",
+    experiment_trace: Optional[List[Dict]] = None,
+) -> str:
+    """Small, paper-aware retry prompt when the full JSON response was unusable."""
+    fields = ", ".join(
+        f"{field.get('id', field.get('name', 'unknown'))} ({field.get('type', 'unknown')})"
+        for field in ctx.fields[:10]
+    )
+    history = []
+    for entry in (experiment_trace or [])[-2:]:
+        exp = entry.get("experiment", {})
+        history.append(
+            f"{str(exp.get('expression', 'N/A'))[:80]}: "
+            f"Sharpe {exp.get('sharpe', 'N/A')}, Fitness {exp.get('fitness', 'N/A')}"
+        )
+    history_text = "; ".join(history) or "No recent result"
+    return f"""Dataset: {ctx.dataset_id} ({ctx.dataset_category}); {ctx.region}/{ctx.universe}.
+Research idea: {target_hypothesis[:1200] or 'Explore this dataset empirically'}.
+Exact available fields: {fields}.
+Recent experiments: {history_text}.
+Return exactly three distinct, testable hypotheses tied to the research idea and available fields.
+Keep each statement and rationale to one sentence. Return only this compact JSON object:
+{{"hypotheses":[{{"statement":"...","rationale":"...","key_fields":["exact_field_id"],"suggested_approach":"..."}}]}}
+Do not add analysis or knowledge-transfer sections."""
 
 
 def build_distill_prompt(ctx: PromptContext, field_categories: Dict[str, List[str]]) -> str:

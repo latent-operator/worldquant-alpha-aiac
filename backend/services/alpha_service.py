@@ -60,6 +60,7 @@ class AlphaDetail:
     id: int
     alpha_id: Optional[str]
     task_id: Optional[int]
+    run_id: Optional[int]
     expression: str
     hypothesis: Optional[str]
     logic_explanation: Optional[str]
@@ -231,6 +232,7 @@ class AlphaService(BaseService):
             id=alpha.id,
             alpha_id=alpha.alpha_id,
             task_id=alpha.task_id,
+            run_id=alpha.run_id,
             expression=alpha.expression,
             hypothesis=alpha.hypothesis,
             logic_explanation=alpha.logic_explanation,

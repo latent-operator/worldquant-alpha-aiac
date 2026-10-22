@@ -154,12 +154,13 @@ export default function TaskManagement() {
         const colors = {
           PENDING: 'default',
           RUNNING: 'processing',
+          WAITING_LLM: 'warning',
           PAUSED: 'warning',
           COMPLETED: 'success',
           FAILED: 'error',
           STOPPED: 'default',
         }
-        return <Tag color={colors[status] || 'default'}>{status}</Tag>
+        return <Tag color={colors[status] || 'default'}>{status === 'WAITING_LLM' ? '等待恢复' : status}</Tag>
       },
     },
     {
@@ -193,7 +194,7 @@ export default function TaskManagement() {
               启动
             </Button>
           )}
-          {record.status === 'RUNNING' && (
+          {['RUNNING', 'WAITING_LLM'].includes(record.status) && (
             <Button 
               size="small" 
               icon={<PauseCircleOutlined />}
