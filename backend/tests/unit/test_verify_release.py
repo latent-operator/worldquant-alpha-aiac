@@ -55,3 +55,12 @@ def test_release_gate_accepts_reviewed_dataset_list_without_rotation_attestation
         return json.dumps(ci)
     monkeypatch.setattr(verify_release, "_output", fake_output)
     assert verify_release.verify(commit, 123)["commit"] == commit
+
+
+def test_release_commands_decode_github_output_as_utf8(monkeypatch):
+    def fake_run(args, **kwargs):
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        return type("Result", (), {"returncode": 0, "stdout": "evidence"})()
+    monkeypatch.setattr(verify_release.subprocess, "run", fake_run)
+    assert verify_release._output(["gh", "api", "example"]) == "evidence"
