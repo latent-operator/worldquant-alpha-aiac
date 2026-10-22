@@ -33,7 +33,10 @@ def validate_legacy_dataset_keys_blob(blob_id: str) -> None:
 
 
 def _output(args: list[str]) -> str:
-    result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        args, cwd=ROOT, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
     if result.returncode:
         raise ValueError(f"Release check command failed: {args[0]}")
     return result.stdout.strip()
