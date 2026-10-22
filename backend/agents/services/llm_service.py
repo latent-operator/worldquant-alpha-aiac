@@ -7,12 +7,10 @@ High cohesion: All LLM-related logic in one place.
 
 import asyncio
 import json
-import os
 import time
 from typing import Dict, List, Optional, Any, Type, Tuple
 from pydantic import BaseModel
 import openai
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from loguru import logger
 
 from backend.config import settings
@@ -25,6 +23,9 @@ class LLMResponse(BaseModel):
     parsed: Optional[Dict] = None
     model: str
     tokens_used: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    finish_reason: Optional[str] = None
     latency_ms: int = 0
     success: bool = True
     error: Optional[str] = None
@@ -36,10 +37,47 @@ class LLMResponse(BaseModel):
             parsed=self.parsed,
             model=self.model,
             tokens_used=self.tokens_used,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            finish_reason=self.finish_reason,
             latency_ms=self.latency_ms,
             success=self.success,
             error=self.error,
         )
+
+
+class LLMBlockedError(Exception):
+    """A provider failure that must stop generation before fallback candidates."""
+
+    def __init__(self, kind: str, safe_detail: Optional[str] = None):
+        self.kind = kind
+        self.safe_detail = safe_detail if safe_detail in {"TIMEOUT", "CONNECT"} else None
+        super().__init__(f"LLM_{kind}")
+
+
+def classify_llm_error(exc: Exception) -> str:
+    """Return a safe category; never persist provider response bodies or keys."""
+    status = getattr(exc, "status_code", None)
+    message = str(exc).lower()
+    if status == 401 or "invalid api key" in message:
+        return "INVALID_CREDENTIALS"
+    if status == 403 and any(word in message for word in ("daily usage limit", "quota", "usage limit", "insufficient")):
+        return "DAILY_QUOTA"
+    if status == 429 or isinstance(exc, openai.RateLimitError):
+        return "RATE_LIMIT"
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError, TimeoutError, ConnectionError)):
+        return "CONNECTION_ERROR"
+    if status == 403:
+        return "ACCESS_DENIED"
+    return "PROVIDER_ERROR"
+
+
+def _safe_connection_detail(exc: Exception) -> Optional[str]:
+    if isinstance(exc, (openai.APITimeoutError, TimeoutError)):
+        return "TIMEOUT"
+    if isinstance(exc, (openai.APIConnectionError, ConnectionError)):
+        return "CONNECT"
+    return None
 
 
 class LLMService:
@@ -69,9 +107,12 @@ class LLMService:
 
         self._credentials_lock = asyncio.Lock()
         self._credentials_loaded = False
+        self._credentials_revision = -1
         
         self.client = openai.AsyncOpenAI(
-            api_key=self.api_key,
+            # Delay actual credential availability to _ensure_credentials_loaded;
+            # this placeholder is never sent when the credential is absent.
+            api_key=self.api_key or "not-configured",
             base_url=self.base_url,
             timeout=getattr(settings, "LLM_TIMEOUT_SECONDS", 60),
             max_retries=0,
@@ -80,63 +121,52 @@ class LLMService:
         logger.info(f"[LLMService] Initialized | model={self.model} base_url={self.base_url}")
 
     async def _ensure_credentials_loaded(self):
-        if self._credentials_loaded:
-            return
-
-        def usable_env_value(value: Optional[str]) -> Optional[str]:
-            if not value:
-                return None
-            stripped = value.strip()
-            lowered = stripped.lower()
-            placeholder_tokens = ("xxxx", "your_", "example", "placeholder")
-            if any(token in lowered for token in placeholder_tokens):
-                return None
-            return stripped
-
         async with self._credentials_lock:
-            if self._credentials_loaded:
-                return
-
             try:
                 from backend.database import AsyncSessionLocal
                 from backend.services.credentials_service import CredentialsService, CredentialKey
 
-                env_api_key = usable_env_value(os.getenv("OPENAI_API_KEY"))
-                env_base_url = usable_env_value(os.getenv("OPENAI_BASE_URL"))
-                env_model = usable_env_value(os.getenv("OPENAI_MODEL"))
-
                 async with AsyncSessionLocal() as db:
                     service = CredentialsService(db)
-                    db_api_key = None if env_api_key else await service.get_credential(CredentialKey.OPENAI_API_KEY)
-                    db_base_url = None if env_base_url else await service.get_credential(CredentialKey.OPENAI_BASE_URL)
-                    db_model = None if env_model else await service.get_credential(CredentialKey.OPENAI_MODEL)
+                    revision = await service.get_revision()
+                    if self._credentials_loaded and revision == self._credentials_revision:
+                        return
+                    api_key = await service.get_credential(CredentialKey.OPENAI_API_KEY) or settings.OPENAI_API_KEY
+                    base_url = await service.get_credential(CredentialKey.OPENAI_BASE_URL) or settings.OPENAI_BASE_URL
+                    model = await service.get_credential(CredentialKey.OPENAI_MODEL) or getattr(settings, "OPENAI_MODEL", "deepseek-chat")
 
-                if env_api_key or db_api_key:
-                    self.api_key = env_api_key or db_api_key
-                if env_base_url or db_base_url:
-                    self.base_url = env_base_url or db_base_url
-                if env_model or db_model:
-                    self.model = env_model or db_model
-
-                self.client = openai.AsyncOpenAI(
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    timeout=getattr(settings, "LLM_TIMEOUT_SECONDS", 60),
-                    max_retries=0,
-                )
+                changed = (api_key, base_url, model) != (self.api_key, self.base_url, self.model)
+                self.api_key, self.base_url, self.model = api_key, base_url, model
+                if (changed or not self._credentials_loaded) and self.api_key:
+                    old_client = self.client
+                    self.client = openai.AsyncOpenAI(
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                        timeout=getattr(settings, "LLM_TIMEOUT_SECONDS", 60),
+                        max_retries=0,
+                    )
+                    await old_client.close()
+                self._credentials_revision = revision
             except Exception as e:
-                logger.warning(f"[LLMService] Failed to load DB credentials, using settings/env | error={e}")
+                logger.warning(f"[LLMService] Credential refresh failed ({type(e).__name__})")
             finally:
                 self._credentials_loaded = True
 
     def invalidate_credentials_cache(self):
         self._credentials_loaded = False
+
+    async def test_connection(self) -> Dict[str, Any]:
+        """Check provider authentication via the models endpoint; does not run generation."""
+        await self._ensure_credentials_loaded()
+        if not self.api_key:
+            return {"success": False, "error": "LLM API credentials are not configured"}
+        try:
+            await asyncio.wait_for(self.client.models.list(), timeout=15)
+            return {"success": True, "message": "LLM API connection successful"}
+        except Exception as exc:
+            from backend.services.credentials_service import CredentialsService
+            return {"success": False, "error": CredentialsService.sanitize_error(exc, [self.api_key])}
     
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((openai.APIConnectionError, openai.RateLimitError))
-    )
     async def call(
         self,
         system_prompt: str,
@@ -188,7 +218,18 @@ class LLMService:
             if disable_thinking:
                 request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
-            response = await self.client.chat.completions.create(**request_kwargs)
+            for attempt in range(3):
+                try:
+                    response = await self.client.chat.completions.create(**request_kwargs)
+                    break
+                except Exception as exc:
+                    kind = classify_llm_error(exc)
+                    if kind in {"RATE_LIMIT", "CONNECTION_ERROR"} and attempt < 2:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    raise LLMBlockedError(
+                        kind, _safe_connection_detail(exc) if kind == "CONNECTION_ERROR" else None
+                    ) from None
             
             # Defensive: handle empty/malformed responses
             choices = getattr(response, "choices", None)
@@ -206,15 +247,21 @@ class LLMService:
                 raise ValueError("No message in LLM response")
                 
             content = message.content or ""
-            if json_mode and not content.strip():
-                finish_reason = getattr(response.choices[0], "finish_reason", None)
-                reasoning_content = getattr(message, "reasoning_content", None)
-                extra = f"finish_reason={finish_reason}" if finish_reason else ""
-                if reasoning_content:
-                    extra = (extra + " | reasoning_content_present=True").strip()
-                raise ValueError(f"Empty content in LLM response ({extra})")
-            tokens_used = response.usage.total_tokens if response.usage else 0
+            usage = getattr(response, "usage", None)
+            tokens_used = getattr(usage, "total_tokens", 0) or 0
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
             latency_ms = int((time.time() - start_time) * 1000)
+            if json_mode and not content.strip():
+                reason = "TRUNCATED_JSON" if finish_reason == "length" else "EMPTY_LLM_CONTENT"
+                logger.warning(f"[LLMService] Empty JSON response | id={call_id} reason={reason} finish_reason={finish_reason}")
+                return LLMResponse(
+                    content="", model=self.model, tokens_used=tokens_used,
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                    finish_reason=finish_reason, latency_ms=latency_ms,
+                    success=False, error=reason,
+                )
             
             # Parse JSON if requested
             parsed = None
@@ -224,16 +271,23 @@ class LLMService:
                     cleaned = self._clean_json(content)
                     parsed = json.loads(cleaned)
                 except json.JSONDecodeError as e:
-                    parse_error = str(e)
-                    logger.warning(f"[LLMService] JSON parse failed | id={call_id} error={e}")
+                    parse_error = "TRUNCATED_JSON" if finish_reason == "length" else f"INVALID_JSON: {e}"
+                    logger.warning(
+                        f"[LLMService] JSON parse failed | id={call_id} "
+                        f"reason={parse_error} finish_reason={finish_reason} "
+                        f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens}"
+                    )
                     parsed = self._parse_json_lenient(content)
                     if parsed is not None:
                         parse_error = None
                         logger.info(f"[LLMService] Lenient JSON parse recovered | id={call_id}")
+                if finish_reason == "length":
+                    parse_error = "TRUNCATED_JSON"
             
             logger.info(
-                f"[LLMService] Call success | id={call_id} "
-                f"tokens={tokens_used} latency={latency_ms}ms"
+                f"[LLMService] Call complete | id={call_id} parsed={parsed is not None and finish_reason != 'length' if json_mode else 'N/A'} "
+                f"finish_reason={finish_reason} prompt_tokens={prompt_tokens} "
+                f"completion_tokens={completion_tokens} total_tokens={tokens_used} latency={latency_ms}ms"
             )
             
             return LLMResponse(
@@ -241,21 +295,32 @@ class LLMService:
                 parsed=parsed,
                 model=self.model,
                 tokens_used=tokens_used,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                finish_reason=finish_reason,
                 latency_ms=latency_ms,
-                success=(not json_mode or parsed is not None),
+                success=(not json_mode or (parsed is not None and finish_reason != "length")),
                 error=parse_error
             )
             
+        except LLMBlockedError as exc:
+            logger.warning(
+                f"[LLMService] Call blocked | id={call_id} kind={exc.kind} "
+                f"detail={exc.safe_detail or 'NONE'}"
+            )
+            raise
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"[LLMService] Call failed | id={call_id} error={e}")
+            from backend.services.credentials_service import CredentialsService
+            safe_error = CredentialsService.sanitize_error(e, [self.api_key, self.base_url])
+            logger.error(f"[LLMService] Call failed | id={call_id} error={safe_error}")
             
             return LLMResponse(
                 content="",
                 model=self.model,
                 latency_ms=latency_ms,
                 success=False,
-                error=str(e)
+                error=safe_error
             )
     
     async def call_with_schema(

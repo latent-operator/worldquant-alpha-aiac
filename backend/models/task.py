@@ -68,6 +68,9 @@ class ExperimentRun(SQLAlchemyBase):
     prompt_version = Column(String(100))
     thresholds_version = Column(String(100))
     strategy_snapshot = Column(JSONB, default={})
+    checkpoint = Column(JSONB, default={})
+    block_reason = Column(String(100), nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True)
 
     started_at = Column(DateTime, server_default=func.now())
     finished_at = Column(DateTime)

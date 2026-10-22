@@ -1,9 +1,6 @@
 from typing import List, Dict, Optional
-import os
-import json
 import logging
 from pydantic import BaseModel, Field
-from openai import AsyncOpenAI
 from backend.config import settings
 
 logger = logging.getLogger("agent_hub")
@@ -25,10 +22,6 @@ You must strictly follow the syntax rules and output JSON only."""
 
 class AgentHub:
     def __init__(self):
-        self.client = AsyncOpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL
-        )
         self.model = settings.OPENAI_MODEL
 
     async def generate_alphas(self, 
@@ -66,26 +59,21 @@ class AgentHub:
         """
         
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.7
+            from backend.agents.services.llm_service import get_llm_service
+
+            response = await get_llm_service().call(
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                temperature=0.7,
+                json_mode=True,
             )
-            
-            content = response.choices[0].message.content
-            # Basic cleaning
-            if "```json" in content:
-                content = content.replace("```json", "").replace("```", "")
-                
-            data = json.loads(content)
-            return data.get("alphas", [])
-            
+            if not response.success or not response.parsed:
+                logger.warning("LLM generation failed")
+                return []
+            return response.parsed.get("alphas", [])
         except Exception as e:
-            logger.error(f"LLM Generation failed: {e}")
+            from backend.services.credentials_service import CredentialsService
+            logger.error(f"LLM Generation failed: {CredentialsService.sanitize_error(e)}")
             return []
 
 agent_hub = AgentHub()

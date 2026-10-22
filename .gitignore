@@ -1,8 +1,11 @@
 *.pyc
 .env
+.env.*
+!.env.example
 __pycache__
 frontend/node_modules
 venv
+.venv/
 *.log
 *.log.*
 logs/
@@ -15,3 +18,10 @@ logs/
 .cursorignore
 .playwright-mcp/
 backend/alembic/versions/__pycache__/
+keys.txt
+compose.local.yaml
+work/
+frontend/dist/
+parsetab.py
+*.pem
+*.key

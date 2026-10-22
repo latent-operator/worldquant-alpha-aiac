@@ -11,6 +11,9 @@ Features:
 
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+import json
+from pathlib import Path
+from functools import lru_cache
 import re
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, desc
@@ -61,6 +64,28 @@ def infer_dataset_category(dataset_id: str) -> str:
     return "other"
 
 
+@lru_cache(maxsize=1)
+def _load_research_family_manifest() -> Dict:
+    """Read curated, unvalidated research families once per worker process."""
+    manifest_dir = (
+        Path(__file__).resolve().parents[3]
+        / "data"
+        / "research_migrations"
+    )
+    families = []
+    for name in (
+        "wq-local-family-plans-2026-10-17.json",
+        "arxiv-news17-family-plans-2026-10-19.json",
+        "arxiv-2512-19484-news17-family-plan-2026-10-21.json",
+    ):
+        try:
+            manifest = json.loads((manifest_dir / name).read_text(encoding="utf-8"))
+            families.extend(manifest.get("families", []))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(f"[RAGService] Research-family manifest {name} unavailable: {exc}")
+    return {"families": families}
+
+
 class RAGResult:
     """RAG query result container with enhanced metadata."""
     
@@ -70,13 +95,15 @@ class RAGResult:
         pitfalls: List[Dict] = None,
         dataset_info: Optional[Dict] = None,
         category: str = "other",
-        region: str = None
+        region: str = None,
+        family_plans: Optional[List[Dict]] = None,
     ):
         self.patterns = patterns or []
         self.pitfalls = pitfalls or []
         self.dataset_info = dataset_info
         self.category = category
         self.region = region
+        self.family_plans = family_plans or []
     
     def to_dict(self) -> Dict:
         return {
@@ -84,7 +111,8 @@ class RAGResult:
             "pitfalls": self.pitfalls,
             "dataset_info": self.dataset_info,
             "category": self.category,
-            "region": self.region
+            "region": self.region,
+            "family_plans": self.family_plans,
         }
     
     def get_few_shot_text(self) -> str:
@@ -138,7 +166,10 @@ class RAGService:
         dataset_id: str = None,
         region: str = None,
         max_patterns: int = 5,
-        max_pitfalls: int = 10
+        max_pitfalls: int = 10,
+        delay: Optional[int] = None,
+        available_fields: Optional[List[str]] = None,
+        paper_reference: Optional[str] = None,
     ) -> RAGResult:
         """
         Query knowledge base for relevant patterns and pitfalls.
@@ -182,10 +213,19 @@ class RAGService:
             region=region,
             limit=max_pitfalls
         )
+
+        family_plans = self.get_research_family_plans(
+            dataset_id=dataset_id,
+            category=category,
+            delay=delay,
+            available_fields=available_fields or [],
+            paper_reference=paper_reference,
+        )
         
         logger.info(
             f"[RAGService] Query complete | "
-            f"category={category} patterns={len(patterns)} pitfalls={len(pitfalls)}"
+            f"category={category} patterns={len(patterns)} pitfalls={len(pitfalls)} "
+            f"family_plans={len(family_plans)}"
         )
         
         return RAGResult(
@@ -193,8 +233,74 @@ class RAGService:
             pitfalls=pitfalls,
             dataset_info=dataset_info,
             category=category,
-            region=region
+            region=region,
+            family_plans=family_plans,
         )
+
+    @staticmethod
+    def get_research_family_plans(
+        category: str,
+        delay: Optional[int],
+        available_fields: List[str],
+        dataset_id: Optional[str] = None,
+        paper_reference: Optional[str] = None,
+    ) -> List[Dict]:
+        """Load compatible, provenance-tracked research hypotheses."""
+        manifest = _load_research_family_manifest()
+        if not manifest:
+            return []
+
+        normalized_category = str(category or "other").strip().lower()
+        if "news" in normalized_category:
+            normalized_category = "news"
+        elif "analyst" in normalized_category:
+            normalized_category = "analyst"
+        elif "fundamental" in normalized_category:
+            normalized_category = "fundamental"
+        elif normalized_category in {"pv", "price_volume", "price/volume"}:
+            normalized_category = "pv"
+
+        available = {str(field_id) for field_id in available_fields}
+        requested_paper_ids = set(re.findall(
+            r"(?<!\d)\d{4}\.\d{4,5}(?!\d)", str(paper_reference or "")
+        ))
+        selected = []
+        for family in manifest.get("families", []):
+            if paper_reference:
+                family_refs = " ".join(str(ref) for ref in family.get("source_refs", []))
+                family_paper_ids = set(re.findall(
+                    r"(?<!\d)\d{4}\.\d{4,5}(?!\d)", family_refs
+                ))
+                if not requested_paper_ids or not (requested_paper_ids & family_paper_ids):
+                    continue
+            target_datasets = family.get("target_dataset_ids") or []
+            if target_datasets and dataset_id not in target_datasets:
+                continue
+            categories = {str(value).lower() for value in family.get("source_categories", [])}
+            if categories != {normalized_category}:
+                continue
+            if delay is None or family.get("source_delay") != delay:
+                continue
+
+            compatible = dict(family)
+            mappings = [
+                mapping for mapping in family.get("aiac_field_mappings", [])
+                if mapping.get("field_id") in available
+                and str(mapping.get("category", "")).lower() == normalized_category
+                and mapping.get("delay") == delay
+            ]
+            compatible["aiac_field_mappings"] = mappings
+            compatible["available_mapped_fields"] = [item["field_id"] for item in mappings]
+            source_fields = {str(field_id) for field_id in family.get("source_fields", [])}
+            compatible["aiac_usable_skeletons"] = (
+                family.get("source_skeletons", [])
+                if source_fields and source_fields.issubset(available)
+                else []
+            )
+            if family.get("aiac_field_mappings") and not mappings:
+                continue
+            selected.append(compatible)
+        return selected
     
     async def _get_success_patterns_enhanced(
         self,
@@ -230,6 +336,10 @@ class RAGService:
             
             # Skip region config entries (they're metadata, not patterns)
             if metadata.get('pattern_type') == 'region_config':
+                continue
+            # Older imports used SUCCESS_PATTERN for research-only ideas.
+            # Keep those hypotheses out of proven-pattern retrieval.
+            if metadata.get('status') == 'candidate_only_unvalidated':
                 continue
             
             score = 0.0

@@ -110,6 +110,9 @@ class ExperimentRunInfo:
     started_at: datetime
     finished_at: Optional[datetime]
     error_message: Optional[str]
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+    checkpoint: Optional[dict] = None
 
 
 class TaskService(BaseService):
@@ -387,8 +390,15 @@ class TaskService(BaseService):
         action = action.upper()
         
         if action == "PAUSE":
-            if task.status != "RUNNING":
+            if task.status not in {"RUNNING", "WAITING_LLM"}:
                 raise ValueError("Can only pause running tasks")
+            active_run = (await self.db.execute(
+                select(ExperimentRun).where(ExperimentRun.task_id == task_id)
+                .order_by(ExperimentRun.id.desc()).limit(1)
+            )).scalar_one_or_none()
+            if active_run and active_run.status in {"RUNNING", "WAITING_LLM"}:
+                active_run.status = "PAUSED"
+                active_run.next_retry_at = None
             await self.task_repo.update_status(task_id, "PAUSED")
             await self.commit()
             return {"action": "paused", "new_status": "PAUSED"}
@@ -396,11 +406,32 @@ class TaskService(BaseService):
         elif action == "RESUME":
             if task.status != "PAUSED":
                 raise ValueError("Can only resume paused tasks")
+            paused_run = (await self.db.execute(
+                select(ExperimentRun).where(ExperimentRun.task_id == task_id)
+                .order_by(ExperimentRun.id.desc()).limit(1)
+            )).scalar_one_or_none()
             await self.task_repo.update_status(task_id, "RUNNING")
+            if paused_run and paused_run.status == "PAUSED":
+                paused_run.status = "RUNNING"
+                paused_run.next_retry_at = None
+                await self.commit()
+                from backend.tasks import run_mining_task
+                queued = run_mining_task.delay(task_id, paused_run.id)
+                paused_run.celery_task_id = queued.id
+                await self.commit()
+                return {"action": "resumed", "new_status": "RUNNING", "run_id": paused_run.id}
             await self.commit()
             return {"action": "resumed", "new_status": "RUNNING"}
         
         elif action == "STOP":
+            waiting_run = (await self.db.execute(
+                select(ExperimentRun).where(ExperimentRun.task_id == task_id)
+                .order_by(ExperimentRun.id.desc()).limit(1)
+            )).scalar_one_or_none()
+            if waiting_run and waiting_run.status == "WAITING_LLM":
+                waiting_run.status = "STOPPED"
+                waiting_run.next_retry_at = None
+                waiting_run.finished_at = datetime.utcnow()
             await self.task_repo.update_status(task_id, "STOPPED")
             await self.commit()
             return {"action": "stopped", "new_status": "STOPPED"}
@@ -486,6 +517,9 @@ class TaskService(BaseService):
                 started_at=run.started_at,
                 finished_at=run.finished_at,
                 error_message=run.error_message,
+                block_reason=run.block_reason,
+                next_retry_at=run.next_retry_at,
+                checkpoint=run.checkpoint,
             )
             for run in result.items
         ]

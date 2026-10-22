@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "migration_id": "arxiv-2512-19484-news17-family-plan-2026-10-21",
+  "source_system": "arXiv:2512.19484 abstract and AIAC news17 field catalog",
+  "captured_on": "2026-10-21",
+  "evidence_status": "PAPER_TRANSFER_UNVALIDATED",
+  "families": [
+    {
+      "family_id": "arxiv_2512_19484_news17_structured_events_v1",
+      "role": "explore",
+      "evidence_status": "AIAC_TRANSFER_UNVALIDATED_NO_QUALITY_PASS",
+      "paper_title": "Structured Event Representation and Stock Return Predictability",
+      "paper_submitted_on": "2025-12-22",
+      "source_refs": ["https://arxiv.org/abs/2512.19484"],
+      "target_dataset_ids": ["news17"],
+      "source_categories": ["news"],
+      "source_delay": 1,
+      "source_fields": ["nws17_d1_event_sentiment_score", "nws17_d1_event_relevance", "nws17_d1_event_similarity_days", "nws17_d1_rp_story_event_count", "nws17_d1_qmb", "nws17_d1_ssc", "nws17_d1_qep", "nws17_d1_ber", "nws17_d1_acb", "nws17_d1_relevance", "nws17_d1_rp_story_event_index"],
+      "economic_mechanism": "The paper extracts structured news-event features with an LLM and attention model for cross-sectional return prediction. Test whether vendor event sentiment gains information when conditioned on entity/event relevance, recurrence timing, event density, or event-specific classifiers.",
+      "expected_direction": "No direction or return improvement is assumed for these Fast Expression proxies; compare each interaction against a sentiment-only control under matched settings.",
+      "falsification_conditions": [
+        "The structured proxy does not outperform the matched sentiment-only control.",
+        "The sign or quality is unstable across adjacent windows and event-coverage strata.",
+        "WQ quality gates fail under the same Delay 1 News configuration."
+      ],
+      "source_skeletons": [
+        "vec_avg(nws17_d1_event_sentiment_score)",
+        "vec_avg(nws17_d1_event_sentiment_score)*rank(vec_avg(nws17_d1_event_relevance))",
+        "vec_avg(nws17_d1_event_sentiment_score)*rank(vec_avg(nws17_d1_event_similarity_days))",
+        "vec_avg(nws17_d1_qmb)*rank(vec_avg(nws17_d1_relevance))"
+      ],
+      "aiac_field_mappings": [
+        {"field_id": "nws17_d1_event_sentiment_score", "role": "vendor event sentiment", "category": "news", "delay": 1, "mapping_status": "PROXY_NOT_PAPER_LLM_FEATURE"},
+        {"field_id": "nws17_d1_event_relevance", "role": "event relevance", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_relevance", "role": "entity-story relevance", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_event_similarity_days", "role": "recurrence timing", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_rp_story_event_count", "role": "story entity-record count", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_rp_story_event_index", "role": "story entity-record order", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_qmb", "role": "M&A news classifier sentiment", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_ssc", "role": "story sentiment classifier", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_qep", "role": "equity-news phrase sentiment classifier", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_ber", "role": "analyst recommendation-change news score", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"},
+        {"field_id": "nws17_d1_acb", "role": "earnings-release news sentiment classifier", "category": "news", "delay": 1, "mapping_status": "VENDOR_PROXY"}
+      ],
+      "mapping_limitations": "The paper's LLM-extracted event structure and attention model are unavailable in AIAC Fast Expression. These eleven vendor news17 D1 fields are exploratory proxies, not a reproduction or paper-validated Alpha.",
+      "migration_note": "Keep all inputs inside news17 Delay 1 and the task's allowed field list. Do not infer PASS from the paper or from a proxy backtest."
+    }
+  ]
+}

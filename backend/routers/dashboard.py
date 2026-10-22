@@ -56,13 +56,18 @@ class TaskStatusSummary(BaseModel):
     progress: str
     current_step: Optional[str] = None
     current_dataset: Optional[str] = None
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
 
 
 class KPIMetrics(BaseModel):
     today_simulations: int
     today_success_rate: float
-    today_avg_sharpe: float
+    today_avg_sharpe: Optional[float]
     week_total_alphas: int
+    today_simulation_candidates: int = 0
+    today_wq_results: int = 0
+    today_pass_count: int = 0
 
 
 # =============================================================================
@@ -112,6 +117,8 @@ async def get_active_tasks(
             progress=task.progress,
             current_step=task.current_step,
             current_dataset=task.current_dataset,
+            block_reason=task.block_reason,
+            next_retry_at=task.next_retry_at,
         )
         for task in tasks
     ]
@@ -131,6 +138,9 @@ async def get_kpi_metrics(
         today_success_rate=kpi.today_success_rate,
         today_avg_sharpe=kpi.today_avg_sharpe,
         week_total_alphas=kpi.week_total_alphas,
+        today_simulation_candidates=kpi.today_simulation_candidates,
+        today_wq_results=kpi.today_wq_results,
+        today_pass_count=kpi.today_pass_count,
     )
 
 

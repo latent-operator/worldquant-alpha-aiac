@@ -51,6 +51,19 @@ def test_missing_workflow_result_still_fails_when_target_not_reached():
     assert message == "Target not reached: 0/1"
 
 
+def test_stopped_task_finishes_run_as_stopped_without_error():
+    status, message = _resolve_final_status(
+        task_status="STOPPED",
+        target_reached=False,
+        incomplete_reasons=[],
+        progress_current=0,
+        daily_goal=1,
+    )
+
+    assert status == "STOPPED"
+    assert message is None
+
+
 @pytest.mark.asyncio
 async def test_mark_mining_task_failed_updates_task_and_run():
     db = FakeSession()
@@ -88,5 +101,5 @@ async def test_mark_mining_task_failed_only_overwrites_running_states():
     run_sql = _compile(db.statements[1])
 
     assert "mining_tasks.status = " in task_sql
-    assert "experiment_runs.status = " in run_sql
+    assert "experiment_runs.status IN " in run_sql
     assert "experiment_runs.celery_task_id = " in run_sql

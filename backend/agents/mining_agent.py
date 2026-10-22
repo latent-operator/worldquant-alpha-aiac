@@ -30,9 +30,10 @@ def _debug_log(hypo_id, location, message, data=None):
     except: pass
 # #endregion
 
-from backend.models import MiningTask, Alpha, AlphaFailure, TraceStep
+from backend.models import MiningTask, ExperimentRun, Alpha, AlphaFailure, TraceStep
 from backend.agents.graph import MiningWorkflow, create_mining_graph
 from backend.agents.services import LLMService, get_llm_service
+from backend.agents.services.llm_service import LLMBlockedError
 from backend.agents.services.trace_service import TraceService
 from backend.agents.strategy_agent import StrategyAgent, create_strategy_agent
 from backend.agents.evolution_strategy import (
@@ -42,6 +43,83 @@ from backend.agents.evolution_strategy import (
 from backend.agents.feedback_agent import FeedbackAgent
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
+
+
+def _next_no_new_streak(previous: int, new_candidates: int) -> int:
+    """Count consecutive rounds with no validated, unsimulated expression."""
+    return 0 if new_candidates > 0 else previous + 1
+
+
+def _should_yield_dispatch_round(
+    *, current_iteration: int, entry_iteration: int, max_iterations: int,
+    max_rounds: Optional[int], total_success: int, target_alphas: int,
+    min_iterations_before_goal_stop: int,
+) -> bool:
+    """Release a Celery worker at a completed-round checkpoint."""
+    return bool(
+        max_rounds is not None
+        and max_rounds > 0
+        and current_iteration - entry_iteration >= max_rounds
+        and current_iteration < max_iterations
+        and not (
+            total_success >= target_alphas
+            and current_iteration >= min_iterations_before_goal_stop
+        )
+    )
+
+
+def _generation_recovery_action(no_wq_streak: int) -> str:
+    """Escalate empty generation to a DB-backed wait, never a terminal status."""
+    return "WAITING_LLM" if no_wq_streak >= 3 else "REGENERATE"
+
+
+def _eligible_candidates_from_trace(output: Dict[str, Any]) -> int:
+    """Read the post-validation, post-dedup funnel count, never CODE_GEN size."""
+    value = output.get("eligible_candidate_count")
+    if value is None:
+        value = output.get("simulated_count")
+    return max(0, int(value or 0))
+
+
+def _paper_recovery_strategy(
+    strategy: EvolutionStrategy, task_config: Dict[str, Any], cursor: int,
+) -> EvolutionStrategy:
+    """Rotate a paper's allowed fields and windows without expanding its scope."""
+    allowed = tuple(dict.fromkeys(str(field) for field in task_config.get("research_only_fields") or []))
+    if not allowed:
+        return EvolutionStrategy.rescue_mode(list(strategy.avoid_fields), iteration=strategy.iteration)
+
+    groups = (
+        ("relevance-conditioned sentiment", ("sentiment", "relevance")),
+        ("event novelty ablation", ("similarity_days", "sentiment")),
+        ("event frequency ablation", ("story_event_count", "story_event_index", "sentiment")),
+        ("sentiment classifier comparison", ("qmb", "ssc", "qep", "ber", "acb")),
+    )
+    label, terms = groups[cursor % len(groups)]
+    focused = tuple(field for field in allowed if any(term in field.lower() for term in terms))
+    if not focused:
+        focused = allowed
+    windows = (3, 5, 10, 20, 40, 60)
+    window = windows[cursor % len(windows)]
+    configured_ops = tuple(str(op) for op in task_config.get("preferred_operators") or [])
+    preferred_ops = configured_ops[cursor % len(configured_ops):] + configured_ops[:cursor % len(configured_ops)] if configured_ops else ()
+    target = str(task_config.get("target_hypothesis") or "").strip()
+    instruction = (
+        f"Within the same paper hypothesis, test {label} at a {window}-day window. "
+        "Generate structurally new expressions using only the allowed fields; "
+        "do not repeat prior formulas or change the dataset."
+    )
+    return strategy.with_updates(
+        mode=StrategyMode.EXPLORE,
+        temperature=0.9,
+        exploration_weight=0.95,
+        preferred_fields=focused,
+        avoid_fields=tuple(field for field in strategy.avoid_fields if field not in allowed),
+        preferred_operators=preferred_ops,
+        focus_hypotheses=tuple(part for part in (target, instruction) if part),
+        action_summary=f"Paper recovery: {label}, {window}-day window",
+        reasoning=instruction,
+    )
 
 
 class MiningAgent:
@@ -150,11 +228,40 @@ class MiningAgent:
         
         try:
             workflow_operators = operators if task_config.get("first_order_operator_probe") else self._apply_operator_filters(operators, strategy)
+            workflow_fields = self._apply_field_filters(fields, strategy)
+            research_only_fields = {
+                str(field_id) for field_id in (task_config.get("research_only_fields") or [])
+                if str(field_id).strip()
+            }
+            if research_only_fields:
+                # Keep the research boundary visible to every graph node, even
+                # when an evolved strategy focuses on unrelated dataset fields.
+                task_config["research_known_fields"] = [
+                    str(field.get("id") or field.get("name") or "")
+                    for field in fields
+                ]
+                allowed_fields = [
+                    field for field in fields
+                    if str(field.get("id") or field.get("name") or "") in research_only_fields
+                ]
+                required_field = str(task_config.get("research_required_field") or "")
+                allowed_ids = {str(field.get("id") or field.get("name") or "") for field in allowed_fields}
+                if not allowed_fields or (required_field and required_field not in allowed_ids):
+                    raise ValueError("Configured research fields are unavailable in this dataset")
+                workflow_fields = [
+                    field for field in workflow_fields
+                    if str(field.get("id") or field.get("name") or "") in research_only_fields
+                ]
+                selected_ids = {str(field.get("id") or field.get("name") or "") for field in workflow_fields}
+                workflow_fields.extend(
+                    field for field in allowed_fields
+                    if str(field.get("id") or field.get("name") or "") not in selected_ids
+                )
             # Run workflow with strategy context
             result = await self._workflow.run_with_persistence(
                 task=task,
                 dataset_id=dataset_id,
-                fields=self._apply_field_filters(fields, strategy),
+                fields=workflow_fields,
                 operators=workflow_operators,
                 num_alphas=num_alphas,
                 config={
@@ -404,26 +511,30 @@ class MiningAgent:
         """Inject recent exact expressions so generation avoids known DB skips."""
         if not task_config.get("avoid_attempted_expressions", True):
             return task_config
-        if task_config.get("attempted_expressions"):
-            return task_config
-
         limit = max(0, int(task_config.get("attempted_expression_limit", 500) or 0))
         if limit <= 0:
             return task_config
+
+        configured = [
+            str(expression).strip()
+            for expression in (task_config.get("attempted_expressions") or [])
+            if str(expression).strip()
+        ]
 
         attempted = await self._query_attempted_expressions(
             task=task,
             dataset_id=dataset_id,
             limit=limit,
         )
-        if not attempted:
+        merged = list(dict.fromkeys([*configured, *attempted]))[:limit]
+        if not merged:
             return task_config
 
         planned = dict(task_config)
-        planned["attempted_expressions"] = attempted
+        planned["attempted_expressions"] = merged
         logger.info(
             "[MiningAgent] Injected attempted expression filter | "
-            f"dataset={dataset_id} count={len(attempted)}"
+            f"dataset={dataset_id} count={len(merged)}"
         )
         return planned
 
@@ -461,7 +572,7 @@ class MiningAgent:
 
         failure_rows = (
             await self.db.execute(
-                select(AlphaFailure.expression, MiningTask)
+                select(AlphaFailure.expression, AlphaFailure.error_message, MiningTask)
                 .join(MiningTask, AlphaFailure.task_id == MiningTask.id)
                 .where(
                     MiningTask.region == task.region,
@@ -471,8 +582,16 @@ class MiningAgent:
                 .limit(limit)
             )
         ).all()
-        for expression, failure_task in failure_rows:
-            if dataset_id not in (failure_task.target_datasets or []):
+        for expression, error_message, failure_task in failure_rows:
+            if failure_task.id != task.id and dataset_id not in (failure_task.target_datasets or []):
+                continue
+            if (
+                (task.config or {}).get("allow_parameter_variants", False)
+                and failure_task.id == task.id
+                and str(error_message or "").startswith("Duplicate: Structurally similar")
+            ):
+                # Parameter-sweep candidates rejected by the old batch rule
+                # are eligible for a fresh validation after the rule changes.
                 continue
             expression = str(expression or "").strip()
             if expression and expression not in seen:
@@ -1067,6 +1186,7 @@ class MiningAgent:
         num_alphas_per_round: int = 4,
         initial_strategy: Optional[EvolutionStrategy] = None,
         run_id: Optional[int] = None,
+        max_rounds_per_dispatch: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run multi-round evolution loop for alpha mining.
@@ -1101,17 +1221,60 @@ class MiningAgent:
         # #endregion
         
         # Initialize state
-        iteration = 0
-        total_success = 0
+        checkpoint = {}
+        if run_id is not None:
+            run = await self.db.get(ExperimentRun, run_id)
+            if run and (run.checkpoint or {}).get("dataset_id") == dataset_id:
+                checkpoint = run.checkpoint or {}
+        iteration = int(checkpoint.get("iteration", 0))
+        total_success = int(checkpoint.get("total_success", 0))
+        entry_iteration = iteration
+        entry_success = total_success
+        yielded_for_dispatch = False
         all_alphas: List[Alpha] = []
         all_failures: List[Dict] = []
         strategy_history: List[EvolutionStrategy] = []
         bad_round_streak = 0
         weak_round_streak = 0
         dataset_stop_reason = None
+        no_new_streak = int(checkpoint.get("no_new_streak", 0))
+        recovery_cursor = int(checkpoint.get("recovery_cursor", 0))
+        recovery_wait_attempts = int(checkpoint.get("recovery_wait_attempts", 0))
+        paper_constrained = bool((task.config or {}).get("paper_reference") and (task.config or {}).get("research_only_fields"))
         
         # Start with provided, task-config-derived, or default strategy
-        current_strategy = initial_strategy or self._initial_strategy_from_task_config(task)
+        current_strategy = (
+            EvolutionStrategy.from_dict(checkpoint["strategy"])
+            if checkpoint.get("strategy") else
+            (initial_strategy or self._initial_strategy_from_task_config(task))
+        )
+
+        async def save_checkpoint(
+            completed_iteration: int, reset_connection_error: bool = False,
+            dispatch_yielded: bool = False,
+        ):
+            if run_id is None:
+                return
+            run_state = await self.db.get(ExperimentRun, run_id)
+            if run_state:
+                run_state.checkpoint = {
+                    **(run_state.checkpoint or {}),
+                    "dataset_id": dataset_id,
+                    "iteration": completed_iteration,
+                    "total_success": total_success,
+                    "no_new_streak": no_new_streak,
+                    "recovery_cursor": recovery_cursor,
+                    "recovery_wait_attempts": recovery_wait_attempts,
+                    "strategy": current_strategy.to_dict(),
+                    "dispatch_yielded": dispatch_yielded,
+                    "connection_attempts": (
+                        0 if reset_connection_error else int((run_state.checkpoint or {}).get("connection_attempts", 0))
+                    ),
+                    "connection_error_type": (
+                        None if reset_connection_error else (run_state.checkpoint or {}).get("connection_error_type")
+                    ),
+                }
+                await self.db.commit()
         diversity_tracker = None
         metrics_tracker = None
         metrics_report = None
@@ -1138,8 +1301,42 @@ class MiningAgent:
                 int(task_config.get("min_iterations_before_goal_stop", 1) or 1),
             )
             while iteration < max_iterations:
+                await self.db.refresh(task)
+                if task.status in {"STOPPED", "PAUSED"}:
+                    await save_checkpoint(iteration)
+                    logger.info(f"[MiningAgent] Task {task.status} before round {iteration + 1}")
+                    break
+                if _should_yield_dispatch_round(
+                    current_iteration=iteration,
+                    entry_iteration=entry_iteration,
+                    max_iterations=max_iterations,
+                    max_rounds=max_rounds_per_dispatch,
+                    total_success=total_success,
+                    target_alphas=target_alphas,
+                    min_iterations_before_goal_stop=min_iterations_before_goal_stop,
+                ):
+                    await save_checkpoint(iteration, dispatch_yielded=True)
+                    yielded_for_dispatch = True
+                    logger.info(
+                        f"[MiningAgent] Yielding worker after round {iteration} | "
+                        f"task={task.id} run={run_id}"
+                    )
+                    break
+                # Refresh worker-local clients once per round. The shared DB
+                # revision lets API-side credential changes reach this process.
+                refresh_brain_credentials = getattr(self.brain, "_load_credentials_from_db", None)
+                if callable(refresh_brain_credentials):
+                    await refresh_brain_credentials()
+                refresh_llm_credentials = getattr(self.llm_service, "_ensure_credentials_loaded", None)
+                if callable(refresh_llm_credentials):
+                    await refresh_llm_credentials()
+
                 iteration += 1
                 round_strategy = self._apply_diversity_guidance(current_strategy, diversity_tracker)
+                if paper_constrained and no_new_streak:
+                    round_strategy = _paper_recovery_strategy(
+                        round_strategy, task.config or {}, recovery_cursor,
+                    )
                 await self.db.execute(
                     update(MiningTask)
                     .where(MiningTask.id == task.id)
@@ -1177,11 +1374,39 @@ class MiningAgent:
                         task_config=task.config or {},
                         run_id=run_id,
                     )
+
+                    simulation_trace = (await self.db.execute(
+                        select(TraceStep)
+                        .where(TraceStep.task_id == task.id, TraceStep.run_id == run_id,
+                               TraceStep.iteration == iteration, TraceStep.step_type == "SIMULATE")
+                        .order_by(TraceStep.id.desc()).limit(1)
+                    )).scalar_one_or_none()
+                    simulation_output = (simulation_trace.output_data or {}) if simulation_trace else {}
+                    new_candidates = _eligible_candidates_from_trace(simulation_output)
+                    no_new_streak = _next_no_new_streak(no_new_streak, new_candidates)
                     
                     # Update counters
                     total_success += round_result.passed_count
                     all_alphas.extend(alphas)
                     strategy_history.append(round_strategy)
+
+                    if not new_candidates:
+                        recovery_cursor += 1
+                        await save_checkpoint(iteration)
+                        reason = str(simulation_output.get("reason") or "NO_VALID_CANDIDATES")
+                        logger.warning(
+                            f"[MiningAgent] No WQ candidate | task={task.id} run={run_id} "
+                            f"iteration={iteration} streak={no_new_streak} reason={reason} "
+                            f"recovery_cursor={recovery_cursor}"
+                        )
+                        if reason == "DEDUP_UNAVAILABLE":
+                            raise LLMBlockedError("DEDUP_UNAVAILABLE")
+                        if _generation_recovery_action(no_new_streak) == "WAITING_LLM":
+                            raise LLMBlockedError("NO_NEW_CANDIDATES")
+                        continue
+
+                    recovery_cursor = 0
+                    recovery_wait_attempts = 0
 
                     await self._record_observability(
                         task=task,
@@ -1237,7 +1462,11 @@ class MiningAgent:
 
                     error_limit = int((task.config or {}).get("dataset_error_round_limit", 2))
                     weak_limit = int((task.config or {}).get("dataset_weak_signal_round_limit", 4))
-                    if bad_round_streak >= error_limit or weak_round_streak >= weak_limit:
+                    weak_recovery = paper_constrained and weak_round_streak >= weak_limit
+                    if paper_constrained and bad_round_streak >= error_limit:
+                        await save_checkpoint(iteration)
+                        raise LLMBlockedError("WQ_SIMULATION_ERROR")
+                    if (bad_round_streak >= error_limit or weak_round_streak >= weak_limit) and not weak_recovery:
                         dataset_stop_reason = (
                             f"{round_health['reason']} | "
                             f"bad_round_streak={bad_round_streak}/{error_limit} "
@@ -1256,6 +1485,10 @@ class MiningAgent:
                             run_id=run_id,
                         )
                         break
+                    if weak_recovery:
+                        logger.info(f"[MiningAgent] Weak paper signal; rotating research angle | task={task.id} run={run_id}")
+                        weak_round_streak = 0
+                        recovery_cursor += 1
                     
                     # Check termination: goal reached
                     if total_success >= target_alphas:
@@ -1274,6 +1507,7 @@ class MiningAgent:
                     # Check termination: task stopped externally
                     await self.db.refresh(task)
                     if task.status in ["STOPPED", "PAUSED"]:
+                        await save_checkpoint(iteration)
                         logger.info(f"[MiningAgent] Task {task.status}, stopping")
                         break
                     
@@ -1288,6 +1522,10 @@ class MiningAgent:
                         dataset_id=dataset_id,
                         region=task.region
                     )
+                    if weak_recovery:
+                        current_strategy = _paper_recovery_strategy(
+                            current_strategy, task.config or {}, recovery_cursor,
+                        )
                     
                     # === RECORD ROUND SUMMARY ===
                     await self._record_round_summary(
@@ -1354,7 +1592,39 @@ class MiningAgent:
                             f"until minimum iterations | success={total_success}/{target_alphas} "
                             f"iteration={iteration}/{min_iterations_before_goal_stop}"
                         )
+
+                    await save_checkpoint(iteration, reset_connection_error=True)
                     
+                except LLMBlockedError as exc:
+                    await self.db.rollback()
+                    await save_checkpoint(
+                        iteration if exc.kind in {"NO_NEW_CANDIDATES", "DEDUP_UNAVAILABLE", "WQ_SIMULATION_ERROR"}
+                        else iteration - 1
+                    )
+                    raise
+                except ValueError as exc:
+                    if "Configured research fields are unavailable" not in str(exc):
+                        logger.error(f"[MiningAgent] Round {iteration} value error: {exc}")
+                        await self.db.rollback()
+                        current_strategy = EvolutionStrategy.rescue_mode(
+                            problematic_fields=list(current_strategy.avoid_fields),
+                            iteration=iteration,
+                        )
+                        continue
+                    await self.db.rollback()
+                    await save_checkpoint(iteration - 1)
+                    await self.db.execute(
+                        update(MiningTask).where(MiningTask.id == task.id)
+                        .values(status="PAUSED", updated_at=datetime.utcnow())
+                    )
+                    if run_id is not None:
+                        run_state = await self.db.get(ExperimentRun, run_id)
+                        if run_state:
+                            run_state.status = "PAUSED"
+                            run_state.block_reason = "CONFIG_FIELD_UNAVAILABLE"
+                    await self.db.commit()
+                    dataset_stop_reason = "CONFIG_FIELD_UNAVAILABLE"
+                    break
                 except Exception as e:
                     logger.error(f"[MiningAgent] Round {iteration} error: {e}")
                     # Rollback any failed transaction
@@ -1386,6 +1656,8 @@ class MiningAgent:
         return {
             "iterations_completed": iteration,
             "total_success": total_success,
+            "new_success": max(0, total_success - entry_success),
+            "yielded_for_dispatch": yielded_for_dispatch,
             "target_reached": total_success >= target_alphas,
             "all_alphas": all_alphas,
             "all_failures": all_failures,
@@ -2470,6 +2742,7 @@ class MiningAgent:
                         seed_expression=expression,
                         seed_metrics=metrics,
                         dataset_id=dataset_id,
+                        fields=fields,
                         run_id=run_id,
                     )
                 
@@ -2507,12 +2780,14 @@ class MiningAgent:
         seed_expression: str,
         seed_metrics: Dict,
         dataset_id: Optional[str] = None,
+        fields: Optional[List[Dict]] = None,
         run_id: Optional[int] = None,
     ) -> None:
         """Run optional budget-limited genetic optimization and persist winners."""
         try:
             from backend.genetic_optimizer import OptimizationConfig, run_genetic_optimization
-            from backend.alpha_semantic_validator import compute_expression_hash
+            from backend.alpha_semantic_validator import AlphaSemanticValidator, compute_expression_hash
+            from backend.agents.graph.nodes.validation import _validate_task_constraints
 
             task_config = task.config or {}
             config = OptimizationConfig(
@@ -2526,7 +2801,41 @@ class MiningAgent:
                 turnover_threshold=float(task_config.get("genetic_turnover_threshold", 0.7)),
             )
 
+            research_fields = {str(field) for field in task_config.get("research_only_fields") or []}
+            allowed_field_rows = [
+                field for field in (fields or [])
+                if not research_fields or str(field.get("id") or field.get("name") or "") in research_fields
+            ]
+            allowed_field_ids = [
+                str(field.get("id") or field.get("name") or "") for field in allowed_field_rows
+            ]
+            validator = AlphaSemanticValidator(fields=allowed_field_rows, strict_field_check=True)
+            required_field = str(task_config.get("research_required_field") or "")
+
             async def simulate_for_genetic(**kwargs):
+                candidate_expression = str(kwargs.get("expression") or "")
+                if not validator.validate(candidate_expression).valid:
+                    return {"success": False, "error": "GENETIC_VALIDATION_FAILED"}
+                if _validate_task_constraints(
+                    expression=candidate_expression,
+                    allowed_fields=allowed_field_ids,
+                    task_config=task_config,
+                    fields=allowed_field_rows,
+                ):
+                    return {"success": False, "error": "GENETIC_CONSTRAINT_FAILED"}
+                if required_field and not re.search(
+                    rf"(?<![A-Za-z0-9_]){re.escape(required_field)}(?![A-Za-z0-9_])",
+                    candidate_expression,
+                ):
+                    return {"success": False, "error": "GENETIC_REQUIRED_FIELD_MISSING"}
+                existing = await self.db.execute(
+                    select(Alpha.id).where(
+                        Alpha.task_id == task.id,
+                        Alpha.expression_hash == compute_expression_hash(candidate_expression),
+                    ).limit(1)
+                )
+                if existing.scalar_one_or_none() is not None:
+                    return {"success": False, "error": "GENETIC_DUPLICATE"}
                 result = await self.brain.simulate_alpha(**kwargs)
                 metrics = result.get("metrics", {}) or {}
                 return {
@@ -2601,7 +2910,10 @@ class MiningAgent:
                 f"simulations={report.get('simulations_used')} saved={saved}"
             )
         except Exception as e:
-            logger.warning(f"[MiningAgent] Genetic optimization skipped/failed: {e}")
+            logger.warning(
+                f"[MiningAgent] Genetic optimization skipped/failed | "
+                f"error_type={type(e).__name__}"
+            )
             try:
                 await self.db.rollback()
             except Exception:

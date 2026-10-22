@@ -29,6 +29,7 @@ import {
   ResponsiveContainer 
 } from 'recharts'
 import api from '../services/api'
+import { waitingStatusText, waitingHealthText } from '../utils/recoveryStatus'
 
 const { Title, Text } = Typography
 
@@ -46,14 +47,14 @@ export default function Dashboard() {
   const [liveFeed, setLiveFeed] = useState([])
 
   // Fetch daily stats
-  const { data: dailyStats, isLoading: statsLoading } = useQuery({
+  const { data: dailyStats } = useQuery({
     queryKey: ['dailyStats'],
     queryFn: () => api.getDailyStats(),
     refetchInterval: 30000, // Refresh every 30 seconds
   })
 
   // Fetch KPI metrics
-  const { data: kpi, isLoading: kpiLoading } = useQuery({
+  const { data: kpi } = useQuery({
     queryKey: ['kpiMetrics'],
     queryFn: () => api.getKPIMetrics(),
     refetchInterval: 30000,
@@ -64,6 +65,11 @@ export default function Dashboard() {
     queryKey: ['activeTasks'],
     queryFn: () => api.getActiveTasks(),
     refetchInterval: 5000,
+  })
+  const { data: credentialStatus } = useQuery({
+    queryKey: ['credentialStatus'],
+    queryFn: () => api.getCredentialsStatus(),
+    refetchInterval: 30000,
   })
 
   // Live feed SSE connection
@@ -83,8 +89,11 @@ export default function Dashboard() {
   }, [])
 
   const stats = dailyStats || { goal: 4, current: 0, success_rate: 0, avg_sharpe: 0 }
-  const metrics = kpi || { today_simulations: 0, today_success_rate: 0, today_avg_sharpe: 0, week_total_alphas: 0 }
+  const metrics = kpi || { today_simulations: 0, today_success_rate: 0, today_avg_sharpe: null, week_total_alphas: 0, today_simulation_candidates: 0, today_pass_count: 0 }
   const tasks = activeTasks || []
+  const brainTest = credentialStatus?.connection_tests?.brain
+  const llmTest = credentialStatus?.connection_tests?.llm
+  const llmWaiting = tasks.some(task => task.status === 'WAITING_LLM')
 
   const goalPercent = Math.round((stats.current / stats.goal) * 100)
 
@@ -131,8 +140,8 @@ export default function Dashboard() {
               <div style={{ marginTop: 16 }}>
                 <Space direction="vertical" style={{ width: '100%' }}>
                   <div>
-                    <Tag color="processing" icon={<ThunderboltOutlined />}>
-                      运行中
+                    <Tag color={tasks[0].status === 'WAITING_LLM' ? 'warning' : tasks[0].status === 'PAUSED' ? 'default' : 'processing'} icon={<ThunderboltOutlined />}>
+                      {tasks[0].status === 'WAITING_LLM' ? waitingStatusText(tasks[0].block_reason) : tasks[0].status === 'PAUSED' ? '已暂停' : '运行中'}
                     </Tag>
                     <Text strong style={{ marginLeft: 8 }}>
                       {tasks[0].task_name}
@@ -149,6 +158,8 @@ export default function Dashboard() {
                   {tasks[0].current_step && (
                     <Tag color="blue">{tasks[0].current_step}</Tag>
                   )}
+                  {tasks[0].block_reason && <Text type="warning">原因: {tasks[0].block_reason}</Text>}
+                  {tasks[0].next_retry_at && <Text type="secondary">下次检查: {new Date(tasks[0].next_retry_at).toLocaleString()}</Text>}
                 </Space>
               </div>
             ) : (
@@ -167,15 +178,15 @@ export default function Dashboard() {
               <Space direction="vertical" style={{ width: '100%' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>BRAIN 平台连接</Text>
-                  <Tag color="success" icon={<CheckCircleOutlined />}>已连接</Tag>
+                  <Tag color={brainTest?.success ? 'success' : 'default'}>{brainTest ? (brainTest.success ? '最近测试通过' : '最近测试失败') : '尚未测试'}</Tag>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>LLM 服务</Text>
-                  <Tag color="success" icon={<CheckCircleOutlined />}>在线</Tag>
+                  <Tag color={llmWaiting ? 'warning' : llmTest?.success ? 'success' : 'default'}>{llmWaiting ? waitingHealthText(tasks.find(task => task.status === 'WAITING_LLM')?.block_reason) : llmTest ? (llmTest.success ? '最近测试通过' : '最近测试失败') : '尚未测试'}</Tag>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>数据库</Text>
-                  <Tag color="success" icon={<CheckCircleOutlined />}>已连接</Tag>
+                  <Tag color={kpi ? 'success' : 'default'}>{kpi ? '数据已读取' : '状态未知'}</Tag>
                 </div>
               </Space>
             </div>
@@ -185,20 +196,25 @@ export default function Dashboard() {
 
       {/* Second Row: KPI Cards */}
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={12} sm={6}>
+        <Col xs={12} sm={8} lg={4}>
           <Card className="glass-card">
             <Statistic
-              title="今日模拟次数"
-              value={metrics.today_simulations}
+              title="今日已保存的 WQ 回测结果"
+              value={metrics.today_wq_results ?? metrics.today_simulations}
               prefix={<ClockCircleOutlined />}
               valueStyle={{ color: '#00d4ff' }}
             />
           </Card>
         </Col>
-        <Col xs={12} sm={6}>
+        <Col xs={12} sm={8} lg={4}>
+          <Card className="glass-card">
+            <Statistic title="今日进入仿真的候选数" value={metrics.today_simulation_candidates} prefix={<ClockCircleOutlined />} />
+          </Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
           <Card className="glass-card">
             <Statistic
-              title="成功率"
+              title="质量通过率"
               value={metrics.today_success_rate * 100}
               precision={1}
               suffix="%"
@@ -206,18 +222,23 @@ export default function Dashboard() {
             />
           </Card>
         </Col>
-        <Col xs={12} sm={6}>
+        <Col xs={12} sm={8} lg={4}>
+          <Card className="glass-card">
+            <Statistic title="今日 PASS 数" value={metrics.today_pass_count} prefix={<CheckCircleOutlined />} />
+          </Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
           <Card className="glass-card">
             <Statistic
-              title="平均夏普比率"
-              value={metrics.today_avg_sharpe}
+              title="PASS 平均夏普"
+              value={metrics.today_avg_sharpe ?? '暂无'}
               precision={2}
               prefix={<LineChartOutlined />}
               valueStyle={{ color: '#ffb700' }}
             />
           </Card>
         </Col>
-        <Col xs={12} sm={6}>
+        <Col xs={12} sm={8} lg={4}>
           <Card className="glass-card">
             <Statistic
               title="本周 Alpha 总数"

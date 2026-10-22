@@ -11,7 +11,6 @@ import {
   Descriptions,
   Spin,
   Empty,
-  Input,
   message,
   Divider,
 } from 'antd'
@@ -33,7 +32,6 @@ import {
 import api from '../services/api'
 
 const { Title, Text, Paragraph } = Typography
-const { TextArea } = Input
 
 // Mock PnL data for demo
 const mockPnL = [

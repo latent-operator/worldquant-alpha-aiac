@@ -13,6 +13,7 @@ from celery.result import AsyncResult
 
 from backend.database import get_db
 from backend.services.task_service import TaskService, TaskCreateData
+from backend.services.credentials_service import CredentialsService
 from backend.celery_app import celery_app
 
 router = APIRouter(
@@ -96,9 +97,31 @@ class ExperimentRunResponse(BaseModel):
     started_at: datetime
     finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+    checkpoint: Optional[dict] = None
 
     class Config:
         from_attributes = True
+
+
+class ExperimentRunSummaryResponse(BaseModel):
+    id: int
+    task_id: int
+    status: str
+    trigger_source: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
+
+
+class TaskSummaryResponse(TaskResponse):
+    latest_run_id: Optional[int] = None
+    latest_run_status: Optional[str] = None
+    block_reason: Optional[str] = None
+    next_retry_at: Optional[datetime] = None
 
 
 class InterventionRequest(BaseModel):
@@ -221,6 +244,24 @@ async def get_task(
     )
 
 
+@router.get("/{task_id}/summary", response_model=TaskSummaryResponse)
+async def get_task_summary(
+    task_id: int,
+    service: TaskService = Depends(get_task_service),
+):
+    """Lightweight task state without embedding its full trace."""
+    task = await service.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    run = await service.run_repo.get_latest_by_task(task_id)
+    return TaskSummaryResponse(
+        **vars(task), latest_run_id=run.id if run else None,
+        latest_run_status=run.status if run else None,
+        block_reason=CredentialsService.sanitize_error(run.block_reason) if run and run.block_reason else None,
+        next_retry_at=run.next_retry_at if run else None,
+    )
+
+
 @router.get("/{task_id}/trace", response_model=List[TraceStepResponse])
 async def get_task_trace(
     task_id: int,
@@ -288,9 +329,32 @@ async def list_task_runs(
             started_at=r.started_at,
             finished_at=r.finished_at,
             error_message=r.error_message,
+            block_reason=r.block_reason,
+            next_retry_at=r.next_retry_at,
+            checkpoint=r.checkpoint,
         )
         for r in runs
     ]
+
+
+@router.get("/{task_id}/runs/summary", response_model=List[ExperimentRunSummaryResponse])
+async def list_task_run_summaries(
+    task_id: int,
+    service: TaskService = Depends(get_task_service),
+):
+    """Run history without checkpoints or Celery task identifiers."""
+    try:
+        runs = await service.list_task_runs(task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return [ExperimentRunSummaryResponse(
+        id=r.id, task_id=r.task_id, status=r.status,
+        trigger_source=r.trigger_source, started_at=r.started_at,
+        finished_at=r.finished_at,
+        error_message=CredentialsService.sanitize_error(r.error_message) if r.error_message else None,
+        block_reason=CredentialsService.sanitize_error(r.block_reason) if r.block_reason else None,
+        next_retry_at=r.next_retry_at,
+    ) for r in runs]
 
 
 @router.post("/{task_id}/intervene")

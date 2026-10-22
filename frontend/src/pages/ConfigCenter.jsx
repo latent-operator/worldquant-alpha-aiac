@@ -59,10 +59,11 @@ export default function ConfigCenter() {
   })
 
   // Fetch credentials status
-  const { data: credentialsData, isLoading: credentialsLoading, refetch: refetchCredentials } = useQuery({
+  const { data: credentialsData, isLoading: credentialsLoading, isError: credentialsError, error: credentialsFetchError, refetch: refetchCredentials } = useQuery({
     queryKey: ['credentials'],
     queryFn: api.getCredentialsStatus,
   })
+  const credentialWritesReady = credentialsData?.encryption_configured === true
 
   const { data: thresholdsData, isLoading: thresholdsLoading } = useQuery({
     queryKey: ['config', 'thresholds'],
@@ -119,9 +120,23 @@ export default function ConfigCenter() {
     mutationFn: api.testBrainCredentials,
     onSuccess: () => {
       message.success('Brain 平台连接测试成功！')
+      refetchCredentials()
     },
     onError: (error) => {
       message.error(`连接测试失败: ${error.response?.data?.detail || error.message}`)
+      refetchCredentials()
+    },
+  })
+
+  const testLLMCredentialsMutation = useMutation({
+    mutationFn: api.testLLMCredentials,
+    onSuccess: () => {
+      message.success('LLM API 连接测试成功！')
+      refetchCredentials()
+    },
+    onError: (error) => {
+      message.error(`连接测试失败: ${error.response?.data?.detail || error.message}`)
+      refetchCredentials()
     },
   })
 
@@ -227,11 +242,13 @@ export default function ConfigCenter() {
                     <Tag color="blue">ENV</Tag>
                   </Tooltip>
                 )}
-                <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                <Tag color="success">已配置</Tag>
               </>
             ) : (
               <>
-                <Text type="secondary">(未配置)</Text>
+                <Text type="secondary">
+                  {cred.error === 'encryption_unavailable' ? '已存储，但无法解密' : '(未配置)'}
+                </Text>
                 <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
               </>
             )}
@@ -241,6 +258,32 @@ export default function ConfigCenter() {
     }
 
     return (
+      <>
+      {credentialsError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="凭证安全状态未读取，暂不能保存"
+          description="请先恢复后端状态查询；在确认后端与 worker 加密就绪前，保存操作保持关闭。"
+          style={{ marginBottom: 16 }}
+        />
+      ) : credentialsData && !credentialWritesReady && (
+        <Alert
+          type="error"
+          showIcon
+          message={credentialsData.encryption_status
+            ? '凭证加密未就绪，暂不能保存'
+            : '后端尚未提供凭证安全状态，暂不能保存'}
+          description={!credentialsData.encryption_status
+            ? '当前后端尚未加载凭证同步修复。请等待安全状态接口就绪后再输入或保存凭证。'
+            : credentialsData.encryption_status?.backend_configured
+            ? (credentialsData.encryption_status?.worker_count
+              ? '在线 Celery worker 尚未报告相同的 CREDENTIALS_SECRET。请在 worker 环境配置后重启 worker，再重试。'
+              : '未检测到在线 Celery worker。请在后端和 worker 分别配置相同的 CREDENTIALS_SECRET，并确认 worker 已启动。')
+            : '请先在 AIAC 后端和 Celery worker 环境中分别配置相同的 CREDENTIALS_SECRET，再重试。'}
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <Row gutter={24}>
         {/* Brain Platform Credentials */}
         <Col xs={24} lg={12}>
@@ -263,11 +306,21 @@ export default function ConfigCenter() {
 
             {credentialsLoading ? (
               <Spin />
+            ) : credentialsError ? (
+              <Alert
+                type="error"
+                showIcon
+                message="状态读取失败"
+                description={credentialsFetchError?.message || '无法读取后端凭证状态。'}
+                action={<Button size="small" onClick={() => refetchCredentials()}>重试</Button>}
+                style={{ marginBottom: 16 }}
+              />
             ) : (
               <div style={{ marginBottom: 24 }}>
                 <Title level={5}>当前状态</Title>
                 {renderCredentialStatus('brain_email', '邮箱')}
                 {renderCredentialStatus('brain_password', '密码')}
+                {renderConnectionTestStatus(credentialsData?.connection_tests?.brain)}
               </div>
             )}
 
@@ -314,6 +367,7 @@ export default function ConfigCenter() {
                     htmlType="submit"
                     icon={<SaveOutlined />}
                     loading={saveBrainCredentialsMutation.isPending}
+                    disabled={!credentialWritesReady}
                   >
                     保存凭证
                   </Button>
@@ -351,12 +405,22 @@ export default function ConfigCenter() {
 
             {credentialsLoading ? (
               <Spin />
+            ) : credentialsError ? (
+              <Alert
+                type="error"
+                showIcon
+                message="状态读取失败"
+                description={credentialsFetchError?.message || '无法读取后端凭证状态。'}
+                action={<Button size="small" onClick={() => refetchCredentials()}>重试</Button>}
+                style={{ marginBottom: 16 }}
+              />
             ) : (
               <div style={{ marginBottom: 24 }}>
                 <Title level={5}>当前状态</Title>
                 {renderCredentialStatus('openai_api_key', 'API Key')}
                 {renderCredentialStatus('openai_base_url', 'Base URL')}
                 {renderCredentialStatus('openai_model', '模型')}
+                {renderConnectionTestStatus(credentialsData?.connection_tests?.llm)}
               </div>
             )}
 
@@ -411,14 +475,20 @@ export default function ConfigCenter() {
               </Form.Item>
 
               <Form.Item>
-                <Button 
-                  type="primary" 
-                  htmlType="submit"
-                  icon={<SaveOutlined />}
-                  loading={saveLLMCredentialsMutation.isPending}
-                >
-                  保存配置
-                </Button>
+                <Space>
+                  <Button
+                    type="primary"
+                    htmlType="submit"
+                    icon={<SaveOutlined />}
+                    loading={saveLLMCredentialsMutation.isPending}
+                    disabled={!credentialWritesReady}
+                  >保存配置</Button>
+                  <Button
+                    icon={<SyncOutlined />}
+                    onClick={() => testLLMCredentialsMutation.mutate()}
+                    loading={testLLMCredentialsMutation.isPending}
+                  >测试连接</Button>
+                </Space>
               </Form.Item>
             </Form>
 
@@ -434,6 +504,23 @@ export default function ConfigCenter() {
           </Card>
         </Col>
       </Row>
+      </>
+    )
+  }
+
+  function renderConnectionTestStatus(test) {
+    if (!test) {
+      return <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>连接尚未测试</Text>
+    }
+    return (
+      <div style={{ marginTop: 12 }}>
+        <Space>
+          {test.success ? <CheckCircleOutlined style={{ color: '#52c41a' }} /> : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+          <Text>{test.success ? '连接测试成功' : '连接测试失败'}</Text>
+          {test.tested_at && <Text type="secondary">{new Date(test.tested_at).toLocaleString()}</Text>}
+        </Space>
+        {test.error && <div><Text type="danger">{test.error}</Text></div>}
+      </div>
     )
   }
 
