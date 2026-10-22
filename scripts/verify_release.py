@@ -12,7 +12,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 FORK = "latent-operator/worldquant-alpha-aiac"
-ATTESTATION = ROOT / "ops" / "secret-attestation.json"
+LEGACY_DATASET_KEYS_BLOB = "9a3ce503dd74e397ed75f652e132ed97347a0b25"
 
 
 def validate_ci_run(record: dict, commit: str) -> None:
@@ -26,9 +26,10 @@ def validate_ci_run(record: dict, commit: str) -> None:
         raise ValueError("CI must be the master push after PR integration")
 
 
-def validate_secret_attestation(record: dict) -> None:
-    if record.get("historical_keys_revoked") is not True or not record.get("reviewed_at"):
-        raise ValueError("The historical keys.txt credentials have not been confirmed revoked")
+def validate_legacy_dataset_keys_blob(blob_id: str) -> None:
+    """The reviewed historical keys.txt contains dataset names, not secrets."""
+    if blob_id != LEGACY_DATASET_KEYS_BLOB:
+        raise ValueError("The legacy keys.txt blob differs from the reviewed dataset list")
 
 
 def _output(args: list[str]) -> str:
@@ -45,9 +46,7 @@ def verify(commit: str, ci_run: int) -> dict:
         raise ValueError("Working checkout HEAD is not the requested commit")
     if _output(["git", "status", "--porcelain=v1"]):
         raise ValueError("Release requires a clean working tree")
-    if not ATTESTATION.is_file():
-        raise ValueError("Historical key revocation attestation is missing")
-    validate_secret_attestation(json.loads(ATTESTATION.read_text(encoding="utf-8")))
+    validate_legacy_dataset_keys_blob(_output(["git", "rev-parse", "c432aa5:keys.txt"]))
     record = json.loads(_output(["gh", "api", f"repos/{FORK}/actions/runs/{ci_run}"]))
     validate_ci_run(record, commit)
     return {

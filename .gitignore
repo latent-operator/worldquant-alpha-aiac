@@ -22,7 +22,6 @@ keys.txt
 compose.local.yaml
 work/
 frontend/dist/
-ops/secret-attestation.json
 parsetab.py
 *.pem
 *.key

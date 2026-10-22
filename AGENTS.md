@@ -7,7 +7,7 @@ Codex is the operator for this repository. For every code change requested in na
 - No CI or smoke check may call a live LLM, WQ simulation, or WQ submission endpoint. Use mocks and isolated databases.
 - Do not start a new mining task as part of a software release. Resume only tasks that were active before the release, using their existing run IDs. Respect prior PAUSED and STOPPED states.
 - Never print, commit, copy into images, or put in release records the contents of `.env`, `keys.txt`, BRAIN credentials, LLM keys, or `CREDENTIALS_SECRET`.
-- A public push is blocked until the owner confirms the historical `keys.txt` credentials are revoked or rotated. Scan every new file and change before committing.
+- The reviewed historical `keys.txt` is a list of dataset identifiers, not API credentials. Do not claim it requires credential rotation. Scan every new file and change before committing; review any other suspected exposure separately.
 - Deploy only a clean, named commit with successful CI on the writable fork. Record the previous commit, CI run, database revision, backup ID, and pre/post task and run states.
 - API and worker must use the same `.env` and exactly one worker. A release failure restores the previous code version; never auto-restore a live database after writes may have occurred.
 

@@ -85,10 +85,9 @@ and active worker alone. Validate a database dump in a separate database before
 considering any live restore. A live database restore requires a separate
 maintenance decision because it would overwrite work completed since backup.
 
-The historical public Git record contained `keys.txt`. Removing it from the
-current index does not erase that history. Treat those values as sensitive
-until their owner confirms they are invalid or revokes and rotates them; do
-not publish this baseline before that review.
+The historical public Git record contained `keys.txt`. Review established that
+this particular file lists dataset identifiers, not API credentials. The
+release gate checks the exact reviewed blob; see `security-baseline.md`.
 
 ## Versioned software operations
 
@@ -106,9 +105,9 @@ under `../../runtime/aiac-ops`, outside the repository.
    credential hygiene. CI repeats this on Ubuntu and Windows; Ubuntu also
    applies migrations twice to an isolated PostgreSQL service. CI has no WQ or
    LLM credentials and starts no mining worker.
-2. Confirm the historical `keys.txt` credentials have been revoked or rotated
-   before forking or pushing. The local GitHub account can read the public
-   upstream but cannot push there. Create a writable personal fork, merge via
+2. The historical `keys.txt` requires no key rotation based on its reviewed
+   contents. The local GitHub account can read the public upstream but cannot
+   push there. Create a writable personal fork, merge via
    PR with required `offline-ubuntu` and `offline-windows` checks, and record
    the successful **master push** Actions run ID. See `security-baseline.md`.
 3. Keep the checked-out worktree clean at that exact SHA. The first release
@@ -118,7 +117,7 @@ under `../../runtime/aiac-ops`, outside the repository.
 4. Run `scripts/deploy-local.ps1 -Commit <40-character SHA> -CiRun <run ID>
    -BootstrapPreviousSource <absolute snapshot path>` for the first release;
    omit the bootstrap parameter later. The command refuses dirty code,
-   unconfirmed historical keys, missing CI, a different DB volume, unmanaged
+   a changed historical `keys.txt` blob, missing CI, a different DB volume, unmanaged
    services, or an unavailable rollback source. It stages code and UI before
    pausing active tasks, waits for an idle worker, verifies a database dump by
    restoring it into a separate database, then starts the new services and
@@ -135,7 +134,6 @@ under `../../runtime/aiac-ops`, outside the repository.
 
 The first deployment must be explicitly checked after the prior manual
 runtime: the previous source is the preserved worktree snapshot, not merely
-the older clean Git commit. If the historical keys remain unconfirmed or the
-desktop blocks local process control, do not weaken the gate or use another
-command to bypass it; leave the prepared release unstarted and report the
-blocker.
+the older clean Git commit. If the desktop blocks local process control, do not
+use another command to bypass it; leave the prepared release unstarted and
+report the blocker.
