@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$Commit,
-    [Parameter(Mandatory)][ValidateRange(1, [int]::MaxValue)][int]$CiRun,
+    [Parameter(Mandatory)][ValidateRange(1, [long]::MaxValue)][long]$CiRun,
     [string]$BootstrapPreviousSource
 )
 
