@@ -1,6 +1,7 @@
 import pytest
 from types import SimpleNamespace
 import httpx
+from unittest.mock import AsyncMock
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 
@@ -114,6 +115,15 @@ async def test_audited_single_post_does_not_retry_timeout():
     with pytest.raises(httpx.ReadTimeout):
         await adapter._safe_api_call("post", "/simulations", retry_writes=False, json={})
     assert adapter.client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_audited_batch_post_disables_retry_in_fallback():
+    adapter = BrainAdapter.__new__(BrainAdapter)
+    adapter._safe_api_call = AsyncMock(return_value=httpx.Response(503, text="unavailable"))
+    results = await adapter.simulate_batch(["rank(a)", "rank(b)"], retry_post=False)
+    assert len(results) == 2
+    assert adapter._safe_api_call.await_args.kwargs["retry_writes"] is False
 
 
 @pytest.mark.asyncio

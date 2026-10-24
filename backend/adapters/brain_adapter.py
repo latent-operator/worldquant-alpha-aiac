@@ -326,6 +326,8 @@ class BrainAdapter:
             response = await self._safe_api_call("post", "/simulations", json=sim_payload,
                                                  retry_writes=retry_post)
             if response.status_code not in [200, 201, 202]:
+                if not retry_post and response.status_code >= 500:
+                    return {"success": False, "error": "uncertain server error"}
                 logger.error(f"Brain Simulation Failed [{response.status_code}] | Payload: {json.dumps(sim_payload)} | Response: {response.text}")
                 return {"success": False, "error": f"Creation failed: {response.text}"}
             
@@ -353,6 +355,7 @@ class BrainAdapter:
         max_wait: int = 1200,
         timeout_grace_seconds: int = 180,
         no_child_timeout_seconds: int = 0,
+        retry_post: bool = True,
     ) -> List[Dict]:
         """
         Simulate multiple alphas in a single batch request (Multi-Simulation).
@@ -383,9 +386,12 @@ class BrainAdapter:
         
         try:
             # POST list of configs
-            response = await self._safe_api_call("post", "/simulations", json=sim_payloads)
+            response = await self._safe_api_call("post", "/simulations", json=sim_payloads,
+                                                 retry_writes=retry_post)
             
             if response.status_code not in [200, 201, 202]:
+                if not retry_post and response.status_code >= 500:
+                    return [{"success": False, "error": "uncertain server error"} for _ in expressions]
                 logger.error(f"Batch Simulation Failed [{response.status_code}] | Response: {response.text}")
                 # Return failures for all
                 return [{"success": False, "error": f"Batch creation failed: {response.text}"} for _ in expressions]
@@ -393,7 +399,7 @@ class BrainAdapter:
             location = response.headers.get("Location")
             if not location:
                 # If no location header, check body (unlikely for multi-sim)
-                return [{"success": False, "error": "No location header"} for _ in expressions]
+                return [{"success": False, "error": "uncertain no location header"} for _ in expressions]
                  
             logger.info(f"Batch simulation started | count={len(expressions)} location={location}")
             # Wait for parent simulation

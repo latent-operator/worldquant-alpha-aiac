@@ -370,6 +370,7 @@ class MCPBrainAdapter:
             max_wait=max_wait,
             timeout_grace_seconds=timeout_grace_seconds,
             no_child_timeout_seconds=no_child_timeout_seconds,
+            retry_post=not self.no_fallback_on_simulation_error,
         )
 
     async def check_correlation(self, alpha_id: str, check_type: str = "PROD") -> Dict[str, Any]:
