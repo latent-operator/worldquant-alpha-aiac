@@ -116,6 +116,21 @@ def build_server(api: AIACClient | None = None) -> MCPServer:
         """Summarize generated candidates, simulation attempts, saved WQ results and quality PASS separately."""
         return await api.report(bounded(run_id, 1, 1_000_000_000, "run_id"))
 
+    @server.tool(name="aiac_get_research_report", annotations=read)
+    @tool_errors
+    async def aiac_get_research_report(run_id: int) -> dict:
+        """Read persisted candidate funnel, 40-request budget, paired deltas and actual quality PASS."""
+        return await api.research_report(bounded(run_id, 1, 1_000_000_000, "run_id"))
+
+    @server.tool(name="aiac_list_research_candidates", annotations=read)
+    @tool_errors
+    async def aiac_list_research_candidates(run_id: int, limit: int = 50, offset: int = 0) -> dict:
+        """Read a bounded page of candidate lineage and rejection outcomes without expressions."""
+        return await api.research_candidates(
+            bounded(run_id, 1, 1_000_000_000, "run_id"),
+            bounded(limit, 1, 100, "limit"), bounded(offset, 0, 1_000_000, "offset"),
+        )
+
     @server.tool(name="aiac_create_task", annotations=write)
     @tool_errors
     async def aiac_create_task(name: str, region: str = "USA", universe: str = "TOP3000", dataset_strategy: str = "AUTO", target_datasets: list[str] | None = None, agent_mode: str = "AUTONOMOUS", daily_goal: int = 4, max_iterations: int = 10, config: dict[str, Any] | None = None) -> dict:

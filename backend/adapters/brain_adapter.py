@@ -309,7 +309,7 @@ class BrainAdapter:
     # ... Methods (simulate_alpha, get_datasets, etc.) need to use self.client ...
     # I will replicate them below, ensuring they use self.client and handle errors.
     
-    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M") -> Dict:
+    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M", retry_post: bool = True) -> Dict:
         # Construct payload
         sim_payload = {
             "type": "REGULAR",
@@ -323,8 +323,11 @@ class BrainAdapter:
         }
         
         try:
-            response = await self._safe_api_call("post", "/simulations", json=sim_payload)
+            response = await self._safe_api_call("post", "/simulations", json=sim_payload,
+                                                 retry_writes=retry_post)
             if response.status_code not in [200, 201, 202]:
+                if not retry_post and response.status_code >= 500:
+                    return {"success": False, "error": "uncertain server error"}
                 logger.error(f"Brain Simulation Failed [{response.status_code}] | Payload: {json.dumps(sim_payload)} | Response: {response.text}")
                 return {"success": False, "error": f"Creation failed: {response.text}"}
             
@@ -352,6 +355,7 @@ class BrainAdapter:
         max_wait: int = 1200,
         timeout_grace_seconds: int = 180,
         no_child_timeout_seconds: int = 0,
+        retry_post: bool = True,
     ) -> List[Dict]:
         """
         Simulate multiple alphas in a single batch request (Multi-Simulation).
@@ -382,9 +386,12 @@ class BrainAdapter:
         
         try:
             # POST list of configs
-            response = await self._safe_api_call("post", "/simulations", json=sim_payloads)
+            response = await self._safe_api_call("post", "/simulations", json=sim_payloads,
+                                                 retry_writes=retry_post)
             
             if response.status_code not in [200, 201, 202]:
+                if not retry_post and response.status_code >= 500:
+                    return [{"success": False, "error": "uncertain server error"} for _ in expressions]
                 logger.error(f"Batch Simulation Failed [{response.status_code}] | Response: {response.text}")
                 # Return failures for all
                 return [{"success": False, "error": f"Batch creation failed: {response.text}"} for _ in expressions]
@@ -392,7 +399,7 @@ class BrainAdapter:
             location = response.headers.get("Location")
             if not location:
                 # If no location header, check body (unlikely for multi-sim)
-                return [{"success": False, "error": "No location header"} for _ in expressions]
+                return [{"success": False, "error": "uncertain no location header"} for _ in expressions]
                  
             logger.info(f"Batch simulation started | count={len(expressions)} location={location}")
             # Wait for parent simulation
@@ -982,11 +989,15 @@ class BrainAdapter:
             logger.error(f"Get alpha details error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _safe_api_call(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
+    async def _safe_api_call(self, method: str, endpoint: str, retry_writes: bool = True, **kwargs) -> httpx.Response:
         """
         Execute API call with auto-reauth on 401 and retry on 429/5xx.
         """
         url = endpoint if endpoint.startswith("http") else f"{self.BASE_URL}{endpoint}"
+        if method.lower() == "post" and not retry_writes:
+            # A timed-out creation request may already exist at WQ. Never send
+            # a second POST for an audited candidate without reconciliation.
+            return await self.client.post(url, **kwargs)
         retries = 0
         max_retries = 5
         

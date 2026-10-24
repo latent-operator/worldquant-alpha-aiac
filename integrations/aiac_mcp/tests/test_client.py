@@ -22,7 +22,26 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             "aiac_list_run_alphas", "aiac_get_alpha", "aiac_list_trace",
             "aiac_get_run_report", "aiac_create_task", "aiac_start_task",
             "aiac_pause_task", "aiac_resume_task", "aiac_stop_task",
+            "aiac_get_research_report", "aiac_list_research_candidates",
         })
+
+    async def test_research_report_and_candidate_page_are_read_only(self):
+        seen = []
+
+        def handler(request):
+            seen.append((request.method, request.url.path, dict(request.url.params)))
+            if request.url.path.endswith("research-report"):
+                return httpx.Response(200, json={"run_id": 13, "candidate_funnel": {"quality_pass": 0}})
+            return httpx.Response(200, json={"items": [{"id": 1, "expression": "rank(news)",
+                "request_status": "RESULT", "wq_alpha_id": "WQ1"}], "total": 1, "has_more": False})
+
+        api = AIACClient("http://localhost/api/v1", httpx.MockTransport(handler))
+        report = await api.research_report(13)
+        page = await api.research_candidates(13, limit=10, offset=0)
+        self.assertEqual(report["candidate_funnel"]["quality_pass"], 0)
+        self.assertEqual(page["items"][0]["wq_alpha_id"], "WQ1")
+        self.assertNotIn("expression", page["items"][0])
+        self.assertTrue(all(method == "GET" for method, _, _ in seen))
 
     async def test_report_uses_limit_offset_and_separates_counts(self):
         requests = []

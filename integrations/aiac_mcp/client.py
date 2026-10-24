@@ -195,6 +195,28 @@ class AIACClient:
             "observed_at": observed_at(),
         }
 
+    async def research_report(self, run_id: int) -> dict:
+        result = await self.request("GET", f"/runs/{run_id}/research-report")
+        # The API report contains only counters, IDs, gate names and metrics.
+        return result | {"source": "AIAC research-report API", "observed_at": observed_at()}
+
+    async def research_candidates(self, run_id: int, limit: int = 50, offset: int = 0) -> dict:
+        page = await self.request("GET", f"/runs/{run_id}/research-candidates",
+                                  params={"limit": limit, "offset": offset})
+        items = []
+        for row in page["items"]:
+            item = {key: row.get(key) for key in (
+                "id", "run_id", "family_id", "source", "arm", "experiment_group",
+                "pair_id", "window", "parent_candidate_id", "expression_hash",
+                "settings_hash", "validation_status", "rejection_stage", "rejection_reason",
+                "request_status", "wq_alpha_id", "quality_status", "gate_failures",
+                "metrics", "trace_step_id", "created_at",
+            )}
+            items.append(item)
+        return {"run_id": run_id, "items": items, "total": page["total"],
+                "limit": limit, "offset": offset, "has_more": page["has_more"],
+                "source": "AIAC research-candidates API", "observed_at": observed_at()}
+
     async def start(self, task_id: int) -> dict:
         task = await self.task(task_id)
         if task["status"] in ("RUNNING", "WAITING_LLM"):

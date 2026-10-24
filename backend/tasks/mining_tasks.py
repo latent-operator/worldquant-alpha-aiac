@@ -226,6 +226,27 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     logger.warning(f"Failed to load operator registry in worker: {e}")
 
                 async with MCPBrainAdapter() as brain:
+                    if (task.config or {}).get("research_protocol") == "paper_news17_ablation_v1":
+                        from backend.services.paper_experiment import run_paper_dispatch
+
+                        fields = await _get_dataset_fields(db, "news17", task.region, task.universe)
+                        paper_outcome = await run_paper_dispatch(db, brain, task, run, fields)
+                        if paper_outcome.get("done"):
+                            return {"success": True, "run_id": run.id,
+                                    "research_reason": paper_outcome.get("reason")}
+                        await db.refresh(task)
+                        if task.status in {"PAUSED", "STOPPED"}:
+                            return {"skipped": task.status}
+                        return {"_retry": True, "run_id": run.id, "retry_countdown": 1}
+
+                    if (task.config or {}).get("audit_candidates"):
+                        from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger
+
+                        brain = ResearchBudgetBrain(brain, ResearchLedger(
+                            task.id, run.id,
+                            int((task.config or {}).get("research_request_budget", 1_000_000)),
+                            str((task.config or {}).get("research_family_id") or "unclassified"),
+                        ))
                     mining_agent = MiningAgent(db, brain)
                     
                     # Get datasets to mine

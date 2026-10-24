@@ -249,6 +249,7 @@ class MCPBrainAdapter:
         self.fallback = fallback or BrainAdapter()
         self.mcp = mcp_client or MCPToolClient()
         self._fallback_entered = False
+        self.no_fallback_on_simulation_error = False
 
     async def __aenter__(self):
         return self
@@ -271,6 +272,11 @@ class MCPBrainAdapter:
     async def simulate_alpha(self, expression: str, **kwargs) -> Dict[str, Any]:
         results = await self.simulate_batch([expression], **kwargs)
         return results[0] if results else {"success": False, "error": "No simulation result returned"}
+
+    async def simulate_single(self, expression: str, **kwargs) -> Dict[str, Any]:
+        """Explicit one-expression WQ request for audited runs, without padding."""
+        fallback = await self._ensure_fallback()
+        return await fallback.simulate_alpha(expression=expression, retry_post=False, **kwargs)
 
     async def simulate_batch(
         self,
@@ -339,6 +345,13 @@ class MCPBrainAdapter:
                     for _ in expressions
                 ]
             except Exception as exc:
+                if self.no_fallback_on_simulation_error:
+                    logger.warning(
+                        "[MCPBrainAdapter] Audited simulation response uncertain; "
+                        f"no fallback ({type(exc).__name__})"
+                    )
+                    return [{"success": False, "error": "uncertain network result"}
+                            for _ in expressions]
                 logger.warning(
                     "[MCPBrainAdapter] MCP create_multi_simulation failed, using fallback: "
                     f"{type(exc).__name__}: {exc!r}"
@@ -357,6 +370,7 @@ class MCPBrainAdapter:
             max_wait=max_wait,
             timeout_grace_seconds=timeout_grace_seconds,
             no_child_timeout_seconds=no_child_timeout_seconds,
+            retry_post=not self.no_fallback_on_simulation_error,
         )
 
     async def check_correlation(self, alpha_id: str, check_type: str = "PROD") -> Dict[str, Any]:
