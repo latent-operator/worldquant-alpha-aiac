@@ -26,6 +26,7 @@ def command_plan() -> list[Check]:
         Check("staged git diff", ("git", "diff", "--cached", "--check"), ROOT),
         Check("repository hygiene", (sys.executable, "scripts/check_repo_hygiene.py"), ROOT),
         Check("backend unit tests", (sys.executable, "-m", "pytest", "backend/tests/unit", "-q", "--disable-warnings"), ROOT),
+        Check("AIAC MCP tests", (sys.executable, "-m", "unittest", "discover", "-s", "integrations/aiac_mcp/tests", "-p", "test_*.py"), ROOT),
         Check("frontend tests", (npm, "test"), ROOT / "frontend"),
         Check("frontend lint", (npm, "run", "lint"), ROOT / "frontend"),
         Check("frontend build", (npm, "run", "build"), ROOT / "frontend"),

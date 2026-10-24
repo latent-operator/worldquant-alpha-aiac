@@ -17,6 +17,7 @@ pydantic-settings>=2.1.0
 
 # HTTP Client
 httpx>=0.26.0
+mcp==2.1.0  # Codex -> local AIAC read/control bridge
 aiohttp>=3.9.1
 
 # LLM Integration

@@ -13,12 +13,36 @@ from datetime import datetime
 from backend.database import get_db
 from backend.services.run_service import RunService
 from backend.services.credentials_service import CredentialsService
+from backend.services.research_report import candidate_page, research_report
 
 router = APIRouter(
     prefix="/runs",
     tags=["runs"],
     responses={404: {"description": "Not found"}},
 )
+
+
+@router.get("/{run_id}/research-candidates")
+async def get_research_candidates(
+    run_id: int,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Paginated candidate lineage, including validation and request outcomes."""
+    try:
+        return await candidate_page(db, run_id, limit, offset)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
+@router.get("/{run_id}/research-report")
+async def get_research_report(run_id: int, db: AsyncSession = Depends(get_db)):
+    """Report request budget, WQ results, quality PASS and paired deltas."""
+    try:
+        return await research_report(db, run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 # =============================================================================

@@ -20,6 +20,7 @@ from loguru import logger
 from datetime import datetime, timedelta
 import re
 import json, time, os  # #region agent log
+from contextlib import nullcontext
 
 def _debug_log(hypo_id, location, message, data=None):
     try:
@@ -43,6 +44,7 @@ from backend.agents.evolution_strategy import (
 from backend.agents.feedback_agent import FeedbackAgent
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
+from backend.alpha_scoring import should_optimize
 
 
 def _next_no_new_streak(previous: int, new_candidates: int) -> int:
@@ -2720,24 +2722,23 @@ class MiningAgent:
                         "[MiningAgent] Optimization round batch budget exhausted | "
                         f"iteration={iteration} dataset={dataset_id}"
                     )
-                    break
-
-                result = await self._simulate_optimization_variants(
-                    task=task,
-                    original_expression=expression,
-                    expr_variants=expr_variants[:5],
-                    settings_variants=settings_variants[:3],
-                    iteration=iteration,
-                    dataset_id=dataset_id,
-                    fields=fields or [],
-                    run_id=run_id,
-                    max_batches_override=round_batch_budget,
-                )
-                pass_count += result.get("pass_total", 0)
-                round_batch_budget -= result.get("batches_run", 0)
+                else:
+                    result = await self._simulate_optimization_variants(
+                        task=task,
+                        original_expression=expression,
+                        expr_variants=expr_variants[:5],
+                        settings_variants=settings_variants[:3],
+                        iteration=iteration,
+                        dataset_id=dataset_id,
+                        fields=fields or [],
+                        run_id=run_id,
+                        max_batches_override=round_batch_budget,
+                    )
+                    pass_count += result.get("pass_total", 0)
+                    round_batch_budget -= result.get("batches_run", 0)
 
                 if self._task_config_bool(task, "enable_genetic_optimization"):
-                    await self._run_genetic_optimization(
+                    pass_count += await self._run_genetic_optimization(
                         task=task,
                         seed_expression=expression,
                         seed_metrics=metrics,
@@ -2782,8 +2783,8 @@ class MiningAgent:
         dataset_id: Optional[str] = None,
         fields: Optional[List[Dict]] = None,
         run_id: Optional[int] = None,
-    ) -> None:
-        """Run optional budget-limited genetic optimization and persist winners."""
+    ) -> int:
+        """Run optional genetic optimization and persist every returned WQ result."""
         try:
             from backend.genetic_optimizer import OptimizationConfig, run_genetic_optimization
             from backend.alpha_semantic_validator import AlphaSemanticValidator, compute_expression_hash
@@ -2811,10 +2812,16 @@ class MiningAgent:
             ]
             validator = AlphaSemanticValidator(fields=allowed_field_rows, strict_field_check=True)
             required_field = str(task_config.get("research_required_field") or "")
+            genetic_results = {}
+            rejection_counts = {}
+            request_count = 0
+            wq_result_count = 0
 
             async def simulate_for_genetic(**kwargs):
+                nonlocal request_count, wq_result_count
                 candidate_expression = str(kwargs.get("expression") or "")
                 if not validator.validate(candidate_expression).valid:
+                    rejection_counts["SEMANTIC"] = rejection_counts.get("SEMANTIC", 0) + 1
                     return {"success": False, "error": "GENETIC_VALIDATION_FAILED"}
                 if _validate_task_constraints(
                     expression=candidate_expression,
@@ -2822,11 +2829,13 @@ class MiningAgent:
                     task_config=task_config,
                     fields=allowed_field_rows,
                 ):
+                    rejection_counts["CONSTRAINT"] = rejection_counts.get("CONSTRAINT", 0) + 1
                     return {"success": False, "error": "GENETIC_CONSTRAINT_FAILED"}
                 if required_field and not re.search(
                     rf"(?<![A-Za-z0-9_]){re.escape(required_field)}(?![A-Za-z0-9_])",
                     candidate_expression,
                 ):
+                    rejection_counts["PAPER_FIELD"] = rejection_counts.get("PAPER_FIELD", 0) + 1
                     return {"success": False, "error": "GENETIC_REQUIRED_FIELD_MISSING"}
                 existing = await self.db.execute(
                     select(Alpha.id).where(
@@ -2835,8 +2844,17 @@ class MiningAgent:
                     ).limit(1)
                 )
                 if existing.scalar_one_or_none() is not None:
+                    rejection_counts["DEDUP"] = rejection_counts.get("DEDUP", 0) + 1
                     return {"success": False, "error": "GENETIC_DUPLICATE"}
-                result = await self.brain.simulate_alpha(**kwargs)
+                source_context = (self.brain.source("GENETIC") if hasattr(self.brain, "source")
+                                  else nullcontext())
+                with source_context:
+                    result = await self.brain.simulate_alpha(**kwargs)
+                if result.get("error") not in {"DUPLICATE", "BUDGET_EXHAUSTED", "TASK_NOT_RUNNING"}:
+                    request_count += 1
+                if result.get("alpha_id"):
+                    wq_result_count += 1
+                    genetic_results[candidate_expression] = result
                 metrics = result.get("metrics", {}) or {}
                 return {
                     **result,
@@ -2862,24 +2880,40 @@ class MiningAgent:
             )
 
             saved = 0
-            for individual in report.get("passed_individuals", [])[:5]:
-                expression = individual.get("expression")
-                if not expression:
+            quality_passes = 0
+            optimizer_metadata = {
+                item.get("expression"): item for item in report.get("passed_individuals", [])
+            }
+            for expression, raw_result in genetic_results.items():
+                alpha_id = raw_result.get("alpha_id")
+                if not alpha_id:
                     continue
-
+                exists = await self.db.execute(select(Alpha.id).where(Alpha.alpha_id == alpha_id).limit(1))
+                if exists.scalar_one_or_none() is not None:
+                    continue
+                individual = optimizer_metadata.get(expression) or {}
                 metrics = {
-                    "sharpe": individual.get("sharpe", 0),
-                    "fitness": individual.get("fitness", 0),
-                    "turnover": individual.get("turnover", 0),
+                    **(raw_result.get("metrics") or {}),
+                    "checks": raw_result.get("checks") or [],
+                    "can_submit": raw_result.get("can_submit", False),
+                    "_settings": base_settings,
                     "_genetic_overall_fitness": individual.get("overall_fitness", 0),
                     "_genetic_mutation_type": individual.get("mutation_type"),
                     "_genetic_mutation_description": individual.get("mutation_description"),
                 }
 
+                quality_status = await self._quality_status_for_optimization_result(
+                    task=task, expression=expression, metrics=metrics,
+                    fields=allowed_field_rows, alpha_id=alpha_id,
+                )
+                if quality_status != "PASS":
+                    can_optimize, _ = should_optimize({"is": metrics, "os": raw_result.get("os") or {}})
+                    quality_status = "OPTIMIZE" if can_optimize else "FAIL"
+                quality_passes += quality_status == "PASS"
                 self.db.add(Alpha(
                     task_id=task.id,
                     run_id=run_id,
-                    alpha_id=individual.get("alpha_id") or None,
+                    alpha_id=alpha_id,
                     expression=expression,
                     expression_hash=compute_expression_hash(expression),
                     hypothesis=f"Genetic optimization of {seed_expression[:20]}...",
@@ -2892,7 +2926,7 @@ class MiningAgent:
                     neutralization=base_settings["neutralization"],
                     truncation=base_settings["truncation"],
                     settings=base_settings,
-                    quality_status="OPTIMIZE",
+                    quality_status=quality_status,
                     status="simulated",
                     stage="IS",
                     is_sharpe=metrics.get("sharpe"),
@@ -2907,8 +2941,10 @@ class MiningAgent:
                 await self.db.commit()
             logger.info(
                 f"[MiningAgent] Genetic optimization complete | "
-                f"simulations={report.get('simulations_used')} saved={saved}"
+                f"attempted={report.get('attempts_used')} wq_requests={request_count} "
+                f"wq_results={wq_result_count} saved={saved} rejected={rejection_counts}"
             )
+            return quality_passes
         except Exception as e:
             logger.warning(
                 f"[MiningAgent] Genetic optimization skipped/failed | "
@@ -2918,6 +2954,7 @@ class MiningAgent:
                 await self.db.rollback()
             except Exception:
                 pass
+            return 0
     
     async def _simulate_optimization_variants(
         self,
@@ -3066,18 +3103,21 @@ class MiningAgent:
                     continue
                 expressions = [job[1] for job in batch]
                 try:
-                    results = await self.brain.simulate_batch(
-                        expressions=expressions,
-                        region=task.region,
-                        universe=task.universe,
-                        delay=int(delay),
-                        decay=decay,
-                        neutralization=neutralization,
-                        truncation=truncation,
-                        test_period=(task.config or {}).get("test_period", "P2Y0M"),
-                        max_wait=int((task.config or {}).get("optimization_simulation_max_wait", 300)),
-                        timeout_grace_seconds=int((task.config or {}).get("optimization_timeout_grace_seconds", 60)),
-                    )
+                    source_context = (self.brain.source("OPTIMIZATION") if hasattr(self.brain, "source")
+                                      else nullcontext())
+                    with source_context:
+                        results = await self.brain.simulate_batch(
+                            expressions=expressions,
+                            region=task.region,
+                            universe=task.universe,
+                            delay=int(delay),
+                            decay=decay,
+                            neutralization=neutralization,
+                            truncation=truncation,
+                            test_period=(task.config or {}).get("test_period", "P2Y0M"),
+                            max_wait=int((task.config or {}).get("optimization_simulation_max_wait", 300)),
+                            timeout_grace_seconds=int((task.config or {}).get("optimization_timeout_grace_seconds", 60)),
+                        )
                     batches_run += 1
                 except Exception as e:
                     logger.warning(f"Optimization batch simulation failed: {e}")

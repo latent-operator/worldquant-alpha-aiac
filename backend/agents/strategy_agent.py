@@ -29,6 +29,8 @@ class RoundMetrics:
     total_alphas: int = 0
     simulated_alphas: int = 0
     passed_alphas: int = 0
+    optimize_alphas: int = 0
+    wq_results: int = 0
     failed_alphas: int = 0
     success_rate: float = 0.0
     
@@ -55,6 +57,8 @@ class RoundMetrics:
             "total_alphas": self.total_alphas,
             "simulated_alphas": self.simulated_alphas,
             "passed_alphas": self.passed_alphas,
+            "optimize_alphas": self.optimize_alphas,
+            "wq_results": self.wq_results,
             "failed_alphas": self.failed_alphas,
             "success_rate": round(self.success_rate, 3),
             "best_sharpe": self.best_sharpe,
@@ -131,7 +135,7 @@ STRATEGY_USER_PROMPT = """## 第 {iteration} 轮挖掘结果分析
 ### 本轮指标汇总
 {metrics_summary}
 
-### 成功案例 ({success_count} 个)
+### 质量 PASS 与待验证种子（仅 PASS 计为成功；PASS {success_count} 个）
 {success_examples}
 
 ### 失败案例 ({failure_count} 个)
@@ -147,6 +151,7 @@ STRATEGY_USER_PROMPT = """## 第 {iteration} 轮挖掘结果分析
 请分析以上结果，生成下一轮的优化策略。要求：
 - 不要把策略收缩成单字段、单骨架、单参数扫参；必须保留机制、字段组合、算子骨架、窗口参数和信号方向多样性。
 - OPTIMIZE 案例是“有信息量的弱信号”，需要解释其失败门槛并提出降换手、提 margin、改善 risk neutralization 的变体。
+- 当质量 PASS 为 0 时，禁止宣称成功率良好或建议收敛。WQ 返回结果不等于质量通过。
 - 字段建议必须来自当前数据集已出现字段或上一轮已有字段，避免虚构字段。
 
 输出JSON格式：
@@ -209,16 +214,25 @@ class StrategyAgent:
         """
         metrics = RoundMetrics()
         
-        # Count totals
-        metrics.total_alphas = len(alphas) + len(failures)
-        
-        # Simulated alphas: All passed alphas + failures that actually ran (QUALITY_CHECK_FAILED)
-        quality_failures_count = sum(1 for f in failures if f.get('error_type') == 'QUALITY_CHECK_FAILED')
-        metrics.simulated_alphas = len(alphas) + quality_failures_count
-        
-        # Alphas list contains only successful ones in this context
-        metrics.passed_alphas = len(alphas)
-        metrics.failed_alphas = len(failures)
+        # A saved FAIL/OPTIMIZE Alpha is a WQ result, never a quality success.
+        # The companion QUALITY_CHECK_FAILED event describes that same result.
+        normalize_expression = lambda value: ''.join(str(value or '').split()).lower()
+        saved_expressions = {normalize_expression(getattr(a, 'expression', '')) for a in alphas}
+        unique_failures = [
+            f for f in failures
+            if not (f.get('error_type') == 'QUALITY_CHECK_FAILED'
+                    and normalize_expression(f.get('expression')) in saved_expressions)
+        ]
+        metrics.wq_results = len(alphas)
+        metrics.passed_alphas = sum(getattr(a, 'quality_status', None) == 'PASS' for a in alphas)
+        metrics.optimize_alphas = sum(getattr(a, 'quality_status', None) == 'OPTIMIZE' for a in alphas)
+        metrics.quality_failures = sum(getattr(a, 'quality_status', None) == 'FAIL' for a in alphas)
+        metrics.quality_failures += sum(f.get('error_type') == 'QUALITY_CHECK_FAILED' for f in unique_failures)
+        metrics.total_alphas = len(alphas) + len(unique_failures)
+        metrics.simulated_alphas = len(alphas) + sum(
+            f.get('error_type') == 'QUALITY_CHECK_FAILED' for f in unique_failures
+        )
+        metrics.failed_alphas = metrics.total_alphas - metrics.passed_alphas
         metrics.success_rate = metrics.passed_alphas / max(metrics.total_alphas, 1)
         
         # Compute quality metrics from passed alphas
@@ -257,7 +271,7 @@ class StrategyAgent:
         problem_fields = {}
         problem_ops = {}
         
-        for f in failures:
+        for f in unique_failures:
             err = f.get('error_message', '') or ''
             err_lower = err.lower()
             
@@ -281,7 +295,7 @@ class StrategyAgent:
         
         # Also count quality failures (simulated but didn't pass thresholds)
         # We already calculated this as part of simulated_alphas logic
-        metrics.quality_failures = quality_failures_count
+        # Saved FAIL results were counted above; do not re-add companion errors.
         
         # Sort and extract top patterns
         metrics.common_error_types = sorted(error_types.keys(), key=lambda x: error_types[x], reverse=True)
@@ -339,7 +353,7 @@ class StrategyAgent:
                 f"Turnover: {m.get('turnover', 'N/A')}, Margin: {m.get('margin', 'N/A')}\n"
                 f"  Failed gates: {failed_gates[:4] if isinstance(failed_gates, list) else failed_gates}"
             )
-        success_text = "\n".join(success_examples) if success_examples else "无成功案例"
+        success_text = "\n".join(success_examples) if success_examples else "无质量 PASS 或待验证种子"
         
         # Prepare failure examples
         failure_examples = []
@@ -352,7 +366,9 @@ class StrategyAgent:
         
         # Metrics summary
         metrics_summary = f"""
-- 总Alpha数: {metrics.total_alphas}
+- 生成及仿真尝试数: {metrics.total_alphas}
+- WQ返回并保存结果: {metrics.wq_results}
+- OPTIMIZE待验证种子: {metrics.optimize_alphas}（不是质量通过）
 - 通过数: {metrics.passed_alphas} (成功率: {metrics.success_rate:.1%})
 - 最佳Sharpe: {metrics.best_sharpe or 'N/A'}
 - 平均Sharpe: {metrics.avg_sharpe or 'N/A'}
@@ -406,6 +422,13 @@ class StrategyAgent:
                     reasoning=next_strat.get("reasoning", ""),
                     optimization_suggestions=data.get("optimization_suggestions", [])
                 )
+                if metrics.passed_alphas == 0 and (
+                    strategy.exploration_weight < 0.5
+                    or '成功率良好' in strategy.action_summary
+                    or '收敛' in strategy.action_summary
+                ):
+                    logger.warning('[StrategyAgent] Rejecting convergence advice with zero PASS')
+                    return self._fallback_strategy(metrics, iteration, cumulative_success, target_goal)
                 
                 logger.info(f"[StrategyAgent] Generated strategy: {strategy.action_summary}")
                 return strategy

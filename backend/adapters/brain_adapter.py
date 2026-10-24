@@ -309,7 +309,7 @@ class BrainAdapter:
     # ... Methods (simulate_alpha, get_datasets, etc.) need to use self.client ...
     # I will replicate them below, ensuring they use self.client and handle errors.
     
-    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M") -> Dict:
+    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M", retry_post: bool = True) -> Dict:
         # Construct payload
         sim_payload = {
             "type": "REGULAR",
@@ -323,7 +323,8 @@ class BrainAdapter:
         }
         
         try:
-            response = await self._safe_api_call("post", "/simulations", json=sim_payload)
+            response = await self._safe_api_call("post", "/simulations", json=sim_payload,
+                                                 retry_writes=retry_post)
             if response.status_code not in [200, 201, 202]:
                 logger.error(f"Brain Simulation Failed [{response.status_code}] | Payload: {json.dumps(sim_payload)} | Response: {response.text}")
                 return {"success": False, "error": f"Creation failed: {response.text}"}
@@ -982,11 +983,15 @@ class BrainAdapter:
             logger.error(f"Get alpha details error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _safe_api_call(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
+    async def _safe_api_call(self, method: str, endpoint: str, retry_writes: bool = True, **kwargs) -> httpx.Response:
         """
         Execute API call with auto-reauth on 401 and retry on 429/5xx.
         """
         url = endpoint if endpoint.startswith("http") else f"{self.BASE_URL}{endpoint}"
+        if method.lower() == "post" and not retry_writes:
+            # A timed-out creation request may already exist at WQ. Never send
+            # a second POST for an audited candidate without reconciliation.
+            return await self.client.post(url, **kwargs)
         retries = 0
         max_retries = 5
         
