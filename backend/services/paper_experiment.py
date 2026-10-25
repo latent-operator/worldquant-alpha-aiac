@@ -173,6 +173,8 @@ async def run_paper_dispatch(db, brain, task, run, fields: list[dict]) -> dict:
         metrics.update({
             "checks": result.get("checks") or metrics.get("checks") or [],
             "can_submit": result.get("can_submit", False),
+            "stage": result.get("stage") if result.get("stage") in {"IS", "OS"} else None,
+            "status": result.get("status") if result.get("status") in {"UNSUBMITTED", "SUBMITTED"} else None,
             "_settings": settings,
             "_paper_vendor_proxy": True,
             "_paper_family": FAMILY_ID,
