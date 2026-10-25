@@ -156,6 +156,17 @@ class AIACClient:
                 break
         with_wq_id = [item for item in alphas if item.get("alpha_id")]
         passes = [item for item in with_wq_id if item.get("quality_status") == "PASS"]
+        generated_candidates = sum(row["generated"] for row in rounds.values())
+        entered_simulation = sum(row["simulated"] for row in rounds.values())
+        candidate_source = "AIAC CODE_GEN trace"
+        simulation_source = "AIAC SIMULATE trace"
+        if generated_candidates == 0 and entered_simulation == 0:
+            audit = await self.research_report(run_id)
+            if audit.get("audit_available"):
+                funnel = audit.get("candidate_funnel") or {}
+                generated_candidates = int(funnel.get("generated") or 0)
+                entered_simulation = int(funnel.get("send_attempts_or_uncertain") or 0)
+                candidate_source = simulation_source = "AIAC persisted candidate audit"
 
         def metric(item: dict, name: str) -> float | None:
             raw = (item.get("metrics") or {}).get(name)
@@ -180,16 +191,16 @@ class AIACClient:
             }
         return {
             "run": public_run(run), "run_id": run_id,
-            "generated_candidates": sum(row["generated"] for row in rounds.values()),
-            "entered_simulation": sum(row["simulated"] for row in rounds.values()),
+            "generated_candidates": generated_candidates,
+            "entered_simulation": entered_simulation,
             "saved_wq_results": len(with_wq_id), "quality_pass": len(passes),
             "alpha_rows_total": len(alphas),
             "wq_alpha_ids_sample": [item["alpha_id"] for item in with_wq_id[:10]],
             "best_sharpe_alpha": best_summary,
             "source": {
                 "run": "AIAC /runs/{id}/summary",
-                "candidates": "AIAC CODE_GEN trace",
-                "simulation": "AIAC SIMULATE trace",
+                "candidates": candidate_source,
+                "simulation": simulation_source,
                 "wq_results_and_pass": "AIAC /runs/{id}/alphas; PASS is quality_status",
             },
             "observed_at": observed_at(),

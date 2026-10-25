@@ -69,6 +69,31 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all("page" not in params for _, params in requests))
         self.assertTrue(any(params.get("limit") == "200" and params.get("offset") == "0" for _, params in requests))
 
+    async def test_report_uses_candidate_audit_for_fixed_paper_runs(self):
+        def handler(request):
+            path = request.url.path
+            if path.endswith("/summary"):
+                return httpx.Response(200, json={"id": 14, "task_id": 11, "status": "COMPLETED"})
+            if path.endswith("/alphas"):
+                return httpx.Response(200, json={"total": 1, "items": [
+                    {"id": 1, "alpha_id": "WQ1", "quality_status": "FAIL",
+                     "metrics": {"sharpe": 0.3, "fitness": 0.04}},
+                ]})
+            if path.endswith("/trace-page"):
+                return httpx.Response(200, json={"total": 0, "items": []})
+            if path.endswith("/research-report"):
+                return httpx.Response(200, json={"audit_available": True,
+                    "candidate_funnel": {"generated": 40,
+                                         "send_attempts_or_uncertain": 40}})
+            return httpx.Response(404)
+
+        api = AIACClient("http://localhost/api/v1", httpx.MockTransport(handler))
+        report = await api.report(14)
+        self.assertEqual(report["generated_candidates"], 40)
+        self.assertEqual(report["entered_simulation"], 40)
+        self.assertEqual(report["saved_wq_results"], 1)
+        self.assertEqual(report["source"]["candidates"], "AIAC persisted candidate audit")
+
     async def test_optional_trace_filters_are_omitted(self):
         seen = []
         def handler(request):
