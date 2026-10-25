@@ -124,6 +124,31 @@ class AIACClient:
 
     async def report(self, run_id: int) -> dict:
         run = await self.request("GET", f"/runs/{run_id}/summary")
+        try:
+            audit = await self.research_report(run_id)
+        except AIACError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+            audit = {}
+        if audit.get("audit_available"):
+            funnel = audit.get("candidate_funnel") or {}
+            return {
+                "run": public_run(run), "run_id": run_id,
+                "generated_candidates": int(funnel.get("generated") or 0),
+                "entered_simulation": int(funnel.get("send_attempts_or_uncertain") or 0),
+                "saved_wq_results": int(funnel.get("saved_wq_results") or 0),
+                "quality_pass": int(funnel.get("quality_pass") or 0),
+                "alpha_rows_total": int(funnel.get("saved_wq_results") or 0),
+                "wq_alpha_ids_sample": audit.get("wq_alpha_ids_sample") or [],
+                "best_sharpe_alpha": audit.get("best_sharpe_alpha"),
+                "source": {
+                    "run": "AIAC /runs/{id}/summary",
+                    "candidates": "AIAC persisted candidate audit",
+                    "simulation": "AIAC persisted candidate audit",
+                    "wq_results_and_pass": "AIAC aggregated research-report; PASS is quality_status",
+                },
+                "observed_at": observed_at(),
+            }
         alphas: list[dict] = []
         offset = 0
         while True:

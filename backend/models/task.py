@@ -4,7 +4,7 @@ Task Models - Mining tasks and experiment tracking
 Contains MiningTask, ExperimentRun, and TraceStep models.
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -87,7 +87,7 @@ class TraceStep(SQLAlchemyBase):
     Provides observability and debugging capabilities.
     """
     __tablename__ = "trace_steps"
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (Index("ix_trace_steps_run_id_id", "run_id", "id"), {'extend_existing': True})
     
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey("mining_tasks.id"), nullable=False)

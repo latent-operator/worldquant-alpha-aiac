@@ -228,11 +228,12 @@ async def get_run_trace_page(
     offset: int = Query(0, ge=0),
     iteration: Optional[int] = Query(None, ge=1),
     step_type: Optional[str] = Query(None, max_length=50),
+    descending: bool = Query(False),
     service: RunService = Depends(get_run_service),
 ):
     """Read a bounded trace page; the original full trace endpoint remains available."""
     try:
-        page = await service.get_run_trace_page(run_id, limit, offset, iteration, step_type)
+        page = await service.get_run_trace_page(run_id, limit, offset, iteration, step_type, descending)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return TracePageResponse(

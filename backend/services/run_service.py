@@ -183,6 +183,7 @@ class RunService(BaseService):
     async def get_run_trace_page(
         self, run_id: int, limit: int = 50, offset: int = 0,
         iteration: Optional[int] = None, step_type: Optional[str] = None,
+        descending: bool = False,
     ) -> PaginatedResult:
         """Return a stable, bounded trace page without loading the whole run."""
         if not await self.run_repo.get_by_id(run_id):
@@ -197,7 +198,7 @@ class RunService(BaseService):
         )).scalar_one()
         rows = (await self.db.execute(
             select(TraceStep).where(*filters)
-            .order_by(TraceStep.iteration, TraceStep.step_order, TraceStep.id)
+            .order_by(TraceStep.id.desc() if descending else TraceStep.id.asc())
             .limit(limit).offset(offset)
         )).scalars().all()
         return PaginatedResult(total=total, items=[TraceStepInfo(

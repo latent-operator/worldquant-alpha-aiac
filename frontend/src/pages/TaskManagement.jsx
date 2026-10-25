@@ -15,6 +15,7 @@ import {
   Input,
   Select,
   InputNumber,
+  Switch,
   message,
 } from 'antd'
 import {
@@ -25,6 +26,7 @@ import {
   EyeOutlined,
 } from '@ant-design/icons'
 import api from '../services/api'
+import { taskProgress } from '../utils/taskDisplay'
 
 const { Title } = Typography
 const { Option } = Select
@@ -168,7 +170,7 @@ export default function TaskManagement() {
       key: 'progress',
       width: 100,
       render: (_, record) => (
-        <span>{record.progress_current} / {record.daily_goal}</span>
+        <span>{taskProgress(record)}</span>
       ),
     },
     {
@@ -264,6 +266,7 @@ export default function TaskManagement() {
             agent_mode: 'AUTONOMOUS',
             daily_goal: 4,
             max_iterations: 10,
+            continuous_mode: false,
           }}
         >
           <Form.Item
@@ -337,6 +340,11 @@ export default function TaskManagement() {
               </Form.Item>
             </Col>
           </Row>
+
+          <Form.Item name="continuous_mode" label="持续迭代" valuePropName="checked"
+            help="按轮保存并续跑同一 Run，直到手动暂停或停止；仍遵守平台额度。">
+            <Switch />
+          </Form.Item>
 
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
             <Space>

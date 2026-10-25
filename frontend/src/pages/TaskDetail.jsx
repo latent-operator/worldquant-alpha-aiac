@@ -35,6 +35,7 @@ import {
 } from '@ant-design/icons'
 import api from '../services/api'
 import { waitingStatusText } from '../utils/recoveryStatus'
+import { taskIteration, taskProgress } from '../utils/taskDisplay'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -66,10 +67,10 @@ export default function TaskDetail() {
 
   const [selectedRunId, setSelectedRunId] = React.useState(null)
 
-  // Fetch task details with trace
+  // Keep long-running task detail bounded; trace is fetched separately.
   const { data: task, isLoading, error } = useQuery({
     queryKey: ['task', id],
-    queryFn: () => api.getTask(id),
+    queryFn: () => api.getTaskSummary(id),
     refetchInterval: 5000, // Refresh while task is running
   })
 
@@ -89,7 +90,7 @@ export default function TaskDetail() {
 
   const { data: runTrace } = useQuery({
     queryKey: ['runTrace', selectedRunId],
-    queryFn: () => api.getRunTrace(selectedRunId),
+    queryFn: async () => (await api.getRunTracePage(selectedRunId, { limit: 100, descending: true })).items,
     enabled: !!selectedRunId,
     refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
   })
@@ -98,6 +99,13 @@ export default function TaskDetail() {
     queryKey: ['runAlphas', selectedRunId],
     queryFn: () => api.getRunAlphas(selectedRunId, { limit: 200, offset: 0 }),
     enabled: !!selectedRunId,
+    refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
+  })
+
+  const { data: researchReport } = useQuery({
+    queryKey: ['researchReport', selectedRunId],
+    queryFn: () => api.getResearchReport(selectedRunId),
+    enabled: !!selectedRunId && !!task?.continuous_mode,
     refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
   })
 
@@ -374,17 +382,17 @@ export default function TaskDetail() {
               </Descriptions.Item>
               <Descriptions.Item label="进度">
                 <Text strong style={{ color: '#00d4ff' }}>
-                  {task.progress_current} / {task.daily_goal}
+                  {taskProgress(task)}
                 </Text>
               </Descriptions.Item>
               <Descriptions.Item label="已发现 Alpha">
-                {task.alphas_count || 0}
+                {researchReport?.candidate_funnel?.saved_wq_results ?? runAlphasResp?.total ?? 0}
               </Descriptions.Item>
               <Descriptions.Item label="最大迭代">
-                {task.max_iterations || 1}
+                {task.continuous_mode ? '无上限' : (task.max_iterations || 1)}
               </Descriptions.Item>
               <Descriptions.Item label="当前迭代">
-                {task.current_iteration || 0} / {task.max_iterations || 1}
+                {taskIteration(task)}
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
                 {new Date(task.created_at).toLocaleString()}
@@ -424,24 +432,31 @@ export default function TaskDetail() {
                   )}
                   <Descriptions.Item label="数量">
                     <Space wrap>
-                      <Tag color="green">PASS {runAlphaSummary.counts.PASS}</Tag>
-                      <Tag color="gold">OPTIMIZE {runAlphaSummary.counts.OPTIMIZE}</Tag>
-                      <Tag color="red">FAIL {runAlphaSummary.counts.FAIL}</Tag>
+                      <Tag color="green">PASS {researchReport?.candidate_funnel?.quality_pass ?? runAlphaSummary.counts.PASS}</Tag>
+                      <Tag color="gold">OPTIMIZE {researchReport?.quality_counts?.OPTIMIZE ?? runAlphaSummary.counts.OPTIMIZE}</Tag>
+                      <Tag color="red">FAIL {researchReport?.quality_counts?.FAIL ?? runAlphaSummary.counts.FAIL}</Tag>
                       {runAlphaSummary.counts.OTHER > 0 && (
                         <Tag>OTHER {runAlphaSummary.counts.OTHER}</Tag>
                       )}
                     </Space>
                   </Descriptions.Item>
+                  {task.continuous_mode && (
+                    <Descriptions.Item label="候选 / WQ 请求 / 已保存结果">
+                      {researchReport?.candidate_funnel?.generated ?? '--'} /{' '}
+                      {researchReport?.candidate_funnel?.send_attempts_or_uncertain ?? '--'} /{' '}
+                      {researchReport?.candidate_funnel?.saved_wq_results ?? '--'}
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="Score">
                     <Space wrap>
-                      <Tag>Avg {runAlphaSummary.avgScore?.toFixed?.(3) ?? '--'}</Tag>
-                      <Tag>Best {runAlphaSummary.bestScore?.toFixed?.(3) ?? '--'}</Tag>
+                      <Tag>{task.continuous_mode ? '最近200条 Avg' : 'Avg'} {runAlphaSummary.avgScore?.toFixed?.(3) ?? '--'}</Tag>
+                      <Tag>{task.continuous_mode ? '最近200条 Best' : 'Best'} {runAlphaSummary.bestScore?.toFixed?.(3) ?? '--'}</Tag>
                     </Space>
                   </Descriptions.Item>
                   <Descriptions.Item label="Sharpe">
                     <Space wrap>
-                      <Tag>Avg {runAlphaSummary.avgSharpe?.toFixed?.(2) ?? '--'}</Tag>
-                      <Tag>Best {runAlphaSummary.bestSharpe?.toFixed?.(2) ?? '--'}</Tag>
+                      {!task.continuous_mode && <Tag>Avg {runAlphaSummary.avgSharpe?.toFixed?.(2) ?? '--'}</Tag>}
+                      <Tag>Best {researchReport?.best_sharpe_alpha?.sharpe?.toFixed?.(2) ?? runAlphaSummary.bestSharpe?.toFixed?.(2) ?? '--'}</Tag>
                     </Space>
                   </Descriptions.Item>
                 </Descriptions>
@@ -523,7 +538,7 @@ export default function TaskDetail() {
                     label: `#${r.id} ${r.status} ${r.started_at ? new Date(r.started_at).toLocaleString() : ''}`,
                   }))}
                 />
-                <Text type="secondary">共 {(runTrace || task.trace_steps)?.length || 0} 步 / {iterationKeys.length} 轮</Text>
+                <Text type="secondary">最近 {(runTrace || []).length} 步 / {iterationKeys.length} 轮</Text>
               </Space>
             )}
           >

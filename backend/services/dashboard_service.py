@@ -220,7 +220,9 @@ class DashboardService(BaseService):
                     task_name=task.task_name,
                     region=task.region,
                     status=task.status,
-                    progress=f"{task.progress_current}/{task.daily_goal}",
+                    progress=(f"PASS {task.progress_current} · 持续运行"
+                              if (task.config or {}).get("continuous_mode") is True
+                              else f"{task.progress_current}/{task.daily_goal}"),
                     current_step=current_step,
                     current_dataset=current_dataset,
                     block_reason=active_run.block_reason if active_run else None,

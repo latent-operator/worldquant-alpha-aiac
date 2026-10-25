@@ -36,6 +36,7 @@ class TaskCreateData:
     daily_goal: int = 4
     max_iterations: int = 10
     config: Dict[str, Any] = None
+    continuous_mode: bool = False
     
     def __post_init__(self):
         if self.target_datasets is None:
@@ -60,6 +61,7 @@ class TaskSummary:
     max_iterations: int
     created_at: datetime
     updated_at: Optional[datetime]
+    continuous_mode: bool = False
 
 
 @dataclass
@@ -97,6 +99,7 @@ class TaskDetail:
     updated_at: Optional[datetime]
     trace_steps: List[TraceStepInfo]
     alphas_count: int
+    continuous_mode: bool = False
 
 
 @dataclass
@@ -178,6 +181,7 @@ class TaskService(BaseService):
             max_iterations=task.max_iterations,
             created_at=task.created_at,
             updated_at=task.updated_at,
+            continuous_mode=(task.config or {}).get("continuous_mode") is True,
         )
     
     # =========================================================================
@@ -251,6 +255,7 @@ class TaskService(BaseService):
             updated_at=task.updated_at,
             trace_steps=trace_steps,
             alphas_count=alphas_count,
+            continuous_mode=(task.config or {}).get("continuous_mode") is True,
         )
     
     def _to_trace_info(self, step: TraceStep) -> TraceStepInfo:
@@ -282,6 +287,13 @@ class TaskService(BaseService):
         Returns:
             Created TaskSummary
         """
+        config = dict(data.config or {})
+        continuous_mode = data.continuous_mode or config.get("continuous_mode") is True
+        if continuous_mode:
+            if config.get("research_protocol") == "paper_news17_ablation_v1":
+                raise ValueError("Fixed 40-request paper protocol cannot run continuously")
+            config["continuous_mode"] = True
+            config["audit_candidates"] = True
         task = MiningTask(
             task_name=data.name,
             region=data.region,
@@ -291,7 +303,7 @@ class TaskService(BaseService):
             agent_mode=data.agent_mode,
             daily_goal=data.daily_goal,
             max_iterations=data.max_iterations,
-            config=data.config,
+            config=config,
             status="PENDING",
         )
         

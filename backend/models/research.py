@@ -12,6 +12,7 @@ class ResearchCandidate(SQLAlchemyBase):
     __table_args__ = (
         Index("ix_research_candidates_run_signature", "run_id", "expression_hash", "settings_hash"),
         Index("ix_research_candidates_run_status", "run_id", "request_status"),
+        Index("ix_research_candidates_task_signature", "task_id", "expression_hash"),
     )
 
     id = Column(Integer, primary_key=True)

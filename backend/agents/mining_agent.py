@@ -15,7 +15,7 @@ Design Principles:
 
 from typing import List, Dict, Optional, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from loguru import logger
 from datetime import datetime, timedelta
 import re
@@ -31,7 +31,7 @@ def _debug_log(hypo_id, location, message, data=None):
     except: pass
 # #endregion
 
-from backend.models import MiningTask, ExperimentRun, Alpha, AlphaFailure, TraceStep
+from backend.models import MiningTask, ExperimentRun, Alpha, AlphaFailure, TraceStep, ResearchCandidate
 from backend.agents.graph import MiningWorkflow, create_mining_graph
 from backend.agents.services import LLMService, get_llm_service
 from backend.agents.services.llm_service import LLMBlockedError
@@ -52,27 +52,44 @@ def _next_no_new_streak(previous: int, new_candidates: int) -> int:
     return 0 if new_candidates > 0 else previous + 1
 
 
+async def _audited_request_count(db: AsyncSession, run_id: int) -> int:
+    """Count durable WQ reservations, including outcomes still unknown."""
+    return (await db.execute(select(func.count(ResearchCandidate.id)).where(
+        ResearchCandidate.run_id == run_id,
+        ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
+    ))).scalar_one()
+
+
 def _should_yield_dispatch_round(
     *, current_iteration: int, entry_iteration: int, max_iterations: int,
     max_rounds: Optional[int], total_success: int, target_alphas: int,
     min_iterations_before_goal_stop: int,
+    continuous_mode: bool = False,
 ) -> bool:
     """Release a Celery worker at a completed-round checkpoint."""
     return bool(
         max_rounds is not None
         and max_rounds > 0
         and current_iteration - entry_iteration >= max_rounds
-        and current_iteration < max_iterations
-        and not (
+        and (continuous_mode or current_iteration < max_iterations)
+        and (continuous_mode or not (
             total_success >= target_alphas
             and current_iteration >= min_iterations_before_goal_stop
-        )
+        ))
     )
 
 
 def _generation_recovery_action(no_wq_streak: int) -> str:
     """Escalate empty generation to a DB-backed wait, never a terminal status."""
     return "WAITING_LLM" if no_wq_streak >= 3 else "REGENERATE"
+
+
+def _paired_seed_for_iteration(rows: list[dict], iteration: int) -> dict | None:
+    """Cycle only through paired treatments with complete, improved metrics."""
+    from backend.services.research_audit import paired_improvements
+
+    seeds = paired_improvements(rows)
+    return seeds[(iteration - 1) % len(seeds)] if seeds else None
 
 
 def _eligible_candidates_from_trace(output: Dict[str, Any]) -> int:
@@ -1189,6 +1206,7 @@ class MiningAgent:
         initial_strategy: Optional[EvolutionStrategy] = None,
         run_id: Optional[int] = None,
         max_rounds_per_dispatch: Optional[int] = None,
+        continuous_mode: bool = False,
     ) -> Dict[str, Any]:
         """
         Run multi-round evolution loop for alpha mining.
@@ -1302,7 +1320,7 @@ class MiningAgent:
                 1,
                 int(task_config.get("min_iterations_before_goal_stop", 1) or 1),
             )
-            while iteration < max_iterations:
+            while continuous_mode or iteration < max_iterations:
                 await self.db.refresh(task)
                 if task.status in {"STOPPED", "PAUSED"}:
                     await save_checkpoint(iteration)
@@ -1316,6 +1334,7 @@ class MiningAgent:
                     total_success=total_success,
                     target_alphas=target_alphas,
                     min_iterations_before_goal_stop=min_iterations_before_goal_stop,
+                    continuous_mode=continuous_mode,
                 ):
                     await save_checkpoint(iteration, dispatch_yielded=True)
                     yielded_for_dispatch = True
@@ -1357,6 +1376,10 @@ class MiningAgent:
                 
                 try:
                     # Execute mining iteration with current strategy
+                    requests_before = (
+                        await _audited_request_count(self.db, run_id)
+                        if continuous_mode and run_id is not None else None
+                    )
                     alphas = await self.run_mining_iteration(
                         task=task,
                         dataset_id=dataset_id,
@@ -1385,6 +1408,10 @@ class MiningAgent:
                     )).scalar_one_or_none()
                     simulation_output = (simulation_trace.output_data or {}) if simulation_trace else {}
                     new_candidates = _eligible_candidates_from_trace(simulation_output)
+                    if requests_before is not None:
+                        new_candidates = max(
+                            0, await _audited_request_count(self.db, run_id) - requests_before,
+                        )
                     no_new_streak = _next_no_new_streak(no_new_streak, new_candidates)
                     
                     # Update counters
@@ -1493,7 +1520,7 @@ class MiningAgent:
                         recovery_cursor += 1
                     
                     # Check termination: goal reached
-                    if total_success >= target_alphas:
+                    if not continuous_mode and total_success >= target_alphas:
                         if iteration >= min_iterations_before_goal_stop:
                             logger.info(
                                 f"[MiningAgent] Goal reached! "
@@ -1519,8 +1546,8 @@ class MiningAgent:
                         current_strategy=round_strategy,
                         round_result=round_result,
                         cumulative_success=total_success,
-                        target_goal=target_alphas,
-                        max_iterations=max_iterations,
+                        target_goal=max(target_alphas, total_success + 1) if continuous_mode else target_alphas,
+                        max_iterations=max(max_iterations, iteration + 10) if continuous_mode else max_iterations,
                         dataset_id=dataset_id,
                         region=task.region
                     )
@@ -1536,7 +1563,7 @@ class MiningAgent:
                         round_result=round_result,
                         strategy=current_strategy,
                         cumulative_success=total_success,
-                        target_alphas=target_alphas,
+                        target_alphas=max(target_alphas, total_success + 1) if continuous_mode else target_alphas,
                         run_id=run_id,
                     )
                     
@@ -1548,8 +1575,8 @@ class MiningAgent:
                         iteration=iteration,
                         dataset_id=dataset_id,
                         cumulative_success=total_success,
-                        target_alphas=target_alphas,
-                        max_iterations=max_iterations,
+                        target_alphas=max(target_alphas, total_success + 1) if continuous_mode else target_alphas,
+                        max_iterations=max(max_iterations, iteration + 10) if continuous_mode else max_iterations,
                     )
                     
                     # === OPTIMIZATION CHAIN (if applicable) ===
@@ -1563,6 +1590,7 @@ class MiningAgent:
                                 f"elapsed={elapsed:.0f}s max_loop_seconds={max_loop_seconds:.0f}s "
                                 f"iteration={iteration}/{max_iterations}"
                             )
+
                             optimized_passes = 0
                         else:
                             optimized_passes = await self._run_optimization_chain(
@@ -1582,7 +1610,13 @@ class MiningAgent:
                                 f"total={total_success}/{target_alphas}"
                             )
 
-                    if total_success >= target_alphas:
+                    if continuous_mode and (task.config or {}).get("paired_seed_reference_run_id"):
+                        total_success += await self._run_continuous_paired_genetic(
+                            task=task, dataset_id=dataset_id, fields=fields,
+                            run_id=run_id, iteration=iteration,
+                        )
+
+                    if not continuous_mode and total_success >= target_alphas:
                         if iteration >= min_iterations_before_goal_stop:
                             logger.info(
                                 f"[MiningAgent] Goal reached after optimization! "
@@ -1660,7 +1694,7 @@ class MiningAgent:
             "total_success": total_success,
             "new_success": max(0, total_success - entry_success),
             "yielded_for_dispatch": yielded_for_dispatch,
-            "target_reached": total_success >= target_alphas,
+            "target_reached": not continuous_mode and total_success >= target_alphas,
             "all_alphas": all_alphas,
             "all_failures": all_failures,
             "dataset_stop_reason": dataset_stop_reason,
@@ -2737,7 +2771,8 @@ class MiningAgent:
                     pass_count += result.get("pass_total", 0)
                     round_batch_budget -= result.get("batches_run", 0)
 
-                if self._task_config_bool(task, "enable_genetic_optimization"):
+                if (self._task_config_bool(task, "enable_genetic_optimization")
+                        and not task_config.get("paired_seed_reference_run_id")):
                     pass_count += await self._run_genetic_optimization(
                         task=task,
                         seed_expression=expression,
@@ -2774,6 +2809,34 @@ class MiningAgent:
         if isinstance(value, str):
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    async def _run_continuous_paired_genetic(
+        self, task: MiningTask, dataset_id: str, fields: List[Dict],
+        run_id: Optional[int], iteration: int,
+    ) -> int:
+        """Use a verified historical paired improvement, never an arbitrary weak Alpha."""
+        if not self._task_config_bool(task, "enable_genetic_optimization"):
+            return 0
+        from backend.models import ResearchCandidate
+
+        reference_id = int((task.config or {})["paired_seed_reference_run_id"])
+        rows = (await self.db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.run_id == reference_id,
+            ResearchCandidate.request_status == "RESULT",
+        ).order_by(ResearchCandidate.id).limit(100))).scalars().all()
+        seed = _paired_seed_for_iteration([{
+            "id": row.id, "arm": row.arm, "pair_id": row.pair_id,
+            "group": row.experiment_group, "window": row.window,
+            "expression": row.expression, "metrics": row.metrics or {},
+        } for row in rows], iteration)
+        if seed is None:
+            logger.info("[MiningAgent] No complete paired genetic seed; continuing ordinary exploration")
+            return 0
+        return await self._run_genetic_optimization(
+            task=task, seed_expression=seed["expression"],
+            seed_metrics=seed["metrics"], dataset_id=dataset_id,
+            fields=fields, run_id=run_id,
+        )
 
     async def _run_genetic_optimization(
         self,
