@@ -216,6 +216,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
 
             # Create or attach ExperimentRun
             run = await _get_or_create_run(db, task, run_id, self.request.id)
+            active_run_id = run.id
 
             try:
                 try:
@@ -393,7 +394,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                 if continuous_mode and task.status == "RUNNING":
                     # A transient dataset or generation failure must not complete an
                     # open-ended run. Release the worker and retry the same run.
-                    return {"_retry": True, "run_id": run.id, "retry_countdown": 60}
+                    return {"_retry": True, "run_id": active_run_id, "retry_countdown": 60}
                 final_status, error_message = _resolve_final_status(
                     task_status=task.status,
                     target_reached=target_reached,
@@ -435,7 +436,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     await _mark_mining_task_failed(
                         db,
                         task_id=task_id,
-                        run_id=run.id if run is not None else run_id,
+                        run_id=active_run_id,
                         celery_task_id=self.request.id,
                         error_message=str(e)[:500],
                     )

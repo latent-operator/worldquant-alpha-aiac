@@ -218,3 +218,65 @@ def test_continuous_task_pauses_when_configured_fields_are_unavailable(monkeypat
     assert result == {"skipped": "CONFIG_FIELD_UNAVAILABLE", "run_id": 15}
     assert task.status == run.status == "PAUSED"
     assert run.block_reason == "CONFIG_FIELD_UNAVAILABLE"
+
+
+def test_continuous_worker_keeps_run_id_after_transaction_rollback(monkeypatch):
+    task = SimpleNamespace(id=12, status="RUNNING", region="USA", universe="TOP3000",
+                           progress_current=0, daily_goal=4, max_iterations=10,
+                           config={"continuous_mode": True})
+
+    class ExpiringRun:
+        task_id = 12
+        status = "RUNNING"
+        celery_task_id = None
+        checkpoint = {}
+        expired = False
+
+        @property
+        def id(self):
+            if self.expired:
+                raise RuntimeError("expired run attribute loaded after rollback")
+            return 15
+
+    run = ExpiringRun()
+
+    async def rollback():
+        run.expired = True
+
+    db = SimpleNamespace(
+        execute=AsyncMock(side_effect=[SimpleNamespace(scalar_one_or_none=lambda: task),
+                                       SimpleNamespace(rowcount=1)]),
+        get=AsyncMock(return_value=run), commit=AsyncMock(), refresh=AsyncMock(),
+        rollback=rollback,
+    )
+
+    class SessionFactory:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *_):
+            return False
+
+    class Brain:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+    monkeypatch.setattr(mining_tasks, "AsyncSessionLocal", SessionFactory)
+    monkeypatch.setattr(mining_tasks, "MCPBrainAdapter", Brain)
+    monkeypatch.setattr(mining_tasks, "MiningAgent", lambda *_: SimpleNamespace(
+        run_evolution_loop=AsyncMock(side_effect=ValueError("transient round failure")),
+    ))
+    monkeypatch.setattr(mining_tasks, "_get_or_create_run", AsyncMock(return_value=run))
+    monkeypatch.setattr(mining_tasks, "_get_datasets_to_mine", AsyncMock(return_value=["news17"]))
+    monkeypatch.setattr(mining_tasks, "_get_dataset_fields", AsyncMock(return_value=[{"id": "news_field"}]))
+    monkeypatch.setattr(mining_tasks, "_get_operators", AsyncMock(return_value=[]))
+    monkeypatch.setattr("backend.alpha_semantic_validator.load_operators_from_db", AsyncMock(return_value=[]))
+    retry = Mock(return_value=RuntimeError("scheduled"))
+    monkeypatch.setattr(mining_tasks.run_mining_task, "retry", retry)
+
+    with pytest.raises(RuntimeError, match="scheduled"):
+        mining_tasks.run_mining_task.run(12, 15)
+    retry.assert_called_once_with(countdown=60, args=(12, 15), max_retries=None)

@@ -14,6 +14,30 @@ from backend.services.paper_experiment import run_paper_dispatch
 from backend.services.research_report import paired_deltas, research_report
 
 
+@pytest.mark.asyncio
+async def test_audited_brain_supports_nested_agent_context_without_closing_owner():
+    class Brain:
+        def __init__(self):
+            self.entries = 0
+            self.exits = 0
+
+        async def __aenter__(self):
+            self.entries += 1
+            return self
+
+        async def __aexit__(self, *_):
+            self.exits += 1
+
+    brain = Brain()
+    async with brain:
+        wrapped = ResearchBudgetBrain(brain, object())
+        async with wrapped as active:
+            assert active is wrapped
+            assert brain.entries == 1
+        assert brain.exits == 0
+    assert brain.exits == 1
+
+
 def test_paper_matrix_uses_shared_controls_and_approved_fields():
     cases = paper_matrix()
     assert len(cases) == 25

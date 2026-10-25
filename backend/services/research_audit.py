@@ -355,6 +355,14 @@ class ResearchBudgetBrain:
     def __getattr__(self, key):
         return getattr(self.brain, key)
 
+    async def __aenter__(self):
+        # The worker owns the underlying BRAIN session; MiningAgent enters this
+        # wrapper once more around each round.
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
     @contextmanager
     def source(self, value: str):
         previous = self.current_source
