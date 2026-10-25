@@ -152,6 +152,8 @@ def safe_result(result: dict) -> dict:
     os_data = result.get("os") or {}
     return {
         "success": bool(result.get("success")), "alpha_id": result.get("alpha_id"),
+        "stage": result.get("stage") if result.get("stage") in {"IS", "OS"} else None,
+        "status": result.get("status") if result.get("status") in {"UNSUBMITTED", "SUBMITTED"} else None,
         "metrics": safe_metrics(result), "checks": checks,
         "can_submit": bool(result.get("can_submit")),
         "os": {key: os_data.get(key) for key in ("sharpe", "fitness")

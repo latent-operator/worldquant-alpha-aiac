@@ -101,6 +101,17 @@ def test_result_snapshot_drops_untrusted_text_and_nonfinite_metrics():
     assert snapshot["metrics"]["sharpe"] is None
 
 
+def test_result_snapshot_keeps_verified_wq_stage_and_status_for_recovery():
+    snapshot = safe_result({
+        "success": True, "alpha_id": "WQ1", "stage": "IS",
+        "status": "UNSUBMITTED", "metrics": {"sharpe": 0.8},
+    })
+    assert snapshot["stage"] == "IS"
+    assert snapshot["status"] == "UNSUBMITTED"
+    assert safe_result({"stage": "unknown", "status": "secret"})["stage"] is None
+    assert safe_result({"stage": "unknown", "status": "secret"})["status"] is None
+
+
 @pytest.mark.asyncio
 async def test_audited_single_post_does_not_retry_timeout():
     class FakeClient:
@@ -165,6 +176,8 @@ async def test_paper_dispatch_keeps_one_run_and_saves_audited_wq_results(async_e
             pass
 
         async def _quality_status_for_optimization_result(self, **kwargs):
+            assert kwargs["metrics"]["stage"] == "IS"
+            assert kwargs["metrics"]["status"] == "UNSUBMITTED"
             kwargs["metrics"]["_strict_gate_failures"] = ["LOW_SHARPE"]
             return "OPTIMIZE"
 
@@ -176,6 +189,7 @@ async def test_paper_dispatch_keeps_one_run_and_saves_audited_wq_results(async_e
         async def simulate_batch(self, expressions, **settings):
             self.calls += len(expressions)
             return [{"success": True, "alpha_id": f"TEST{self.calls}-{index}",
+                     "stage": "IS", "status": "UNSUBMITTED",
                      "metrics": {"sharpe": 0.5, "fitness": 0.3, "turnover": 0.1,
                                  "margin": 0.002}, "checks": []}
                     for index, _ in enumerate(expressions)]
