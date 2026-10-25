@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from backend.database import AsyncSessionLocal
-from backend.models import ExperimentRun, MiningTask, ResearchCandidate
+from backend.models import Alpha, ExperimentRun, MiningTask, ResearchCandidate
 
 
 FAMILY_ID = "arxiv_2512_19484_news17_structured_events_v1"
@@ -118,6 +118,23 @@ def signature(expression: str, settings: dict) -> tuple[str, str]:
     )
 
 
+def wq_settings_identity(settings: dict, *, region=None, universe=None) -> tuple:
+    """Only settings that affect the WQ simulation belong in cross-task dedup."""
+    def value(key, default):
+        actual = settings.get(key)
+        return default if actual is None else actual
+
+    return (
+        str(settings.get("region") or region or "").upper(),
+        str(settings.get("universe") or universe or "").upper(),
+        int(value("delay", 1)),
+        int(value("decay", 4)),
+        str(value("neutralization", "SUBINDUSTRY")).upper(),
+        round(float(value("truncation", 0.08)), 6),
+        str(value("test_period", "P2Y0M")),
+    )
+
+
 def safe_metrics(result: dict) -> dict:
     metrics = result.get("metrics") or {}
     def numeric(value):
@@ -162,18 +179,21 @@ def safe_result(result: dict) -> dict:
 
 
 class ResearchLedger:
-    def __init__(self, task_id: int, run_id: int, max_requests: int,
-                 family_id: str = FAMILY_ID):
+    def __init__(self, task_id: int, run_id: int, max_requests: int | None,
+                 family_id: str = FAMILY_ID, dedup_task_ids: list[int] | None = None):
         self.task_id = task_id
         self.run_id = run_id
         self.max_requests = max_requests
         self.family_id = family_id
+        self.dedup_task_ids = sorted({int(task_id), *(int(value) for value in (dedup_task_ids or []))})
 
     async def reserve(self, expression: str, settings: dict, source: str,
                       metadata: dict | None = None) -> tuple[int | None, str | None]:
         """Lock the run and commit exactly one durable request slot."""
         metadata = metadata or {}
         expr_hash, settings_hash = signature(expression, settings)
+        from backend.alpha_semantic_validator import compute_expression_hash
+        normalized_alpha_hash = compute_expression_hash(expression)
         async with AsyncSessionLocal() as db:
             async with db.begin():
                 run = (await db.execute(
@@ -190,15 +210,61 @@ class ResearchLedger:
                         ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
                     ).limit(1)
                 )).scalar_one_or_none()
-                used = (await db.execute(
-                    select(func.count(ResearchCandidate.id)).where(
-                        ResearchCandidate.run_id == self.run_id,
-                        ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
+                prior_duplicate = False
+                if not existing and len(self.dedup_task_ids) > 1:
+                    identity = wq_settings_identity(settings, region=task.region, universe=task.universe)
+                    prior_candidates = (await db.execute(
+                        select(ResearchCandidate.settings).where(
+                            ResearchCandidate.task_id.in_(self.dedup_task_ids),
+                            ResearchCandidate.expression_hash == expr_hash,
+                            ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
+                        )
+                    )).scalars().all()
+                    prior_duplicate = any(
+                        wq_settings_identity(previous, region=task.region, universe=task.universe) == identity
+                        for previous in prior_candidates
                     )
-                )).scalar_one()
+                    if not prior_duplicate:
+                        prior_alphas = (await db.execute(
+                            select(Alpha.settings, Alpha.region, Alpha.universe, Alpha.delay,
+                                   Alpha.decay, Alpha.neutralization, Alpha.truncation).where(
+                                Alpha.task_id.in_(self.dedup_task_ids),
+                                Alpha.alpha_id.is_not(None),
+                                Alpha.expression_hash == normalized_alpha_hash,
+                            )
+                        )).all()
+                        # Historical Alpha rows may predate normalized hashes.
+                        # Scan only the finite baseline tasks, never a growing
+                        # continuous task, for case-only legacy variations.
+                        baseline_ids = [item for item in self.dedup_task_ids if item != self.task_id]
+                        if baseline_ids:
+                            prior_alphas += (await db.execute(
+                                select(Alpha.settings, Alpha.region, Alpha.universe, Alpha.delay,
+                                       Alpha.decay, Alpha.neutralization, Alpha.truncation).where(
+                                    Alpha.task_id.in_(baseline_ids),
+                                    Alpha.alpha_id.is_not(None),
+                                    func.lower(Alpha.expression) == expression.strip().lower(),
+                                )
+                            )).all()
+                        prior_duplicate = any(
+                            wq_settings_identity({
+                                **(saved_settings if isinstance(saved_settings, dict) else {}),
+                                "delay": delay, "decay": decay,
+                                "neutralization": neutralization, "truncation": truncation,
+                            }, region=region, universe=universe) == identity
+                            for saved_settings, region, universe, delay, decay, neutralization, truncation in prior_alphas
+                        )
+                used = 0
+                if self.max_requests is not None:
+                    used = (await db.execute(
+                        select(func.count(ResearchCandidate.id)).where(
+                            ResearchCandidate.run_id == self.run_id,
+                            ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
+                        )
+                    )).scalar_one()
                 reason = ("TASK_NOT_RUNNING" if not task or task.status != "RUNNING" else
-                          "DUPLICATE" if existing else
-                          "BUDGET_EXHAUSTED" if used >= self.max_requests else None)
+                          "DUPLICATE" if existing or prior_duplicate else
+                          "BUDGET_EXHAUSTED" if self.max_requests is not None and used >= self.max_requests else None)
                 candidate = ResearchCandidate(
                     task_id=self.task_id, run_id=self.run_id, family_id=self.family_id,
                     experiment_group=metadata.get("group"), pair_id=metadata.get("pair_id"),

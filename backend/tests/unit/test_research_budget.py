@@ -11,7 +11,7 @@ import backend.services.research_audit as audit_module
 from backend.services.research_audit import ResearchBudgetBrain, paper_matrix, paired_improvements, constrained_mutations, safe_result
 from backend.services.paper_experiment import APPROVED_FIELDS, validate_protocol_task
 from backend.services.paper_experiment import run_paper_dispatch
-from backend.services.research_report import paired_deltas
+from backend.services.research_report import paired_deltas, research_report
 
 
 def test_paper_matrix_uses_shared_controls_and_approved_fields():
@@ -59,6 +59,21 @@ def test_seed_requires_complete_metrics_and_both_paired_gains():
     assert len(seeds) == 1
     assert seeds[0]["group"] == "event_relevance"
     assert len(constrained_mutations(seeds, limit=15)) <= 15
+
+
+def test_continuous_genetic_seed_uses_only_complete_paired_improvements():
+    from backend.agents.mining_agent import _paired_seed_for_iteration
+    baseline = {"arm": "CONTROL", "pair_id": "w10", "group": "sentiment",
+                "expression": "rank(a)", "metrics": {"sharpe": 0.2, "fitness": 0.1,
+                                                    "turnover": 0.3, "margin": 0.001}}
+    improved = {"arm": "TREATMENT", "pair_id": "w10", "group": "event_density",
+                "expression": "rank(b)", "metrics": {"sharpe": 0.4, "fitness": 0.2,
+                                                    "turnover": 0.3, "margin": 0.001}}
+    incomplete = {"arm": "TREATMENT", "pair_id": "w10", "group": "similarity_days",
+                  "expression": "rank(c)", "metrics": {"sharpe": 0.6, "fitness": None,
+                                                      "turnover": 0.3, "margin": 0.001}}
+    assert _paired_seed_for_iteration([baseline, improved, incomplete], 1)["expression"] == "rank(b)"
+    assert _paired_seed_for_iteration([baseline, incomplete], 1) is None
 
 
 def test_paper_protocol_rejects_wrong_data_boundary_before_wq():
@@ -160,6 +175,91 @@ async def test_ledger_reservation_survives_new_instance_and_counts_unknown(async
     second, budget_reason = await resumed.reserve("rank(b)", {"delay": 1}, "GENETIC")
     assert duplicate is None and duplicate_reason == "DUPLICATE"
     assert second is None and budget_reason == "BUDGET_EXHAUSTED"
+
+
+@pytest.mark.asyncio
+async def test_unlimited_ledger_deduplicates_prior_task_results_and_unknowns(async_engine, monkeypatch):
+    from backend.models import Alpha, ResearchCandidate
+    maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(audit_module, "AsyncSessionLocal", maker)
+    settings = {"region": "USA", "universe": "TOP3000", "delay": 1,
+                "decay": 4, "neutralization": "SUBINDUSTRY",
+                "truncation": 0.08, "test_period": "P2Y0M"}
+    old_hash, old_settings_hash = audit_module.signature("rank(a)", settings)
+    async with maker() as db:
+        old = MiningTask(task_name="old", region="USA", universe="TOP3000", status="PAUSED")
+        new = MiningTask(task_name="new", region="USA", universe="TOP3000", status="RUNNING")
+        db.add_all([old, new])
+        await db.flush()
+        old_run = ExperimentRun(task_id=old.id, status="PAUSED")
+        new_run = ExperimentRun(task_id=new.id, status="RUNNING")
+        db.add_all([old_run, new_run])
+        await db.flush()
+        db.add(ResearchCandidate(
+            task_id=old.id, run_id=old_run.id, family_id="paper", source="GENERATION",
+            expression="rank(a)", expression_hash=old_hash,
+            settings_hash=old_settings_hash, settings=settings,
+            validation_status="VALID", request_status="UNKNOWN",
+            gate_failures=[], metrics={}, result_snapshot={},
+        ))
+        from backend.alpha_semantic_validator import compute_expression_hash
+        db.add(Alpha(
+            task_id=old.id, run_id=old_run.id, alpha_id="WQ-OLD",
+            expression="RANK(b)", expression_hash=compute_expression_hash("RANK(b)"),
+            region="USA", universe="TOP3000",
+            dataset_id="news17", delay=1, decay=4,
+            neutralization="SUBINDUSTRY", truncation=0.08,
+            settings=settings, quality_status="FAIL",
+        ))
+        await db.commit()
+        task_id, run_id, old_id = new.id, new_run.id, old.id
+
+    ledger = audit_module.ResearchLedger(
+        task_id, run_id, max_requests=None, dedup_task_ids=[old_id],
+    )
+    candidate, reason = await ledger.reserve("rank(a)", settings, "GENERATION")
+    assert candidate is None and reason == "DUPLICATE"
+    candidate, reason = await ledger.reserve("rank(b)", settings, "GENETIC")
+    assert candidate is None and reason == "DUPLICATE"
+    candidate, reason = await ledger.reserve("rank(c)", settings, "GENERATION")
+    assert candidate is not None and reason is None
+    candidate2, reason = await ledger.reserve("rank(d)", settings, "GENERATION")
+    assert candidate2 is not None and reason is None
+
+
+@pytest.mark.asyncio
+async def test_continuous_report_aggregates_without_unbounded_pairs(db_session):
+    from backend.models import Alpha, ResearchCandidate
+
+    task = MiningTask(task_name="unbounded", region="USA", universe="TOP3000",
+                      status="RUNNING", config={"continuous_mode": True})
+    db_session.add(task)
+    await db_session.flush()
+    run = ExperimentRun(task_id=task.id, status="RUNNING",
+                        config_snapshot={"task": {"config": {"continuous_mode": True}}})
+    db_session.add(run)
+    await db_session.flush()
+    for number in range(220):
+        db_session.add(ResearchCandidate(
+            task_id=task.id, run_id=run.id, family_id="paper", source="GENETIC"
+            if number % 2 else "GENERATION", expression=f"rank(field_{number})",
+            expression_hash=f"h{number}", settings_hash="settings", settings={},
+            validation_status="VALID", request_status="RESULT",
+            arm="TREATMENT", pair_id=f"pair_{number}",
+            gate_failures=[], metrics={}, result_snapshot={},
+        ))
+    db_session.add(Alpha(task_id=task.id, run_id=run.id, alpha_id="WQ-PASS",
+                         expression="rank(field_1)", region="USA", universe="TOP3000",
+                         quality_status="PASS", is_sharpe=1.7, is_fitness=1.2))
+    await db_session.commit()
+
+    report = await research_report(db_session, run.id)
+    assert report["budget"]["limit"] is None
+    assert report["candidate_funnel"]["generated"] == 220
+    assert report["candidate_funnel"]["quality_pass"] == 1
+    assert report["genetic_funnel"]["generated"] == 110
+    assert report["paired_deltas"] == []
+    assert report["best_sharpe_alpha"]["wq_alpha_id"] == "WQ-PASS"
 
 
 @pytest.mark.asyncio

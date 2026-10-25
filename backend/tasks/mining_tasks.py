@@ -242,11 +242,14 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     if (task.config or {}).get("audit_candidates"):
                         from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger
 
+                        continuous_mode = (task.config or {}).get("continuous_mode") is True
                         brain = ResearchBudgetBrain(brain, ResearchLedger(
                             task.id, run.id,
-                            int((task.config or {}).get("research_request_budget", 1_000_000)),
+                            None if continuous_mode else int((task.config or {}).get("research_request_budget", 1_000_000)),
                             str((task.config or {}).get("research_family_id") or "unclassified"),
+                            dedup_task_ids=(task.config or {}).get("dedup_task_ids", []) if continuous_mode else [],
                         ))
+                    continuous_mode = (task.config or {}).get("continuous_mode") is True
                     mining_agent = MiningAgent(db, brain)
                     
                     # Get datasets to mine
@@ -257,6 +260,11 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     
                     if not datasets:
                         logger.warning(f"No datasets found for mining in {task.region}/{task.universe}")
+                        if continuous_mode:
+                            task.status = run.status = "PAUSED"
+                            run.block_reason = "CONFIG_DATASET_UNAVAILABLE"
+                            await db.commit()
+                            return {"skipped": "CONFIG_DATASET_UNAVAILABLE", "run_id": run.id}
                         await _mark_mining_task_failed(
                             db,
                             task_id=task_id,
@@ -271,7 +279,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     
                     # Mine each dataset
                     total_alphas = 0
-                    target_reached = task.progress_current >= task.daily_goal
+                    target_reached = not continuous_mode and task.progress_current >= task.daily_goal
                     incomplete_reasons = []
                     for dataset_id in datasets:
                         # Check if task should continue
@@ -280,7 +288,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                             logger.info(f"Task {task_id} {task.status}, stopping")
                             break
                         
-                        if task.progress_current >= task.daily_goal:
+                        if not continuous_mode and task.progress_current >= task.daily_goal:
                             logger.info(f"Task {task_id} reached goal")
                             break
                         
@@ -289,10 +297,15 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                         
                         if not fields:
                             logger.warning(f"No fields found for dataset {dataset_id}, skipping")
+                            if continuous_mode:
+                                task.status = run.status = "PAUSED"
+                                run.block_reason = "CONFIG_FIELD_UNAVAILABLE"
+                                await db.commit()
+                                return {"skipped": "CONFIG_FIELD_UNAVAILABLE", "run_id": run.id}
                             continue
                         
                         # Calculate remaining alphas needed
-                        remaining_goal = task.daily_goal - task.progress_current
+                        remaining_goal = max(1, task.daily_goal - task.progress_current) if continuous_mode else task.daily_goal - task.progress_current
                         if remaining_goal <= 0:
                             logger.info(f"Task {task_id} already reached goal, stopping")
                             break
@@ -312,6 +325,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                                 num_alphas_per_round=4,
                                 run_id=run.id,
                                 max_rounds_per_dispatch=1,
+                                continuous_mode=continuous_mode,
                             )
                             
                             # The agent returns cumulative dataset success;
@@ -320,7 +334,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                             await db.commit()
                             
                             total_alphas += len(result.get("all_alphas", []))
-                            target_reached = task.progress_current >= task.daily_goal
+                            target_reached = not continuous_mode and task.progress_current >= task.daily_goal
 
                             if result.get("yielded_for_dispatch"):
                                 await db.refresh(task)
@@ -332,7 +346,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                                 )
                                 return {"_retry": True, "run_id": run.id, "retry_countdown": 1}
 
-                            if not result.get("target_reached"):
+                            if not continuous_mode and not result.get("target_reached"):
                                 incomplete_reasons.append(
                                     (
                                         f"{dataset_id}: target not reached "
@@ -376,6 +390,10 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                 # while a BRAIN multi-simulation is still polling; once that
                 # call returns, this task must not overwrite it as COMPLETED.
                 await db.refresh(task)
+                if continuous_mode and task.status == "RUNNING":
+                    # A transient dataset or generation failure must not complete an
+                    # open-ended run. Release the worker and retry the same run.
+                    return {"_retry": True, "run_id": run.id, "retry_countdown": 60}
                 final_status, error_message = _resolve_final_status(
                     task_status=task.status,
                     target_reached=target_reached,

@@ -133,14 +133,14 @@ def build_server(api: AIACClient | None = None) -> MCPServer:
 
     @server.tool(name="aiac_create_task", annotations=write)
     @tool_errors
-    async def aiac_create_task(name: str, region: str = "USA", universe: str = "TOP3000", dataset_strategy: str = "AUTO", target_datasets: list[str] | None = None, agent_mode: str = "AUTONOMOUS", daily_goal: int = 4, max_iterations: int = 10, config: dict[str, Any] | None = None) -> dict:
+    async def aiac_create_task(name: str, region: str = "USA", universe: str = "TOP3000", dataset_strategy: str = "AUTO", target_datasets: list[str] | None = None, agent_mode: str = "AUTONOMOUS", daily_goal: int = 4, max_iterations: int = 10, continuous_mode: bool = False, config: dict[str, Any] | None = None) -> dict:
         """Create one AIAC task. This does not start a run; call only on a user instruction."""
         if not name.strip() or len(name) > 255:
             raise AIACError("任务名称必须为 1–255 个字符。")
         config = config or {}
         if len(str(config)) > 20_000 or contains_credentials(config):
             raise AIACError("任务配置过大或含凭证字段；MCP 不接收凭证。")
-        body = {"name": name, "region": region, "universe": universe, "dataset_strategy": dataset_strategy, "target_datasets": target_datasets or [], "agent_mode": agent_mode, "daily_goal": bounded(daily_goal, 1, 1000, "daily_goal"), "max_iterations": bounded(max_iterations, 1, 100000, "max_iterations"), "config": config}
+        body = {"name": name, "region": region, "universe": universe, "dataset_strategy": dataset_strategy, "target_datasets": target_datasets or [], "agent_mode": agent_mode, "daily_goal": bounded(daily_goal, 1, 1000, "daily_goal"), "max_iterations": bounded(max_iterations, 1, 100000, "max_iterations"), "continuous_mode": continuous_mode, "config": config}
         result = await api.write_task("POST", "/tasks", body)
         return (result if result.get("outcome") == "UNCERTAIN" else {"id": result.get("id"), "task_name": safe_text(result.get("task_name"), limit=255), "status": result.get("status")}) | {"source": "AIAC API", "observed_at": observed_at()}
 

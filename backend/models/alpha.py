@@ -4,7 +4,7 @@ Alpha Models - Alpha entities and related models
 Contains Alpha, AlphaFailure, and AlphaPnl models.
 """
 
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -22,6 +22,8 @@ class Alpha(SQLAlchemyBase):
     __tablename__ = "alphas"
     __table_args__ = (
         UniqueConstraint('alpha_id', name='uq_alpha_id'),
+        Index('ix_alphas_expression_hash', 'expression_hash'),
+        Index('ix_alphas_run_id', 'run_id'),
         {'extend_existing': True}
     )
     

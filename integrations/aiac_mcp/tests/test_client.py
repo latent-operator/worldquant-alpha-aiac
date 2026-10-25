@@ -25,6 +25,11 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             "aiac_get_research_report", "aiac_list_research_candidates",
         })
 
+    async def test_continuous_creation_is_explicit_in_mcp_tool(self):
+        server = build_server()
+        names = {tool.name: tool for tool in await server.list_tools()}
+        self.assertIn("continuous_mode", names["aiac_create_task"].input_schema["properties"])
+
     async def test_research_report_and_candidate_page_are_read_only(self):
         seen = []
 
@@ -70,8 +75,10 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(params.get("limit") == "200" and params.get("offset") == "0" for _, params in requests))
 
     async def test_report_uses_candidate_audit_for_fixed_paper_runs(self):
+        paths = []
         def handler(request):
             path = request.url.path
+            paths.append(path)
             if path.endswith("/summary"):
                 return httpx.Response(200, json={"id": 14, "task_id": 11, "status": "COMPLETED"})
             if path.endswith("/alphas"):
@@ -84,7 +91,8 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             if path.endswith("/research-report"):
                 return httpx.Response(200, json={"audit_available": True,
                     "candidate_funnel": {"generated": 40,
-                                         "send_attempts_or_uncertain": 40}})
+                                         "send_attempts_or_uncertain": 40,
+                                         "saved_wq_results": 1, "quality_pass": 0}})
             return httpx.Response(404)
 
         api = AIACClient("http://localhost/api/v1", httpx.MockTransport(handler))
@@ -93,6 +101,8 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["entered_simulation"], 40)
         self.assertEqual(report["saved_wq_results"], 1)
         self.assertEqual(report["source"]["candidates"], "AIAC persisted candidate audit")
+        self.assertFalse(any(path.endswith("/alphas") or path.endswith("/trace-page")
+                             for path in paths))
 
     async def test_optional_trace_filters_are_omitted(self):
         seen = []

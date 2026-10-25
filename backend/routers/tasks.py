@@ -46,6 +46,7 @@ class TaskCreateRequest(BaseModel):
     daily_goal: int = 4
     max_iterations: int = 10
     config: dict = {}
+    continuous_mode: bool = False
 
 
 class TaskResponse(BaseModel):
@@ -60,6 +61,7 @@ class TaskResponse(BaseModel):
     progress_current: int
     current_iteration: int = 0
     max_iterations: int = 10
+    continuous_mode: bool = False
     created_at: datetime
     updated_at: Optional[datetime] = None
     
@@ -156,6 +158,7 @@ async def list_tasks(
             progress_current=t.progress_current,
             current_iteration=t.current_iteration,
             max_iterations=t.max_iterations,
+            continuous_mode=t.continuous_mode,
             created_at=t.created_at,
             updated_at=t.updated_at,
         )
@@ -179,9 +182,13 @@ async def create_task(
         daily_goal=request.daily_goal,
         max_iterations=request.max_iterations,
         config=request.config,
+        continuous_mode=request.continuous_mode,
     )
     
-    task = await service.create_task(data)
+    try:
+        task = await service.create_task(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     
     return TaskResponse(
         id=task.id,
@@ -195,6 +202,7 @@ async def create_task(
         progress_current=task.progress_current,
         current_iteration=task.current_iteration,
         max_iterations=task.max_iterations,
+        continuous_mode=task.continuous_mode,
         created_at=task.created_at,
         updated_at=task.updated_at,
     )
@@ -223,6 +231,7 @@ async def get_task(
         progress_current=detail.progress_current,
         current_iteration=detail.current_iteration,
         max_iterations=detail.max_iterations,
+        continuous_mode=detail.continuous_mode,
         created_at=detail.created_at,
         updated_at=detail.updated_at,
         trace_steps=[
