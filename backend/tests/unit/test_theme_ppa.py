@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 from unittest.mock import AsyncMock
 
-from backend.services.theme_ppa import validate_theme_task, phase_cases
+from backend.services.theme_ppa import validate_theme_task, phase_cases, candidate_plan_hash
 
 
 def manifest():
@@ -19,7 +19,7 @@ def manifest():
             discovery.append({"case_id": f"t{pair}_{treatment}", "pair_id": f"p{pair}",
                               "arm": "TREATMENT", "dataset_id": "dataset1",
                               "expression": f"rank(field_{pair}_{treatment})"})
-    return {
+    frozen = {
         "theme_id": "theme-2026-11", "verified_source": "platform",
         "platform_source_url": "https://platform.worldquantbrain.com/power-pool/themes/theme-2026-11",
         "account_eligibility": {"verified_at": "2026-10-27T00:00:00Z",
@@ -37,6 +37,12 @@ def manifest():
                      "truncation": 0.08, "test_period": "P2Y0M"},
         "discovery": discovery, "refinement": [], "confirmation": [],
     }
+    frozen["candidate_generation"] = {
+        "source": "cockpit_local_responses", "model": "gpt-6-luna",
+        "prepared_at": "2026-10-27T00:00:00Z",
+        "plan_sha256": candidate_plan_hash(frozen),
+    }
+    return frozen
 
 
 def task():
@@ -86,6 +92,12 @@ def test_theme_protocol_requires_account_access_and_operator_whitelist():
     assert validate_theme_task(bad) == "PPA_MANIFEST_INCOMPLETE"
 
 
+def test_discovery_treatment_changes_one_expression_token():
+    bad = task()
+    bad.config["ppa_manifest"]["discovery"][1]["expression"] = "zscore(other_field)"
+    assert validate_theme_task(bad) == "PPA_DISCOVERY_NOT_SINGLE_FACTOR"
+
+
 def test_refinement_only_uses_positive_complete_paired_seed():
     m = manifest()
     m["refinement"] = [{"case_id": "r1", "parent_case_id": "t0_1",
@@ -116,6 +128,8 @@ async def test_expired_theme_pauses_before_simulation(db_session):
     config = task().config
     config["ppa_manifest"]["starts_at"] = "2026-09-01T00:00:00Z"
     config["ppa_manifest"]["ends_at"] = "2026-10-01T00:00:00Z"
+    config["ppa_manifest"]["candidate_generation"]["plan_sha256"] = candidate_plan_hash(
+        config["ppa_manifest"])
     mining_task = MiningTask(task_name="ppa", region="USA", universe="TOP3000",
                              dataset_strategy="SPECIFIC", target_datasets=["dataset1"],
                              status="RUNNING", config=config)
@@ -152,6 +166,7 @@ async def test_theme_dispatch_persists_platform_ready_separately_from_strict_qua
     m = manifest()
     m["starts_at"] = "2026-01-01T00:00:00Z"
     m["ends_at"] = "2027-01-01T00:00:00Z"
+    m["candidate_generation"]["plan_sha256"] = candidate_plan_hash(m)
     cfg = {"research_protocol": "theme_ppa_v1", "research_request_budget": 80,
            "ppa_manifest": m}
     async with maker() as db:

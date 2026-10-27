@@ -15,6 +15,27 @@ field IDs. Select them for coverage, update method, and an interpretable
 economic mechanism. Each expression must use fields from only its named
 dataset. The protocol validates the frozen list before the first WQ request.
 
+Prepare the actual candidate cases on the Windows host with the user's local
+Cockpit `cockpit-ask.ps1` and its `gpt-6-luna` Responses endpoint:
+
+```powershell
+python scripts/prepare_theme_ppa_with_cockpit.py `
+  --manifest-base path/to/verified-theme-base.json `
+  --cockpit-script path/to/cockpit-ask.ps1 `
+  --out path/to/frozen-theme-manifest.json
+```
+
+The base JSON contains the verified platform and account fields below, but no
+candidate arrays. The command sends only theme constraints, datasets, fields,
+operators, settings, and economic mechanisms to Cockpit. It never reads or
+stores the API key. It fails closed on malformed or invalid model output and
+does not contact WQ. Review the generated expressions and freeze the output
+before creating a task. The manifest stores the model, source, preparation
+time, and a hash of all candidate cases; AIAC rejects edited cases.
+
+The AIAC worker runs in Docker and cannot use a host-only `127.0.0.1` API
+directly. Its PPA path simulates only the reviewed, frozen Cockpit candidates.
+
 The task configuration requires `research_protocol: theme_ppa_v1`,
 `research_request_budget: 80`, `continuous_mode: false`,
 `dataset_strategy: SPECIFIC`, and `target_datasets` equal to the manifest's
@@ -39,6 +60,8 @@ dataset IDs. `ppa_manifest` requires:
   cases are released only when the parent has complete metrics and beats its
   paired control on Sharpe and Fitness. Confirmation cases can use listed
   `confirmation_settings` overrides within the platform's theme constraints.
+  Each discovery treatment must change exactly one expression token from its
+  paired control while keeping the same dataset and settings.
 
 The request ledger reserves slots durably. Results, failures, uncertain
 responses, and in-flight reservations all consume the 80-request limit;

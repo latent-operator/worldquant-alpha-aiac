@@ -2,6 +2,9 @@
 
 from collections import Counter
 from datetime import datetime, timezone
+import hashlib
+import json
+import re
 from math import isfinite
 from urllib.parse import urlparse
 
@@ -14,6 +17,15 @@ from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger,
 
 
 PHASE_LIMITS = {"discovery": 24, "refinement": 40, "confirmation": 16}
+
+
+def candidate_plan_hash(manifest: dict) -> str:
+    """Bind Cockpit output to the frozen theme constraints and candidate cases."""
+    payload = {key: value for key, value in manifest.items()
+               if key != "candidate_generation"}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _timestamp(value):
@@ -137,6 +149,27 @@ def validate_theme_task(task) -> str | None:
     if len(pairs) != 6 or any(counts != {"CONTROL": 1, "TREATMENT": 3}
                               for counts in pairs.values()):
         return "PPA_DISCOVERY_DESIGN_INVALID"
+    controls = {case["pair_id"]: case for case in manifest["discovery"]
+                if case["arm"] == "CONTROL"}
+    for case in manifest["discovery"]:
+        if case["arm"] != "TREATMENT":
+            continue
+        baseline = controls[case["pair_id"]]
+        if case["dataset_id"] != baseline["dataset_id"]:
+            return "PPA_DISCOVERY_NOT_SINGLE_FACTOR"
+        token_pattern = r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|\S"
+        left = re.findall(token_pattern, baseline["expression"])
+        right = re.findall(token_pattern, case["expression"])
+        if len(left) != len(right) or sum(a != b for a, b in zip(left, right)) != 1:
+            return "PPA_DISCOVERY_NOT_SINGLE_FACTOR"
+    generation = manifest.get("candidate_generation") or {}
+    prepared_at = _timestamp(generation.get("prepared_at"))
+    if (generation.get("source") != "cockpit_local_responses"
+            or generation.get("model") != "gpt-6-luna"
+            or not prepared_at or prepared_at.tzinfo is None):
+        return "PPA_CANDIDATE_SOURCE_INVALID"
+    if generation.get("plan_sha256") != candidate_plan_hash(manifest):
+        return "PPA_CANDIDATE_PLAN_CHANGED"
     return None
 
 
