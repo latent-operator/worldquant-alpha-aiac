@@ -932,6 +932,9 @@ class BrainAdapter:
                     "bookSize": is_stats.get("bookSize"),
                     "longCount": is_stats.get("longCount"),
                     "shortCount": is_stats.get("shortCount"),
+                    "long_count": is_stats.get("longCount"),
+                    "short_count": is_stats.get("shortCount"),
+                    "two_year_sharpe": is_stats.get("twoYearSharpe"),
                     
                     # Train/Test metrics
                     "train_sharpe": train_stats.get("sharpe"),
@@ -969,6 +972,7 @@ class BrainAdapter:
                 "pending_checks": [c.get("name") for c in pending_checks],
                 "passed_checks": [c.get("name") for c in passed_checks],
                 "can_submit": len(failed_checks) == 0 and len(pending_checks) == 0,
+                "platform_can_submit": alpha.get("canSubmit") is True,
                 
                 # Full period data (for detailed analysis)
                 "is": is_stats,
@@ -1133,6 +1137,10 @@ class BrainAdapter:
             return response.json() if response is not None and response.text else {}
         except Exception:
             return {}
+
+    async def check_power_pool_correlation(self, alpha_id: str) -> Dict:
+        """Read the dedicated Power Pool correlation endpoint, never PROD."""
+        return await self.check_correlation(alpha_id, check_type="POWER-POOL")
 
     async def get_user_alphas(self, limit: int = 100, offset: int = 0, stage: str = None, search: str = None, start_date: str = None) -> Dict:
         """

@@ -22,6 +22,11 @@ def candidate_public(row: ResearchCandidate) -> dict:
         "rejection_stage": row.rejection_stage, "rejection_reason": row.rejection_reason,
         "request_status": row.request_status, "wq_alpha_id": row.wq_alpha_id,
         "quality_status": row.quality_status, "gate_failures": row.gate_failures or [],
+        "ppa_evaluation": (row.result_snapshot or {}).get("ppa_evaluation"),
+        "classifications": (row.result_snapshot or {}).get("classifications") or [],
+        "themes": (row.result_snapshot or {}).get("themes") or [],
+        "platform_checks": (row.result_snapshot or {}).get("checks") or [],
+        "power_pool_correlation": (row.result_snapshot or {}).get("power_pool_correlation"),
         "metrics": row.metrics or {}, "trace_step_id": row.trace_step_id,
         "created_at": row.created_at,
     }
@@ -116,21 +121,46 @@ async def research_report(db, run_id: int) -> dict:
         Alpha.run_id == run_id, Alpha.alpha_id.is_not(None),
     ).order_by(Alpha.id).limit(10))).scalars().all()
     config = ((run.config_snapshot or {}).get("task") or {}).get("config") or {}
+    protocol = config.get("research_protocol")
+    ppa_counts = Counter()
+    ppa_phase_counts = {}
+    if protocol == "theme_ppa_v1":
+        snapshots = (await db.execute(select(ResearchCandidate.result_snapshot).where(
+            ResearchCandidate.run_id == run_id,
+        ))).scalars().all()
+        ppa_counts.update((snapshot or {}).get("ppa_evaluation", {}).get("status")
+                          for snapshot in snapshots
+                          if (snapshot or {}).get("ppa_evaluation", {}).get("status"))
+        phase_rows = (await db.execute(select(
+            ResearchCandidate.source, ResearchCandidate.request_status,
+            func.count(ResearchCandidate.id),
+        ).where(ResearchCandidate.run_id == run_id).group_by(
+            ResearchCandidate.source, ResearchCandidate.request_status,
+        ))).all()
+        for source, status, count in phase_rows:
+            phase = str(source or "").lower()
+            if phase not in {"discovery", "refinement", "confirmation"}:
+                continue
+            ppa_phase_counts.setdefault(phase, {})[status] = count
     paired = []
-    if config.get("research_protocol") == "paper_news17_ablation_v1":
-        # The fixed protocol has at most 40 requests; bound even corrupted data.
+    if protocol in {"paper_news17_ablation_v1", "theme_ppa_v1"}:
+        # Both fixed protocols are bounded; do not materialize continuous runs.
         paired_rows = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == run_id,
         ).order_by(ResearchCandidate.id).limit(100))).scalars().all()
         paired = paired_deltas(paired_rows)
+    budget_limit = None if config.get("continuous_mode") is True else config.get("research_request_budget")
+    reserved = sum(statuses[name] for name in ("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN"))
     return {
         "run_id": run.id, "task_id": run.task_id, "status": run.status,
         "source": "AIAC persisted candidate audit and Alpha rows",
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "audit_available": total > 0,
-        "paper_transfer": "VENDOR_FIELD_PROXY_NOT_PAPER_REPRODUCTION" if total else None,
-        "budget": {"limit": None if config.get("continuous_mode") is True else config.get("research_request_budget"),
-                   "reserved": sum(statuses[name] for name in ("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
+        "paper_transfer": "VENDOR_FIELD_PROXY_NOT_PAPER_REPRODUCTION"
+                          if total and protocol == "paper_news17_ablation_v1" else None,
+        "budget": {"limit": budget_limit,
+                   "remaining": max(0, int(budget_limit) - reserved) if budget_limit is not None else None,
+                   "reserved": reserved,
                    "unknown_pending_reconciliation": statuses["UNKNOWN"]},
         "candidate_funnel": {
             "generated": total,
@@ -141,7 +171,9 @@ async def research_report(db, run_id: int) -> dict:
             "saved_wq_results": saved_count,
             "quality_pass": quality["PASS"],
         },
-        "quality_counts": dict(quality), "request_counts": dict(statuses),
+        "quality_counts": dict(quality), "ppa_counts": dict(ppa_counts),
+        "ppa_phase_counts": ppa_phase_counts,
+        "request_counts": dict(statuses),
         "rejection_counts": dict(rejections),
         "genetic_funnel": {
             "generated": sum(genetic.values()),
@@ -155,5 +187,6 @@ async def research_report(db, run_id: int) -> dict:
         "best_sharpe_alpha": ({"id": best.id, "wq_alpha_id": best.alpha_id,
                                "sharpe": best.is_sharpe, "fitness": best.is_fitness,
                                "quality_status": best.quality_status} if best else None),
-        "stop_reason": (run.checkpoint or {}).get("paper_stop_reason"),
+        "stop_reason": (run.checkpoint or {}).get("ppa_stop_reason") if protocol == "theme_ppa_v1"
+                       else (run.checkpoint or {}).get("paper_stop_reason"),
     }

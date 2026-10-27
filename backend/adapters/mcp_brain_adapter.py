@@ -188,6 +188,9 @@ def _normalize_alpha_result(item: Dict[str, Any]) -> Dict[str, Any]:
         "pending_checks": pending_checks,
         "passed_checks": passed_checks,
         "can_submit": bool(item.get("can_submit", len(failed_checks) == 0 and len(pending_checks) == 0)),
+        "platform_can_submit": item.get("platform_can_submit") is True or alpha.get("canSubmit") is True,
+        "classifications": alpha.get("classifications") or item.get("classifications") or [],
+        "themes": alpha.get("themes") or item.get("themes") or [],
         "is": is_stats,
         "os": os_stats,
         "train": train_stats,
@@ -400,6 +403,12 @@ class MCPBrainAdapter:
         fallback = await self._ensure_fallback()
         payload = await fallback.check_correlation(alpha_id, check_type=check_type)
         return {"max": _max_correlation(payload), "raw": payload, "source": "brain_api"}
+
+    async def check_power_pool_correlation(self, alpha_id: str) -> Dict[str, Any]:
+        """Use the BRAIN Power Pool endpoint; generic MCP correlation is PROD."""
+        fallback = await self._ensure_fallback()
+        payload = await fallback.check_power_pool_correlation(alpha_id)
+        return {"max": _max_correlation(payload), "source": "brain_api_power_pool"}
 
     async def get_datasets(self, region: str = "USA", delay: int = 1, universe: str = "TOP3000") -> List[Dict[str, Any]]:
         if await self.mcp.is_tool_enabled("get_datasets"):

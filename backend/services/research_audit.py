@@ -146,7 +146,8 @@ def safe_metrics(result: dict) -> dict:
 
     safe = {key: numeric(metrics.get(key)) for key in (
         "sharpe", "fitness", "turnover", "margin", "returns", "two_year_sharpe",
-        "os_sharpe", "os_fitness",
+        "os_sharpe", "os_fitness", "train_sharpe", "train_fitness",
+        "test_sharpe", "test_fitness", "long_count", "short_count",
     ) if key in metrics}
     for group in ("riskNeutralized", "investabilityConstrained"):
         nested = metrics.get(group) or {}
@@ -158,6 +159,29 @@ def safe_metrics(result: dict) -> dict:
 
 def safe_result(result: dict) -> dict:
     """Enough WQ evidence to finish local persistence after a worker restart."""
+    def identifier(value):
+        text = str(value or "")
+        if (not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", text)
+                or text.lower().startswith(("sk-", "bearer", "eyj"))):
+            return None
+        return text
+
+    classifications = []
+    for item in (result.get("classifications") or [])[:20]:
+        if not isinstance(item, dict):
+            continue
+        identity = identifier(item.get("id"))
+        name, value = identifier(item.get("name")), identifier(item.get("value"))
+        if identity or (name and value and name.upper() in {"POWER_POOL", "REGULAR", "ATOM"}):
+            classifications.append({key: content for key, content in
+                                    {"id": identity, "name": name, "value": value}.items()
+                                    if content})
+    themes = []
+    for item in (result.get("themes") or [])[:20]:
+        if isinstance(item, dict):
+            theme_id = identifier(item.get("id"))
+            if theme_id:
+                themes.append({"id": theme_id})
     checks = []
     for item in (result.get("checks") or [])[:40]:
         if isinstance(item, dict):
@@ -165,14 +189,19 @@ def safe_result(result: dict) -> dict:
                 "name": str(item.get("name") or "")[:60] if re.fullmatch(r"[A-Za-z0-9_]{1,60}", str(item.get("name") or "")) else "UNKNOWN",
                 "result": str(item.get("result") or "")[:20] if re.fullmatch(r"[A-Za-z_]{1,20}", str(item.get("result") or "")) else "UNKNOWN",
                 "value": safe_metrics({"metrics": {"sharpe": item.get("value")}}).get("sharpe"),
+                "themes": [{"id": theme_id} for theme in (item.get("themes") or [])[:20]
+                           if isinstance(theme, dict)
+                           for theme_id in [identifier(theme.get("id"))] if theme_id],
             })
     os_data = result.get("os") or {}
     return {
         "success": bool(result.get("success")), "alpha_id": result.get("alpha_id"),
         "stage": result.get("stage") if result.get("stage") in {"IS", "OS"} else None,
         "status": result.get("status") if result.get("status") in {"UNSUBMITTED", "SUBMITTED"} else None,
+        "classifications": classifications, "themes": themes,
         "metrics": safe_metrics(result), "checks": checks,
         "can_submit": bool(result.get("can_submit")),
+        "platform_can_submit": result.get("platform_can_submit") is True,
         "os": {key: os_data.get(key) for key in ("sharpe", "fitness")
                if isinstance(os_data.get(key), (int, float, type(None)))},
     }
