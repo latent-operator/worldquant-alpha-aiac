@@ -92,6 +92,20 @@ def test_theme_protocol_requires_account_access_and_operator_whitelist():
     assert validate_theme_task(bad) == "PPA_MANIFEST_INCOMPLETE"
 
 
+def test_theme_protocol_accepts_account_confirmed_unlimited_simulation_quota():
+    candidate = task()
+    eligibility = candidate.config["ppa_manifest"]["account_eligibility"]
+    eligibility.pop("quota_remaining")
+    eligibility.update({"quota_mode": "NO_FIXED_LIMIT", "quota_source": "account_owner"})
+    candidate.config["ppa_manifest"]["candidate_generation"]["plan_sha256"] = candidate_plan_hash(
+        candidate.config["ppa_manifest"]
+    )
+    assert validate_theme_task(candidate) is None
+
+    eligibility.pop("quota_source")
+    assert validate_theme_task(candidate) == "PPA_ACCOUNT_UNVERIFIED"
+
+
 def test_discovery_treatment_changes_one_expression_token():
     bad = task()
     bad.config["ppa_manifest"]["discovery"][1]["expression"] = "zscore(other_field)"
@@ -217,6 +231,76 @@ async def test_theme_dispatch_persists_platform_ready_separately_from_strict_qua
         assert any(c.result_snapshot.get("ppa_evaluation", {}).get("status") == "PPA_READY"
                    for c in candidates)
         assert all(a.quality_status == "OPTIMIZE" for a in alphas)
+
+
+@pytest.mark.asyncio
+async def test_theme_dispatch_pauses_after_one_rate_limited_request(async_engine, monkeypatch):
+    from backend.services.theme_ppa import run_theme_dispatch
+    from backend.services import research_audit as audit_module
+    from backend.models import ResearchCandidate
+    from sqlalchemy import select
+
+    maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(audit_module, "AsyncSessionLocal", maker)
+    m = manifest()
+    m["starts_at"] = "2026-01-01T00:00:00Z"
+    m["ends_at"] = "2027-01-01T00:00:00Z"
+    m["candidate_generation"]["plan_sha256"] = candidate_plan_hash(m)
+    async with maker() as db:
+        mining_task = MiningTask(task_name="ppa-rate-limit", region="USA", universe="TOP3000",
+                                 dataset_strategy="SPECIFIC", target_datasets=["dataset1"],
+                                 status="RUNNING", config={"research_protocol": "theme_ppa_v1",
+                                                           "research_request_budget": 80,
+                                                           "ppa_manifest": m})
+        db.add(mining_task)
+        await db.flush()
+        run = ExperimentRun(task_id=mining_task.id, status="RUNNING")
+        db.add(run)
+        await db.commit()
+
+        class RateLimitedBrain:
+            calls = 0
+
+            async def simulate_single(self, _expression, **_settings):
+                self.calls += 1
+                return {"success": False, "http_status": 429,
+                        "error": "Creation failed: THROTTLED"}
+
+        brain = RateLimitedBrain()
+        fields = {"dataset1": [{"id": f, "type": "MATRIX"}
+                                for f in m["datasets"]["dataset1"]]}
+        outcome = await run_theme_dispatch(db, brain, mining_task, run, fields)
+        candidates = (await db.execute(select(ResearchCandidate))).scalars().all()
+        assert brain.calls == 1
+        assert len(candidates) == 1
+        assert candidates[0].request_status == "FAILED"
+        assert outcome == {"done": True, "reason": "PPA_RATE_LIMIT",
+                           "phase": "discovery", "cursor": 1, "ready": 0}
+        assert mining_task.status == run.status == "PAUSED"
+        assert run.checkpoint["ppa_cursor"] == 1
+
+
+@pytest.mark.asyncio
+async def test_audited_single_simulation_reports_429_without_retry():
+    from backend.adapters.brain_adapter import BrainAdapter
+
+    adapter = BrainAdapter(email="test@example.invalid", password="test")
+    adapter._safe_api_call = AsyncMock(return_value=SimpleNamespace(
+        status_code=429, headers={"Retry-After": "60"}, text="THROTTLED"))
+    result = await adapter.simulate_alpha("rank(field)", retry_post=False)
+    assert result["http_status"] == 429
+    assert result["retry_after"] == 60
+    adapter._safe_api_call.assert_awaited_once()
+
+
+def test_audit_snapshot_keeps_rate_limit_diagnostics():
+    from backend.services.research_audit import safe_result
+
+    snapshot = safe_result({"success": False, "http_status": 429,
+                            "retry_after": 60.0, "error": "THROTTLED"})
+    assert snapshot["http_status"] == 429
+    assert snapshot["retry_after"] == 60.0
+    assert "error" not in snapshot
 
 
 @pytest.mark.asyncio

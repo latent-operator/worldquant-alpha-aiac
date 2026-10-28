@@ -329,7 +329,14 @@ class BrainAdapter:
                 if not retry_post and response.status_code >= 500:
                     return {"success": False, "error": "uncertain server error"}
                 logger.error(f"Brain Simulation Failed [{response.status_code}] | Payload: {json.dumps(sim_payload)} | Response: {response.text}")
-                return {"success": False, "error": f"Creation failed: {response.text}"}
+                failure = {"success": False, "error": f"Creation failed: {response.text}",
+                           "http_status": response.status_code}
+                if response.status_code == 429:
+                    try:
+                        failure["retry_after"] = max(0, float(response.headers.get("Retry-After")))
+                    except (TypeError, ValueError):
+                        pass
+                return failure
             
             location = response.headers.get("Location")
             if not location:

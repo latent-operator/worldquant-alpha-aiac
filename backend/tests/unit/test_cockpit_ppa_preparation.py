@@ -72,3 +72,20 @@ def test_cockpit_does_not_call_model_for_non_platform_theme(tmp_path):
 
     with pytest.raises(ValueError, match="PPA_THEME_NOT_PLATFORM_VERIFIED"):
         prepare_manifest(base, script, runner=must_not_run)
+
+
+def test_cockpit_accepts_account_confirmed_unlimited_simulation_quota(tmp_path):
+    base = manifest()
+    plan = {phase: base.pop(phase) for phase in ("discovery", "refinement", "confirmation")}
+    base.pop("candidate_generation")
+    eligibility = base["account_eligibility"]
+    eligibility.pop("quota_remaining")
+    eligibility.update({"quota_mode": "NO_FIXED_LIMIT", "quota_source": "account_owner"})
+    script = tmp_path / "cockpit-ask.ps1"
+    script.write_text("# fake", encoding="utf-8")
+
+    def fake_run(_argv, **_kwargs):
+        return SimpleNamespace(stdout=json.dumps(plan), stderr="")
+
+    prepared = prepare_manifest(base, script, runner=fake_run)
+    assert prepared["account_eligibility"]["quota_mode"] == "NO_FIXED_LIMIT"

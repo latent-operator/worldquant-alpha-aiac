@@ -19,6 +19,18 @@ from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger,
 PHASE_LIMITS = {"discovery": 24, "refinement": 40, "confirmation": 16}
 
 
+def account_quota_verified(eligibility: dict) -> bool:
+    """Accept a verified balance or an account-owner confirmed no-cap policy."""
+    try:
+        remaining = int(eligibility.get("quota_remaining") or 0)
+    except (TypeError, ValueError):
+        remaining = 0
+    return remaining >= 80 or (
+        eligibility.get("quota_mode") == "NO_FIXED_LIMIT"
+        and eligibility.get("quota_source") == "account_owner"
+    )
+
+
 def candidate_plan_hash(manifest: dict) -> str:
     """Bind Cockpit output to the frozen theme constraints and candidate cases."""
     payload = {key: value for key, value in manifest.items()
@@ -56,12 +68,8 @@ def validate_theme_task(task) -> str | None:
         return "PPA_THEME_NOT_PLATFORM_VERIFIED"
     eligibility = manifest.get("account_eligibility") or {}
     verified_at = _timestamp(eligibility.get("verified_at"))
-    try:
-        quota = int(eligibility.get("quota_remaining") or 0)
-    except (TypeError, ValueError):
-        quota = 0
     if (eligibility.get("power_pool_access") is not True or not verified_at
-            or verified_at.tzinfo is None or quota < 80):
+            or verified_at.tzinfo is None or not account_quota_verified(eligibility)):
         return "PPA_ACCOUNT_UNVERIFIED"
     start, end = _timestamp(manifest.get("starts_at")), _timestamp(manifest.get("ends_at"))
     if not start or not end or start.tzinfo is None or end.tzinfo is None or start >= end:
@@ -232,6 +240,7 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
         return {"done": True, "reason": run.block_reason}
 
     checkpoint = dict(run.checkpoint or {})
+    checkpoint.pop("ppa_stop_reason", None)
     phase = checkpoint.get("ppa_phase", "discovery")
     cursor = int(checkpoint.get("ppa_cursor", 0))
     phases = list(PHASE_LIMITS)
@@ -269,6 +278,8 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
     agent = MiningAgent(db, audited_brain)
     results = []
     rejected = 0
+    rate_limited = False
+    processed_cursor = cursor + len(batch)
     for case in selected:
         expression = case["expression"]
         dataset_id = case["dataset_id"]
@@ -296,6 +307,10 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
         with audited_brain.source(phase.upper()):
             result = await audited_brain.simulate_alpha(expression, **settings)
         results.append((case, settings, fields, result))
+        if result.get("http_status") == 429:
+            rate_limited = True
+            processed_cursor = cursor + batch.index(case) + 1
+            break
 
     trace = TraceStep(
         task_id=task.id, run_id=run.id, step_type="PPA_RESEARCH_BATCH",
@@ -356,13 +371,18 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
         if evaluation["status"] == "PPA_READY":
             ready += 1
 
-    cursor += len(batch)
+    cursor = processed_cursor
     task.progress_current += ready
     run.checkpoint = {**checkpoint, "ppa_phase": phase, "ppa_cursor": cursor}
     if ready:
         task.status = run.status = "COMPLETED"
         run.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
         run.checkpoint = {**run.checkpoint, "ppa_stop_reason": "PPA_READY"}
+    elif rate_limited:
+        task.status = run.status = "PAUSED"
+        run.block_reason = "PPA_RATE_LIMIT"
+        run.checkpoint = {**run.checkpoint, "ppa_stop_reason": "PPA_RATE_LIMIT"}
     await db.commit()
-    return {"done": bool(ready), "reason": "PPA_READY" if ready else None,
+    reason = "PPA_READY" if ready else "PPA_RATE_LIMIT" if rate_limited else None
+    return {"done": bool(ready or rate_limited), "reason": reason,
             "phase": phase, "cursor": cursor, "ready": ready}

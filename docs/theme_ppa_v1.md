@@ -8,8 +8,8 @@ each candidate's audited `result_snapshot`.
 
 Use the account's current WQ platform theme page to verify the theme ID, start
 and end time, region, universe, delay, data categories, allowed operators,
-neutralization and other simulation settings, PPA correlation limit, quota, and
-Power Pool access. A forum post is only a lead. Record the platform URL and
+neutralization and other simulation settings, PPA correlation limit, request
+speed limits, and Power Pool access. A forum post is only a lead. Record the platform URL and
 the time of the account eligibility check. Freeze one or two datasets and their
 field IDs. Select them for coverage, update method, and an interpretable
 economic mechanism. Each expression must use fields from only its named
@@ -44,7 +44,11 @@ dataset IDs. `ppa_manifest` requires:
 - `theme_id`, `verified_source: platform`, `platform_source_url` on
   `platform.worldquantbrain.com`, `starts_at`, `ends_at`, `region`, `universe`,
   `delay`, and `account_eligibility` with `verified_at`,
-  `power_pool_access: true`, and at least 80 remaining requests.
+  `power_pool_access: true`, and either `quota_remaining` of at least 80 or
+  `quota_mode: NO_FIXED_LIMIT` with `quota_source: account_owner`. The latter
+  records the account owner's report that WQ has no fixed simulation balance;
+  it is not an independently verified platform rule. The 80-request ceiling
+  remains an AIAC research budget in either mode.
 - `datasets` mapping 1–2 dataset IDs to allowed field IDs,
   `dataset_categories`, `allowed_operators`, `max_fields`,
   `max_operator_count`, `settings`, `ppa_corr_max`, `turnover_max`, and
@@ -67,6 +71,10 @@ The request ledger reserves slots durably. Results, failures, uncertain
 responses, and in-flight reservations all consume the 80-request limit;
 duplicate requests are rejected before sending. Never automatically resend
 an `UNKNOWN` request. Unused slots are acceptable.
+The dispatcher sends requests one at a time. A WQ HTTP 429 consumes its slot,
+records the response status and any `Retry-After` value, and pauses the task
+and run without sending the next candidate. Resuming continues from the saved
+cursor after the speed limit has cleared.
 
 ## Candidate meaning
 

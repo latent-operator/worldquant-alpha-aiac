@@ -15,7 +15,9 @@ import tempfile
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
-from backend.services.theme_ppa import candidate_plan_hash, validate_theme_task
+from backend.services.theme_ppa import (
+    account_quota_verified, candidate_plan_hash, validate_theme_task,
+)
 
 
 MODEL = "gpt-6-luna"
@@ -53,11 +55,8 @@ def _check_base(base: dict) -> None:
     if not base.get("theme_id") or not base.get("datasets"):
         raise ValueError("PPA_MANIFEST_INCOMPLETE")
     eligibility = base.get("account_eligibility") or {}
-    try:
-        quota = int(eligibility.get("quota_remaining") or 0)
-    except (TypeError, ValueError):
-        quota = 0
-    if eligibility.get("power_pool_access") is not True or quota < 80:
+    if (eligibility.get("power_pool_access") is not True
+            or not account_quota_verified(eligibility)):
         raise ValueError("PPA_ACCOUNT_UNVERIFIED")
 
 

@@ -159,6 +159,17 @@ def safe_metrics(result: dict) -> dict:
 
 def safe_result(result: dict) -> dict:
     """Enough WQ evidence to finish local persistence after a worker restart."""
+    http_status = result.get("http_status")
+    if (isinstance(http_status, bool) or not isinstance(http_status, int)
+            or not 100 <= http_status <= 599):
+        http_status = None
+    try:
+        retry_after = float(result.get("retry_after"))
+        if not math.isfinite(retry_after) or retry_after < 0:
+            retry_after = None
+    except (TypeError, ValueError, OverflowError):
+        retry_after = None
+
     def identifier(value):
         text = str(value or "")
         if (not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", text)
@@ -196,6 +207,7 @@ def safe_result(result: dict) -> dict:
     os_data = result.get("os") or {}
     return {
         "success": bool(result.get("success")), "alpha_id": result.get("alpha_id"),
+        "http_status": http_status, "retry_after": retry_after,
         "stage": result.get("stage") if result.get("stage") in {"IS", "OS"} else None,
         "status": result.get("status") if result.get("status") in {"UNSUBMITTED", "SUBMITTED"} else None,
         "classifications": classifications, "themes": themes,
