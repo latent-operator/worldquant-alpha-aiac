@@ -25,7 +25,7 @@ PROMPT_KEYS = (
     "theme_id", "theme_name", "platform_source_url", "starts_at", "ends_at", "region",
     "universe", "delay", "datasets", "dataset_categories", "allowed_operators",
     "max_fields", "max_operator_count", "settings", "confirmation_settings",
-    "economic_mechanisms",
+    "economic_mechanisms", "theme_requirements", "field_evidence",
 )
 
 

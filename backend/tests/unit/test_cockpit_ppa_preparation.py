@@ -98,6 +98,8 @@ def test_cockpit_prepares_official_theme_without_unpublished_machine_ids(tmp_pat
     base.pop("theme_id")
     base["theme_name"] = "GLB/D1 Power Pool Nov'26"
     base["eligible_classification_ids"] = []
+    base["theme_requirements"] = {"amer_sharpe_strictly_greater_than": 1.0}
+    base["field_evidence"] = {"field_0_0": "95% date coverage; sampled spikes"}
     script = tmp_path / "cockpit-ask.ps1"
     script.write_text("# fake", encoding="utf-8")
 
@@ -105,6 +107,8 @@ def test_cockpit_prepares_official_theme_without_unpublished_machine_ids(tmp_pat
         prompt = __import__("pathlib").Path(argv[argv.index("-PromptFile") + 1]).read_text(
             encoding="utf-8")
         assert base["theme_name"] in prompt
+        assert "amer_sharpe_strictly_greater_than" in prompt
+        assert "sampled spikes" in prompt
         return SimpleNamespace(stdout=json.dumps(plan), stderr="")
 
     prepared = prepare_manifest(base, script, runner=fake_run)
