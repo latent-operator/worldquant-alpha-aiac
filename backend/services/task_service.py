@@ -289,6 +289,14 @@ class TaskService(BaseService):
         """
         config = dict(data.config or {})
         continuous_mode = data.continuous_mode or config.get("continuous_mode") is True
+        if config.get("research_protocol") == "theme_ppa_v1":
+            if continuous_mode:
+                raise ValueError("PPA_CONTINUOUS_FORBIDDEN")
+            from backend.services.theme_ppa import validate_theme_task
+            reason = validate_theme_task(data)
+            if reason:
+                raise ValueError(reason)
+            config["audit_candidates"] = True
         if continuous_mode:
             if config.get("research_protocol") == "paper_news17_ablation_v1":
                 raise ValueError("Fixed 40-request paper protocol cannot run continuously")

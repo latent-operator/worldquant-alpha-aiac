@@ -543,6 +543,10 @@ class BrainProtocol(Protocol):
             Correlation check results
         """
         ...
+
+    async def check_power_pool_correlation(self, alpha_id: str) -> Dict[str, Any]:
+        """Read correlation against the Power Pool, independently of PROD."""
+        ...
     
     async def get_user_alphas(
         self,

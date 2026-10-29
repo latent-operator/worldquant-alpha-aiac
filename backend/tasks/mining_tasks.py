@@ -227,6 +227,23 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     logger.warning(f"Failed to load operator registry in worker: {e}")
 
                 async with MCPBrainAdapter() as brain:
+                    if (task.config or {}).get("research_protocol") == "theme_ppa_v1":
+                        from backend.services.theme_ppa import run_theme_dispatch
+
+                        fields = {}
+                        for dataset_id in (task.target_datasets or []):
+                            fields[dataset_id] = await _get_dataset_fields(
+                                db, dataset_id, task.region, task.universe,
+                            )
+                        ppa_outcome = await run_theme_dispatch(db, brain, task, run, fields)
+                        if ppa_outcome.get("done"):
+                            return {"success": True, "run_id": run.id,
+                                    "research_reason": ppa_outcome.get("reason")}
+                        await db.refresh(task)
+                        if task.status in {"PAUSED", "STOPPED"}:
+                            return {"skipped": task.status}
+                        return {"_retry": True, "run_id": run.id, "retry_countdown": 1}
+
                     if (task.config or {}).get("research_protocol") == "paper_news17_ablation_v1":
                         from backend.services.paper_experiment import run_paper_dispatch
 
