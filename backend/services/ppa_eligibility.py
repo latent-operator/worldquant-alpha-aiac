@@ -110,11 +110,26 @@ def evaluate_ppa_candidate(snapshot: dict, manifest: dict, power_pool_corr: floa
     except (TypeError, ValueError):
         pending.append("IS_SHARPE_MISSING")
 
+    amer_threshold = (manifest.get("theme_requirements") or {}).get(
+        "amer_sharpe_strictly_greater_than")
+    if amer_threshold is not None and metrics.get("amer_sharpe") is not None:
+        try:
+            amer_sharpe = float(metrics["amer_sharpe"])
+            if not isfinite(amer_sharpe):
+                pending.append("AMER_SHARPE_ANOMALY")
+            elif amer_sharpe <= float(amer_threshold):
+                rejected.append("AMER_SHARPE_BELOW_THEME")
+        except (TypeError, ValueError):
+            pending.append("AMER_SHARPE_ANOMALY")
+
     try:
         turnover = float(metrics["turnover"])
+        turnover_min = float(manifest.get("turnover_min", 0.01))
         turnover_max = float(manifest["turnover_max"])
         if not isfinite(turnover) or turnover < 0:
             pending.append("TURNOVER_ANOMALY")
+        elif turnover < turnover_min:
+            rejected.append("TURNOVER_BELOW_MINIMUM")
         elif turnover > turnover_max:
             rejected.append("TURNOVER_EXCESS")
     except (KeyError, TypeError, ValueError):

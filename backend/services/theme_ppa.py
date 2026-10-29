@@ -101,6 +101,7 @@ def validate_theme_task(task) -> str | None:
         return "PPA_MANIFEST_INCOMPLETE"
     try:
         if (not 0 < float(manifest["ppa_corr_max"]) < 1
+                or not 0 < float(manifest.get("turnover_min", 0.01)) <= float(manifest["turnover_max"])
                 or not 0 < float(manifest["turnover_max"]) <= 1
                 or not 1 <= int(manifest["min_positions"])
                 or not 1 <= int(manifest["max_fields"]) <= 3

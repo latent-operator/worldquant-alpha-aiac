@@ -148,6 +148,7 @@ def safe_metrics(result: dict) -> dict:
         "sharpe", "fitness", "turnover", "margin", "returns", "two_year_sharpe",
         "os_sharpe", "os_fitness", "train_sharpe", "train_fitness",
         "test_sharpe", "test_fitness", "long_count", "short_count",
+        "amer_sharpe",
     ) if key in metrics}
     for group in ("riskNeutralized", "investabilityConstrained"):
         nested = metrics.get(group) or {}

@@ -12,7 +12,8 @@ from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
 
 
 MANIFEST = {"theme_id": "theme-2026-11", "ppa_corr_max": 0.5,
-            "turnover_max": 0.7, "min_positions": 10,
+            "turnover_min": 0.01, "turnover_max": 0.7, "min_positions": 10,
+            "theme_requirements": {"amer_sharpe_strictly_greater_than": 1.0},
             "eligible_classification_ids": ["POWER_POOL_ELIGIBLE"],
             "required_pre_submit_checks": ["MATCHES_THEMES"]}
 
@@ -121,15 +122,41 @@ def test_turnover_and_concentration_gate():
     assert "POSITION_CONCENTRATION" in evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)["reasons"]
 
 
+def test_low_turnover_cannot_be_ppa_ready():
+    snapshot = ready_snapshot()
+    snapshot["metrics"]["turnover"] = 0.005
+    result = evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)
+    assert result["status"] == "PPA_REJECTED"
+    assert "TURNOVER_BELOW_MINIMUM" in result["reasons"]
+
+
+def test_explicit_amer_sharpe_must_exceed_theme_threshold():
+    snapshot = ready_snapshot()
+    snapshot["metrics"]["amer_sharpe"] = 1.0
+    result = evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)
+    assert result["status"] == "PPA_REJECTED"
+    assert "AMER_SHARPE_BELOW_THEME" in result["reasons"]
+    snapshot["metrics"]["amer_sharpe"] = 1.01
+    assert evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)["status"] == "PPA_READY"
+
+
+def test_theme_check_pass_is_authoritative_when_amer_metric_not_returned():
+    snapshot = ready_snapshot()
+    assert "amer_sharpe" not in snapshot["metrics"]
+    assert evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)["status"] == "PPA_READY"
+
+
 def test_audit_snapshot_preserves_safe_ppa_evidence():
     snapshot = safe_result({
         **ready_snapshot(), "alpha_id": "WQ1", "success": True,
+        "metrics": {**ready_snapshot()["metrics"], "amer_sharpe": 1.2},
         "classifications": [{"name": "POWER_POOL", "value": "POWER_POOL_ELIGIBLE"},
                             {"name": "sk-secret", "value": "sk-secret"}],
     })
     assert snapshot["classifications"] == [{"name": "POWER_POOL", "value": "POWER_POOL_ELIGIBLE"}]
     assert snapshot["themes"] == [{"id": "theme-2026-11"}]
     assert snapshot["metrics"]["test_sharpe"] == 0.6
+    assert snapshot["metrics"]["amer_sharpe"] == 1.2
     assert "sk-secret" not in str(snapshot)
 
 

@@ -26,7 +26,8 @@ def manifest():
                                 "power_pool_access": True, "quota_remaining": 80},
         "starts_at": "2026-11-01T00:00:00Z", "ends_at": "2026-11-30T23:59:59Z",
         "region": "USA", "universe": "TOP3000", "delay": 1,
-        "ppa_corr_max": 0.5, "turnover_max": 0.7, "min_positions": 10,
+        "ppa_corr_max": 0.5, "turnover_min": 0.01,
+        "turnover_max": 0.7, "min_positions": 10,
         "max_fields": 3, "max_operator_count": 8,
         "datasets": {"dataset1": [f"field_{p}_{t}" for p in range(6) for t in range(4)]},
         "dataset_categories": {"dataset1": "analyst"},
@@ -61,6 +62,12 @@ def test_theme_protocol_requires_verified_frozen_manifest_and_80_request_cap():
     bad = task()
     bad.config["research_request_budget"] = 100
     assert validate_theme_task(bad) == "PPA_BUDGET_MUST_BE_80"
+
+
+def test_theme_protocol_rejects_invalid_turnover_bounds():
+    bad = task()
+    bad.config["ppa_manifest"]["turnover_min"] = 0.8
+    assert validate_theme_task(bad) == "PPA_MANIFEST_INCOMPLETE"
 
 
 def test_theme_protocol_rejects_continuous_mode_and_phase_overrun():
