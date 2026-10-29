@@ -132,9 +132,14 @@ def evaluate_ppa_candidate(snapshot: dict, manifest: dict, power_pool_corr: floa
 
     amer_threshold = (manifest.get("theme_requirements") or {}).get(
         "amer_sharpe_strictly_greater_than")
-    if amer_threshold is not None and metrics.get("amer_sharpe") is not None:
+    amer_value = metrics.get("amer_sharpe")
+    if amer_value is None:
+        amer_value = next((check.get("value") for check in checks
+                           if str(check.get("name") or "").upper() == "LOW_GLB_AMER_SHARPE"
+                           and check.get("value") is not None), None)
+    if amer_threshold is not None and amer_value is not None:
         try:
-            amer_sharpe = float(metrics["amer_sharpe"])
+            amer_sharpe = float(amer_value)
             if not isfinite(amer_sharpe):
                 pending.append("AMER_SHARPE_ANOMALY")
             elif amer_sharpe <= float(amer_threshold):

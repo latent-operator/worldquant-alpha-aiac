@@ -149,6 +149,22 @@ def test_first_batch_review_flags_missing_platform_classification():
     assert first_batch_review_reason(rows) == "PPA_FIRST_BATCH_REVIEW"
 
 
+def test_first_batch_can_resume_when_all_five_explicitly_fail_theme_amer_check():
+    from backend.services.theme_ppa import first_batch_ineligibility_explained
+
+    rows = [SimpleNamespace(request_status="RESULT", result_snapshot={
+        "platform_ppa_evaluation": {"reasons": ["POWER_POOL_CLASSIFICATION"]},
+        "checks": [{"name": "LOW_GLB_AMER_SHARPE", "result": "FAIL",
+                    "value": 0.6}],
+    }) for _ in range(5)]
+    assert first_batch_ineligibility_explained(rows, expected_count=5)
+    rows[0].result_snapshot["checks"][0]["result"] = "PASS"
+    assert not first_batch_ineligibility_explained(rows, expected_count=5)
+    rows[0].request_status = "UNKNOWN"
+    assert not first_batch_ineligibility_explained(rows, expected_count=5)
+    assert not first_batch_ineligibility_explained(rows[:4], expected_count=5)
+
+
 def test_unconfirmed_theme_never_produces_ready_cases():
     bad = task()
     bad.config["ppa_manifest"]["theme_id"] = ""
@@ -276,7 +292,6 @@ async def test_theme_dispatch_does_not_count_discovery_as_robust_ppa_ready(async
                    for c in candidates)
         assert all(a.quality_status == "OPTIMIZE" for a in alphas)
 
-        first_classification = candidates[0].result_snapshot["classifications"]
         for candidate in candidates:
             candidate.result_snapshot = {**candidate.result_snapshot,
                 "classifications": [],
@@ -289,15 +304,20 @@ async def test_theme_dispatch_does_not_count_discovery_as_robust_ppa_ready(async
         assert mining_task.status == run.status == "PAUSED"
         assert run.checkpoint["ppa_first_batch_review_pending"] is True
 
-        candidates[0].result_snapshot = {**candidates[0].result_snapshot,
-            "classifications": first_classification}
+        for candidate in candidates:
+            candidate.result_snapshot = {**candidate.result_snapshot,
+                "checks": [
+                    {"name": "MATCHES_THEMES", "result": "WARNING"},
+                    {"name": "LOW_GLB_AMER_SHARPE", "result": "FAIL", "value": 0.6},
+                ]}
         mining_task.status = run.status = "RUNNING"
         await db.commit()
         resumed = await run_theme_dispatch(db, brain, mining_task, run, fields)
         assert resumed["done"] is False
         assert brain.calls == 10
-        assert candidates[0].result_snapshot["platform_ppa_evaluation"]["status"] == "PPA_READY"
+        assert candidates[0].result_snapshot["platform_ppa_evaluation"]["status"] == "PPA_REJECTED"
         assert "ppa_first_batch_review_pending" not in run.checkpoint
+        assert run.checkpoint["ppa_first_batch_review"]["status"] == "INELIGIBLE_EXPLAINED"
 
 
 def test_robustness_requires_parent_and_two_confirmations_with_positive_metrics():
