@@ -59,7 +59,7 @@ def validate_theme_task(task) -> str | None:
         budget = 0
     if budget != 80:
         return "PPA_BUDGET_MUST_BE_80"
-    if not manifest.get("theme_id"):
+    if not str(manifest.get("theme_id") or manifest.get("theme_name") or "").strip():
         return "PPA_THEME_ID_MISSING"
     if manifest.get("verified_source") != "platform":
         return "PPA_THEME_NOT_PLATFORM_VERIFIED"
@@ -96,7 +96,6 @@ def validate_theme_task(task) -> str | None:
             or not manifest["allowed_operators"]):
         return "PPA_MANIFEST_INCOMPLETE"
     if (not isinstance(manifest.get("eligible_classification_ids"), list)
-            or not manifest["eligible_classification_ids"]
             or not isinstance(manifest.get("required_pre_submit_checks"), list)
             or not manifest["required_pre_submit_checks"]):
         return "PPA_MANIFEST_INCOMPLETE"
@@ -268,8 +267,9 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
     batch = manifest[phase][cursor:cursor + 5]
     permitted = {case["case_id"] for case in phase_cases(manifest, phase, rows)}
     selected = [case for case in batch if case["case_id"] in permitted]
+    theme_label = manifest.get("theme_id") or manifest["theme_name"]
     ledger = ResearchLedger(
-        task.id, run.id, 80, f"theme_ppa_v1:{manifest['theme_id']}",
+        task.id, run.id, 80, f"theme_ppa_v1:{theme_label}",
         dedup_task_ids=(task.config or {}).get("dedup_task_ids", []),
     )
     audited_brain = brain if isinstance(brain, ResearchBudgetBrain) else ResearchBudgetBrain(brain, ledger)
@@ -347,7 +347,7 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
             task_id=task.id, run_id=run.id, trace_step_id=trace.id,
             alpha_id=alpha_id, expression=case["expression"],
             expression_hash=compute_expression_hash(case["expression"]),
-            hypothesis=f"Frozen Power Pool theme {manifest['theme_id']} case {case['case_id']}",
+            hypothesis=f"Frozen Power Pool theme {theme_label} case {case['case_id']}",
             region=task.region, universe=task.universe, dataset_id=case["dataset_id"],
             delay=settings["delay"], decay=settings["decay"],
             neutralization=settings["neutralization"], truncation=settings["truncation"],

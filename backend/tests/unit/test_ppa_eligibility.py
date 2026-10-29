@@ -37,6 +37,16 @@ def test_ready_requires_explicit_platform_and_robustness_evidence():
     assert result["theme_id"] == "theme-2026-11"
 
 
+def test_official_name_only_manifest_cannot_produce_ready():
+    provisional = {**MANIFEST, "theme_id": None,
+                   "theme_name": "GLB/D1 Power Pool Nov'26",
+                   "eligible_classification_ids": []}
+    result = evaluate_ppa_candidate(ready_snapshot(), provisional, 0.3)
+    assert result["status"] == "PPA_PENDING"
+    assert "THEME_ID_MISSING" in result["reasons"]
+    assert "POWER_POOL_CLASSIFICATION" in result["reasons"]
+
+
 def test_wrong_theme_is_rejected():
     snapshot = ready_snapshot()
     snapshot["themes"] = [{"id": "other-theme"}]

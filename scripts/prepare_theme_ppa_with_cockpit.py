@@ -22,7 +22,7 @@ from backend.services.theme_ppa import (
 
 MODEL = "gpt-6-luna"
 PROMPT_KEYS = (
-    "theme_id", "platform_source_url", "starts_at", "ends_at", "region",
+    "theme_id", "theme_name", "platform_source_url", "starts_at", "ends_at", "region",
     "universe", "delay", "datasets", "dataset_categories", "allowed_operators",
     "max_fields", "max_operator_count", "settings", "confirmation_settings",
     "economic_mechanisms",
@@ -52,7 +52,7 @@ def _check_base(base: dict) -> None:
     if (base.get("verified_source") != "platform" or source.scheme != "https"
             or source.hostname != "platform.worldquantbrain.com"):
         raise ValueError("PPA_THEME_NOT_PLATFORM_VERIFIED")
-    if not base.get("theme_id") or not base.get("datasets"):
+    if not (base.get("theme_id") or base.get("theme_name")) or not base.get("datasets"):
         raise ValueError("PPA_MANIFEST_INCOMPLETE")
     eligibility = base.get("account_eligibility") or {}
     if (eligibility.get("power_pool_access") is not True

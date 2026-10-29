@@ -89,3 +89,23 @@ def test_cockpit_accepts_account_confirmed_unlimited_simulation_quota(tmp_path):
 
     prepared = prepare_manifest(base, script, runner=fake_run)
     assert prepared["account_eligibility"]["quota_mode"] == "NO_FIXED_LIMIT"
+
+
+def test_cockpit_prepares_official_theme_without_unpublished_machine_ids(tmp_path):
+    base = manifest()
+    plan = {phase: base.pop(phase) for phase in ("discovery", "refinement", "confirmation")}
+    base.pop("candidate_generation")
+    base.pop("theme_id")
+    base["theme_name"] = "GLB/D1 Power Pool Nov'26"
+    base["eligible_classification_ids"] = []
+    script = tmp_path / "cockpit-ask.ps1"
+    script.write_text("# fake", encoding="utf-8")
+
+    def fake_run(argv, **_kwargs):
+        prompt = __import__("pathlib").Path(argv[argv.index("-PromptFile") + 1]).read_text(
+            encoding="utf-8")
+        assert base["theme_name"] in prompt
+        return SimpleNamespace(stdout=json.dumps(plan), stderr="")
+
+    prepared = prepare_manifest(base, script, runner=fake_run)
+    assert prepared["theme_name"] == base["theme_name"]

@@ -135,6 +135,20 @@ def test_unconfirmed_theme_never_produces_ready_cases():
     assert validate_theme_task(bad) == "PPA_THEME_ID_MISSING"
 
 
+def test_official_theme_name_allows_discovery_without_unpublished_machine_ids():
+    candidate = task()
+    frozen = candidate.config["ppa_manifest"]
+    frozen.pop("theme_id")
+    frozen["theme_name"] = "GLB/D1 Power Pool Nov'26"
+    frozen["eligible_classification_ids"] = []
+    frozen["candidate_generation"]["plan_sha256"] = candidate_plan_hash(frozen)
+    assert validate_theme_task(candidate) is None
+
+    frozen["theme_name"] = ""
+    frozen["candidate_generation"]["plan_sha256"] = candidate_plan_hash(frozen)
+    assert validate_theme_task(candidate) == "PPA_THEME_ID_MISSING"
+
+
 @pytest.mark.asyncio
 async def test_expired_theme_pauses_before_simulation(db_session):
     from backend.services.theme_ppa import run_theme_dispatch
