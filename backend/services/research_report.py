@@ -23,6 +23,8 @@ def candidate_public(row: ResearchCandidate) -> dict:
         "request_status": row.request_status, "wq_alpha_id": row.wq_alpha_id,
         "quality_status": row.quality_status, "gate_failures": row.gate_failures or [],
         "ppa_evaluation": (row.result_snapshot or {}).get("ppa_evaluation"),
+        "platform_ppa_evaluation": (row.result_snapshot or {}).get("platform_ppa_evaluation"),
+        "robustness_review": (row.result_snapshot or {}).get("robustness_review"),
         "classifications": (row.result_snapshot or {}).get("classifications") or [],
         "themes": (row.result_snapshot or {}).get("themes") or [],
         "platform_checks": (row.result_snapshot or {}).get("checks") or [],
@@ -124,13 +126,18 @@ async def research_report(db, run_id: int) -> dict:
     protocol = config.get("research_protocol")
     ppa_counts = Counter()
     ppa_phase_counts = {}
+    robustness_reviews = []
     if protocol == "theme_ppa_v1":
-        snapshots = (await db.execute(select(ResearchCandidate.result_snapshot).where(
+        snapshots = (await db.execute(select(
+            ResearchCandidate.experiment_group, ResearchCandidate.result_snapshot).where(
             ResearchCandidate.run_id == run_id,
-        ))).scalars().all()
+        ))).all()
         ppa_counts.update((snapshot or {}).get("ppa_evaluation", {}).get("status")
-                          for snapshot in snapshots
+                          for _, snapshot in snapshots
                           if (snapshot or {}).get("ppa_evaluation", {}).get("status"))
+        robustness_reviews = [{"parent_case_id": case_id, **snapshot["robustness_review"]}
+                              for case_id, snapshot in snapshots
+                              if (snapshot or {}).get("robustness_review")]
         phase_rows = (await db.execute(select(
             ResearchCandidate.source, ResearchCandidate.request_status,
             func.count(ResearchCandidate.id),
@@ -172,6 +179,7 @@ async def research_report(db, run_id: int) -> dict:
             "quality_pass": quality["PASS"],
         },
         "quality_counts": dict(quality), "ppa_counts": dict(ppa_counts),
+        "robustness_reviews": robustness_reviews,
         "ppa_phase_counts": ppa_phase_counts,
         "request_counts": dict(statuses),
         "rejection_counts": dict(rejections),

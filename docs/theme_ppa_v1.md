@@ -83,7 +83,13 @@ ID, a passed `MATCHES_THEMES` check for that ID, explicit platform
 `canSubmit: true` or every frozen pre-submit check passed, no failed or
 pending checks, a Power Pool correlation below the frozen limit,
 positive two-year and test/OS Sharpe, and valid turnover and position-count
-guards. Any missing platform evidence yields `PPA_PENDING`; explicit
+guards. The runner first records these checks as `platform_ppa_evaluation`.
+It upgrades the refinement parent to `PPA_READY` only after two distinct
+confirmation settings for that parent also pass the platform checks and retain
+positive Sharpe, Fitness, and test/OS Sharpe. Earlier phases and incomplete
+confirmation groups remain `PPA_PENDING` with `ROBUSTNESS_REVIEW_PENDING`.
+Candidate details and the run report include the robustness review and its
+confirmation case IDs. Any missing platform evidence yields `PPA_PENDING`; explicit
 disqualification yields `PPA_REJECTED`. An inferred legacy `can_submit` flag
 cannot make a candidate ready. A confirmed ready candidate still needs human
 review before any future submission.

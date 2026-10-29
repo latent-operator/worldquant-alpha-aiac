@@ -122,7 +122,7 @@ def test_discovery_treatment_changes_one_expression_token():
 def test_refinement_only_uses_positive_complete_paired_seed():
     m = manifest()
     m["refinement"] = [{"case_id": "r1", "parent_case_id": "t0_1",
-                        "dataset_id": "dataset1", "expression": "rank(field_0_1)"}]
+                        "dataset_id": "dataset1", "expression": "rank(rank(field_0_1))"}]
     rows = [SimpleNamespace(expression="rank(field_0_0)", experiment_group="c0",
                             arm="CONTROL", pair_id="p0",
                             request_status="RESULT", metrics={"sharpe": 0.4, "fitness": 0.2,
@@ -189,7 +189,7 @@ async def test_expired_theme_pauses_before_simulation(db_session):
 
 
 @pytest.mark.asyncio
-async def test_theme_dispatch_persists_platform_ready_separately_from_strict_quality(async_engine, monkeypatch):
+async def test_theme_dispatch_does_not_count_discovery_as_robust_ppa_ready(async_engine, monkeypatch):
     from backend.services.theme_ppa import run_theme_dispatch
     from backend.models import ResearchCandidate, Alpha
     from backend.services import research_audit as audit_module
@@ -248,10 +248,129 @@ async def test_theme_dispatch_persists_platform_ready_separately_from_strict_qua
         outcome = await run_theme_dispatch(db, Brain(), mining_task, run, fields)
         candidates = (await db.execute(select(ResearchCandidate))).scalars().all()
         alphas = (await db.execute(select(Alpha))).scalars().all()
-        assert outcome["reason"] == "PPA_READY"
-        assert any(c.result_snapshot.get("ppa_evaluation", {}).get("status") == "PPA_READY"
+        assert outcome["reason"] is None
+        assert outcome["ready"] == 0
+        assert any(c.result_snapshot.get("platform_ppa_evaluation", {}).get("status") == "PPA_READY"
+                   for c in candidates)
+        assert all(c.result_snapshot.get("ppa_evaluation", {}).get("status") != "PPA_READY"
                    for c in candidates)
         assert all(a.quality_status == "OPTIMIZE" for a in alphas)
+
+
+def test_robustness_requires_parent_and_two_confirmations_with_positive_metrics():
+    from backend.services.theme_ppa import robust_parent_cases
+
+    m = manifest()
+    m["refinement"] = [{"case_id": "r1", "parent_case_id": "t0_1",
+                        "dataset_id": "dataset1", "expression": "rank(field_0_1)"}]
+    m["confirmation"] = [
+        {"case_id": "k1", "parent_case_id": "r1", "dataset_id": "dataset1",
+         "expression": "rank(rank(field_0_1))", "settings": {"decay": 2}},
+        {"case_id": "k2", "parent_case_id": "r1", "dataset_id": "dataset1",
+         "expression": "rank(rank(field_0_1))", "settings": {"decay": 8}},
+    ]
+    metrics = {"sharpe": 1.2, "fitness": 0.8, "two_year_sharpe": 0.7,
+               "test_sharpe": 0.5}
+    def row(case_id, *, status="PPA_READY", values=None):
+        return SimpleNamespace(experiment_group=case_id, request_status="RESULT",
+            metrics=values or metrics,
+            result_snapshot={"platform_ppa_evaluation": {"status": status}})
+
+    parent, first, second = row("r1"), row("k1"), row("k2")
+    assert robust_parent_cases(m, [parent, first]) == []
+    assert robust_parent_cases(m, [parent, first, second]) == ["r1"]
+    second.result_snapshot["platform_ppa_evaluation"]["status"] = "PPA_PENDING"
+    assert robust_parent_cases(m, [parent, first, second]) == []
+    second.result_snapshot["platform_ppa_evaluation"]["status"] = "PPA_READY"
+    second.metrics = {**metrics, "test_sharpe": -0.1}
+    assert robust_parent_cases(m, [parent, first, second]) == []
+
+
+@pytest.mark.asyncio
+async def test_confirmation_upgrades_parent_only_after_both_platform_ready_probes(async_engine, monkeypatch):
+    from backend.services.theme_ppa import run_theme_dispatch
+    from backend.services import research_audit as audit_module
+    from backend.agents import mining_agent as mining_module
+    from backend.models import ResearchCandidate
+    from sqlalchemy import select
+
+    maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(audit_module, "AsyncSessionLocal", maker)
+    m = manifest()
+    m["starts_at"], m["ends_at"] = "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z"
+    m["confirmation_settings"] = {"decay": [2, 8]}
+    m["refinement"] = [{"case_id": "r1", "parent_case_id": "t0_1",
+                        "dataset_id": "dataset1", "expression": "rank(rank(field_0_1))"}]
+    m["confirmation"] = [
+        {"case_id": "k1", "parent_case_id": "r1", "dataset_id": "dataset1",
+         "expression": "rank(rank(field_0_1))", "settings": {"decay": 2}},
+        {"case_id": "k2", "parent_case_id": "r1", "dataset_id": "dataset1",
+         "expression": "rank(rank(field_0_1))", "settings": {"decay": 8}},
+    ]
+    m["candidate_generation"]["plan_sha256"] = candidate_plan_hash(m)
+    metrics = {"sharpe": 1.3, "fitness": 0.8, "turnover": 0.2, "margin": 0.001,
+               "two_year_sharpe": 0.8, "test_sharpe": 0.6,
+               "long_count": 100, "short_count": 100}
+    async with maker() as db:
+        task_row = MiningTask(task_name="ppa-confirm", region="USA", universe="TOP3000",
+                              dataset_strategy="SPECIFIC", target_datasets=["dataset1"],
+                              status="RUNNING", config={"research_protocol": "theme_ppa_v1",
+                                  "research_request_budget": 80, "ppa_manifest": m})
+        db.add(task_row)
+        await db.flush()
+        run = ExperimentRun(task_id=task_row.id, status="RUNNING",
+                            checkpoint={"ppa_phase": "confirmation", "ppa_cursor": 0},
+                            config_snapshot={"task": {"config": task_row.config}})
+        db.add(run)
+        await db.flush()
+        db.add(ResearchCandidate(
+            task_id=task_row.id, run_id=run.id, family_id="theme", source="REFINEMENT",
+            experiment_group="r1", expression="rank(rank(field_0_1))",
+            expression_hash="parent", settings_hash="parent", settings={},
+            validation_status="VALID", request_status="RESULT", gate_failures=[],
+            metrics=metrics, result_snapshot={
+                "platform_ppa_evaluation": {"status": "PPA_READY", "reasons": []},
+                "ppa_evaluation": {"status": "PPA_PENDING", "reasons": ["ROBUSTNESS_REVIEW_PENDING"]},
+            },
+        ))
+        await db.commit()
+
+        class FakeAgent:
+            def __init__(self, *_args):
+                pass
+            async def _quality_status_for_optimization_result(self, **_kwargs):
+                return "OPTIMIZE"
+        monkeypatch.setattr(mining_module, "MiningAgent", FakeAgent)
+
+        class Brain:
+            calls = 0
+            async def simulate_single(self, _expression, **_settings):
+                self.calls += 1
+                return {"success": True, "alpha_id": f"WQK{self.calls}",
+                        "stage": "IS", "status": "UNSUBMITTED", "platform_can_submit": True,
+                        "classifications": [{"id": "POWER_POOL_ELIGIBLE"}],
+                        "themes": [{"id": "theme-2026-11"}],
+                        "checks": [{"name": "MATCHES_THEMES", "result": "PASS"}],
+                        "metrics": metrics}
+            async def check_power_pool_correlation(self, _alpha_id):
+                return {"max": 0.2}
+
+        brain = Brain()
+        fields = {"dataset1": [{"id": f, "type": "MATRIX"}
+                               for f in m["datasets"]["dataset1"]]}
+        outcome = await run_theme_dispatch(db, brain, task_row, run, fields)
+        parent = (await db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.experiment_group == "r1"))).scalar_one()
+        assert brain.calls == 2
+        assert outcome["reason"] == "PPA_READY"
+        assert parent.result_snapshot["ppa_evaluation"]["status"] == "PPA_READY"
+        assert parent.result_snapshot["robustness_review"]["confirmation_cases"] == ["k1", "k2"]
+        from backend.services.research_report import candidate_public, research_report
+        public = candidate_public(parent)
+        assert public["platform_ppa_evaluation"]["status"] == "PPA_READY"
+        assert public["robustness_review"]["status"] == "PASS"
+        report = await research_report(db, run.id)
+        assert report["robustness_reviews"][0]["confirmation_cases"] == ["k1", "k2"]
 
 
 @pytest.mark.asyncio

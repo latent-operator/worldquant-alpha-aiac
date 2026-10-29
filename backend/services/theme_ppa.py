@@ -217,6 +217,38 @@ def phase_cases(manifest: dict, phase: str, rows: list) -> list[dict]:
     return eligible
 
 
+def robust_parent_cases(manifest: dict, rows: list) -> list[str]:
+    """Require a platform-ready parent and two positive setting perturbations."""
+    by_case = {row.experiment_group: row for row in rows
+               if row.request_status == "RESULT" and row.experiment_group}
+    grouped = {}
+    for case in manifest.get("confirmation") or []:
+        grouped.setdefault(case.get("parent_case_id"), []).append(case)
+
+    def stable(row):
+        if (row.result_snapshot or {}).get("platform_ppa_evaluation", {}).get("status") != "PPA_READY":
+            return False
+        metrics = row.metrics or {}
+        try:
+            holdout = metrics.get("test_sharpe")
+            if holdout is None:
+                holdout = metrics.get("os_sharpe")
+            return all(isfinite(float(value)) and float(value) > 0 for value in
+                       (metrics["sharpe"], metrics["fitness"], holdout))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+
+    ready = []
+    for parent_id, cases in grouped.items():
+        parent = by_case.get(parent_id)
+        settings = {tuple(sorted((case.get("settings") or {}).items())) for case in cases}
+        if not parent or not stable(parent) or len(cases) < 2 or len(settings) < 2:
+            continue
+        if all((row := by_case.get(case["case_id"])) and stable(row) for case in cases):
+            ready.append(parent_id)
+    return ready
+
+
 async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> dict:
     """Process a bounded slice of a frozen theme experiment."""
     reason = validate_theme_task(task)
@@ -250,7 +282,7 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
     while cursor >= len(manifest[phase]):
         index = phases.index(phase)
         if index == len(phases) - 1:
-            reason = "PPA_CASES_EXHAUSTED"
+            reason = "PPA_NO_ROBUST_CANDIDATES"
             task.status = run.status = "COMPLETED"
             run.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
             run.checkpoint = {**checkpoint, "ppa_stop_reason": reason}
@@ -335,7 +367,11 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
             corr_payload = {}
         corr = corr_payload.get("max") if isinstance(corr_payload, dict) else None
         snapshot = safe_result(result)
-        evaluation = evaluate_ppa_candidate(snapshot, manifest, corr)
+        platform_evaluation = evaluate_ppa_candidate(snapshot, manifest, corr)
+        evaluation = platform_evaluation
+        if platform_evaluation["status"] == "PPA_READY":
+            evaluation = {**platform_evaluation, "status": "PPA_PENDING",
+                          "reasons": ["ROBUSTNESS_REVIEW_PENDING"]}
         metrics = dict(result.get("metrics") or {})
         metrics.update({"checks": result.get("checks") or [],
                         "can_submit": result.get("can_submit", False),
@@ -367,9 +403,26 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
             candidate.gate_failures = metrics.get("_strict_gate_failures") or []
             candidate.trace_step_id = trace.id
             candidate.result_snapshot = {**(candidate.result_snapshot or {}),
+                                         "platform_ppa_evaluation": platform_evaluation,
                                          "ppa_evaluation": evaluation,
                                          "power_pool_correlation": corr}
-        if evaluation["status"] == "PPA_READY":
+
+    if phase == "confirmation":
+        await db.flush()
+        reviewed_rows = (await db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.run_id == run.id,
+        ))).scalars().all()
+        reviewed_by_case = {row.experiment_group: row for row in reviewed_rows}
+        for parent_id in robust_parent_cases(manifest, reviewed_rows):
+            parent = reviewed_by_case[parent_id]
+            if (parent.result_snapshot or {}).get("ppa_evaluation", {}).get("status") == "PPA_READY":
+                continue
+            group = [case["case_id"] for case in manifest["confirmation"]
+                     if case.get("parent_case_id") == parent_id]
+            parent.result_snapshot = {**parent.result_snapshot,
+                "ppa_evaluation": parent.result_snapshot["platform_ppa_evaluation"],
+                "robustness_review": {"status": "PASS", "confirmation_cases": group,
+                                      "observed_at": datetime.now(timezone.utc).isoformat()}}
             ready += 1
 
     cursor = processed_cursor
