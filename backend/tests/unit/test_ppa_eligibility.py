@@ -38,6 +38,31 @@ def test_ready_requires_explicit_platform_and_robustness_evidence():
     assert result["theme_id"] == "theme-2026-11"
 
 
+def test_platform_power_pool_classification_can_confirm_empty_manifest_ids():
+    provisional = {**MANIFEST, "eligible_classification_ids": []}
+    result = evaluate_ppa_candidate(ready_snapshot(), provisional, 0.3)
+    assert result["status"] == "PPA_READY"
+    assert result["reasons"] == []
+
+
+def test_empty_manifest_ids_need_explicit_positive_platform_classification():
+    provisional = {**MANIFEST, "eligible_classification_ids": []}
+    snapshot = ready_snapshot()
+    snapshot["classifications"] = [{"name": "POWER_POOL", "value": "INELIGIBLE"}]
+    assert evaluate_ppa_candidate(snapshot, provisional, 0.3)["status"] == "PPA_REJECTED"
+    snapshot["classifications"] = [{"name": "POWER_POOL", "value": "UNKNOWN"}]
+    assert evaluate_ppa_candidate(snapshot, provisional, 0.3)["status"] == "PPA_PENDING"
+    snapshot["classifications"] = []
+    assert evaluate_ppa_candidate(snapshot, provisional, 0.3)["status"] == "PPA_PENDING"
+
+
+def test_empty_manifest_ids_require_platform_presubmit_confirmation():
+    provisional = {**MANIFEST, "eligible_classification_ids": []}
+    snapshot = ready_snapshot()
+    snapshot["platform_can_submit"] = False
+    assert evaluate_ppa_candidate(snapshot, provisional, 0.3)["status"] == "PPA_PENDING"
+
+
 def test_official_name_only_manifest_cannot_produce_ready():
     provisional = {**MANIFEST, "theme_id": None,
                    "theme_name": "GLB/D1 Power Pool Nov'26",
@@ -45,7 +70,6 @@ def test_official_name_only_manifest_cannot_produce_ready():
     result = evaluate_ppa_candidate(ready_snapshot(), provisional, 0.3)
     assert result["status"] == "PPA_PENDING"
     assert "THEME_ID_MISSING" in result["reasons"]
-    assert "POWER_POOL_CLASSIFICATION" in result["reasons"]
 
 
 def test_wrong_theme_is_rejected():

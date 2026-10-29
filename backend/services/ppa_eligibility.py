@@ -27,11 +27,29 @@ def _positive(value):
     return isfinite(number) and number > 0
 
 
+def _explicit_platform_power_pool(classifications: list, can_submit: bool) -> bool:
+    """Recognize only a positive Power Pool tag returned by BRAIN itself."""
+    if not can_submit:
+        return False
+    positive_values = {"POWER_POOL", "POWER_POOL_ELIGIBLE", "PURE_POWER_POOL",
+                       "ELIGIBLE", "PASS"}
+    for item in classifications:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").upper()
+        value = str(item.get("value") or "").upper()
+        identity = str(item.get("id") or "").upper()
+        if identity == "POWER_POOL" or (name == "POWER_POOL" and value in positive_values):
+            return True
+    return False
+
+
 def evaluate_ppa_candidate(snapshot: dict, manifest: dict, power_pool_corr: float | None) -> dict:
     """Return READY only with matching theme, checks, correlation and holdout."""
     rejected, pending = [], []
     theme_id = str(manifest.get("theme_id") or "")
-    classifications = set(_tokens(snapshot.get("classifications") or []))
+    classification_rows = snapshot.get("classifications") or []
+    classifications = set(_tokens(classification_rows))
     themes = set(_tokens(snapshot.get("themes") or []))
     checks = snapshot.get("checks") or []
     metrics = snapshot.get("metrics") or {}
@@ -39,7 +57,9 @@ def evaluate_ppa_candidate(snapshot: dict, manifest: dict, power_pool_corr: floa
     if snapshot.get("stage") != "IS" or snapshot.get("status") != "UNSUBMITTED":
         pending.append("STAGE_OR_STATUS_UNVERIFIED")
     eligible = {str(value).upper() for value in manifest.get("eligible_classification_ids") or []}
-    if not eligible or not classifications.intersection(eligible):
+    classified = bool(classifications.intersection(eligible)) or _explicit_platform_power_pool(
+        classification_rows, snapshot.get("platform_can_submit") is True)
+    if not classified:
         if any("INELIGIBLE" in token for token in classifications):
             rejected.append("POWER_POOL_CLASSIFICATION")
         else:

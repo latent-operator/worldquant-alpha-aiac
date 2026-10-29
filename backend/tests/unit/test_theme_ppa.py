@@ -136,6 +136,19 @@ def test_refinement_only_uses_positive_complete_paired_seed():
     assert phase_cases(m, "refinement", rows) == []
 
 
+def test_first_batch_review_flags_missing_platform_classification():
+    from backend.services.theme_ppa import first_batch_review_reason
+
+    rows = [SimpleNamespace(request_status="RESULT", result_snapshot={
+        "platform_ppa_evaluation": {"status": "PPA_PENDING",
+                                    "reasons": ["POWER_POOL_CLASSIFICATION"]}})]
+    assert first_batch_review_reason(rows) == "PPA_CLASSIFICATION_UNVERIFIED"
+    rows.append(SimpleNamespace(request_status="RESULT", result_snapshot={
+        "platform_ppa_evaluation": {"status": "PPA_REJECTED",
+                                    "reasons": ["AMER_SHARPE_BELOW_THEME"]}}))
+    assert first_batch_review_reason(rows) == "PPA_FIRST_BATCH_REVIEW"
+
+
 def test_unconfirmed_theme_never_produces_ready_cases():
     bad = task()
     bad.config["ppa_manifest"]["theme_id"] = ""
@@ -201,6 +214,7 @@ async def test_theme_dispatch_does_not_count_discovery_as_robust_ppa_ready(async
     m = manifest()
     m["starts_at"] = "2026-01-01T00:00:00Z"
     m["ends_at"] = "2027-01-01T00:00:00Z"
+    m["eligible_classification_ids"] = []
     m["candidate_generation"]["plan_sha256"] = candidate_plan_hash(m)
     cfg = {"research_protocol": "theme_ppa_v1", "research_request_budget": 80,
            "ppa_manifest": m}
@@ -245,16 +259,45 @@ async def test_theme_dispatch_does_not_count_discovery_as_robust_ppa_ready(async
                 return {"max": 0.2}
 
         fields = {"dataset1": [{"id": f, "type": "MATRIX"} for f in m["datasets"]["dataset1"]]}
-        outcome = await run_theme_dispatch(db, Brain(), mining_task, run, fields)
+        brain = Brain()
+        outcome = await run_theme_dispatch(db, brain, mining_task, run, fields)
         candidates = (await db.execute(select(ResearchCandidate))).scalars().all()
         alphas = (await db.execute(select(Alpha))).scalars().all()
-        assert outcome["reason"] is None
+        assert outcome["reason"] == "PPA_FIRST_BATCH_REVIEW"
+        assert outcome["done"] is True
+        assert brain.calls == 5
+        assert mining_task.status == run.status == "PAUSED"
+        assert run.checkpoint["ppa_cursor"] == 5
+        assert run.checkpoint["ppa_first_batch_review_pending"] is True
         assert outcome["ready"] == 0
         assert any(c.result_snapshot.get("platform_ppa_evaluation", {}).get("status") == "PPA_READY"
                    for c in candidates)
         assert all(c.result_snapshot.get("ppa_evaluation", {}).get("status") != "PPA_READY"
                    for c in candidates)
         assert all(a.quality_status == "OPTIMIZE" for a in alphas)
+
+        first_classification = candidates[0].result_snapshot["classifications"]
+        for candidate in candidates:
+            candidate.result_snapshot = {**candidate.result_snapshot,
+                "classifications": [],
+                "platform_ppa_evaluation": {"status": "PPA_PENDING", "reasons": ["STALE"]}}
+        mining_task.status = run.status = "RUNNING"
+        await db.commit()
+        still_pending = await run_theme_dispatch(db, brain, mining_task, run, fields)
+        assert still_pending["reason"] == "PPA_CLASSIFICATION_UNVERIFIED"
+        assert brain.calls == 5
+        assert mining_task.status == run.status == "PAUSED"
+        assert run.checkpoint["ppa_first_batch_review_pending"] is True
+
+        candidates[0].result_snapshot = {**candidates[0].result_snapshot,
+            "classifications": first_classification}
+        mining_task.status = run.status = "RUNNING"
+        await db.commit()
+        resumed = await run_theme_dispatch(db, brain, mining_task, run, fields)
+        assert resumed["done"] is False
+        assert brain.calls == 10
+        assert candidates[0].result_snapshot["platform_ppa_evaluation"]["status"] == "PPA_READY"
+        assert "ppa_first_batch_review_pending" not in run.checkpoint
 
 
 def test_robustness_requires_parent_and_two_confirmations_with_positive_metrics():

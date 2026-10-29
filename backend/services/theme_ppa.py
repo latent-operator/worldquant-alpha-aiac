@@ -249,6 +249,17 @@ def robust_parent_cases(manifest: dict, rows: list) -> list[str]:
     return ready
 
 
+def first_batch_review_reason(rows: list) -> str:
+    """Pause after the first five cases, with a specific classification warning."""
+    for row in rows:
+        if row.request_status != "RESULT":
+            continue
+        reasons = ((row.result_snapshot or {}).get("platform_ppa_evaluation") or {}).get("reasons") or []
+        if "POWER_POOL_CLASSIFICATION" not in reasons:
+            return "PPA_FIRST_BATCH_REVIEW"
+    return "PPA_CLASSIFICATION_UNVERIFIED"
+
+
 async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> dict:
     """Process a bounded slice of a frozen theme experiment."""
     reason = validate_theme_task(task)
@@ -279,6 +290,33 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
     rows = (await db.execute(select(ResearchCandidate).where(
         ResearchCandidate.run_id == run.id,
     ))).scalars().all()
+    if checkpoint.get("ppa_first_batch_review_pending"):
+        # A deliberate resume acknowledges the first-batch inspection. Recheck
+        # persisted platform evidence without issuing another simulation request.
+        first_ids = {case["case_id"] for case in manifest["discovery"][:5]}
+        first_rows = []
+        for row in rows:
+            if row.request_status != "RESULT" or row.experiment_group not in first_ids:
+                continue
+            first_rows.append(row)
+            snapshot = row.result_snapshot or {}
+            evaluation = evaluate_ppa_candidate(
+                snapshot, manifest, snapshot.get("power_pool_correlation"))
+            row.result_snapshot = {**snapshot,
+                "platform_ppa_evaluation": evaluation,
+                "ppa_evaluation": {**evaluation, "status": "PPA_PENDING",
+                    "reasons": ["ROBUSTNESS_REVIEW_PENDING"]}
+                if evaluation["status"] == "PPA_READY" else evaluation}
+        if first_batch_review_reason(first_rows) == "PPA_CLASSIFICATION_UNVERIFIED":
+            reason = "PPA_CLASSIFICATION_UNVERIFIED"
+            task.status = run.status = "PAUSED"
+            run.block_reason = reason
+            run.checkpoint = {**checkpoint, "ppa_stop_reason": reason}
+            await db.commit()
+            return {"done": True, "reason": reason, "phase": "discovery",
+                    "cursor": cursor, "ready": 0}
+        checkpoint.pop("ppa_first_batch_review_pending")
+        run.block_reason = None
     while cursor >= len(manifest[phase]):
         index = phases.index(phase)
         if index == len(phases) - 1:
@@ -425,18 +463,29 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
                                       "observed_at": datetime.now(timezone.utc).isoformat()}}
             ready += 1
 
+    first_batch_finished = phase == "discovery" and cursor == 0 and processed_cursor == 5
     cursor = processed_cursor
+    review_reason = None
+    if first_batch_finished and not rate_limited:
+        await db.flush()
+        first_ids = {case["case_id"] for case in manifest["discovery"][:5]}
+        first_rows = (await db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.run_id == run.id,
+            ResearchCandidate.experiment_group.in_(first_ids),
+        ))).scalars().all()
+        review_reason = first_batch_review_reason(first_rows)
+        checkpoint["ppa_first_batch_review_pending"] = True
     task.progress_current += ready
     run.checkpoint = {**checkpoint, "ppa_phase": phase, "ppa_cursor": cursor}
     if ready:
         task.status = run.status = "COMPLETED"
         run.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
         run.checkpoint = {**run.checkpoint, "ppa_stop_reason": "PPA_READY"}
-    elif rate_limited:
+    elif rate_limited or review_reason:
         task.status = run.status = "PAUSED"
-        run.block_reason = "PPA_RATE_LIMIT"
-        run.checkpoint = {**run.checkpoint, "ppa_stop_reason": "PPA_RATE_LIMIT"}
+        run.block_reason = "PPA_RATE_LIMIT" if rate_limited else review_reason
+        run.checkpoint = {**run.checkpoint, "ppa_stop_reason": run.block_reason}
     await db.commit()
-    reason = "PPA_READY" if ready else "PPA_RATE_LIMIT" if rate_limited else None
-    return {"done": bool(ready or rate_limited), "reason": reason,
+    reason = "PPA_READY" if ready else "PPA_RATE_LIMIT" if rate_limited else review_reason
+    return {"done": bool(ready or rate_limited or review_reason), "reason": reason,
             "phase": phase, "cursor": cursor, "ready": ready}
