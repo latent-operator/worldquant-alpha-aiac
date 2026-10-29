@@ -201,6 +201,7 @@ def safe_result(result: dict) -> dict:
                 "name": str(item.get("name") or "")[:60] if re.fullmatch(r"[A-Za-z0-9_]{1,60}", str(item.get("name") or "")) else "UNKNOWN",
                 "result": str(item.get("result") or "")[:20] if re.fullmatch(r"[A-Za-z_]{1,20}", str(item.get("result") or "")) else "UNKNOWN",
                 "value": safe_metrics({"metrics": {"sharpe": item.get("value")}}).get("sharpe"),
+                "limit": safe_metrics({"metrics": {"sharpe": item.get("limit")}}).get("sharpe"),
                 "themes": [{"id": theme_id} for theme in (item.get("themes") or [])[:20]
                            if isinstance(theme, dict)
                            for theme_id in [identifier(theme.get("id"))] if theme_id],
@@ -215,6 +216,11 @@ def safe_result(result: dict) -> dict:
         "metrics": safe_metrics(result), "checks": checks,
         "can_submit": bool(result.get("can_submit")),
         "platform_can_submit": result.get("platform_can_submit") is True,
+        "evidence_source": "WQ_ALPHA_DETAILS",
+        "evidence_observed_at": datetime.now(timezone.utc).isoformat(),
+        "periods": {name: {key: str((result.get("periods") or {}).get(name, {}).get(key))[:30]
+                           for key in ("start", "end") if (result.get("periods") or {}).get(name, {}).get(key)}
+                    for name in ("two_year", "test")},
         "os": {key: os_data.get(key) for key in ("sharpe", "fitness")
                if isinstance(os_data.get(key), (int, float, type(None)))},
     }
@@ -222,11 +228,13 @@ def safe_result(result: dict) -> dict:
 
 class ResearchLedger:
     def __init__(self, task_id: int, run_id: int, max_requests: int | None,
-                 family_id: str = FAMILY_ID, dedup_task_ids: list[int] | None = None):
+                 family_id: str = FAMILY_ID, dedup_task_ids: list[int] | None = None,
+                 budget_root_run_id: int | None = None):
         self.task_id = task_id
         self.run_id = run_id
         self.max_requests = max_requests
         self.family_id = family_id
+        self.budget_root_run_id = budget_root_run_id or run_id
         self.dedup_task_ids = sorted({int(task_id), *(int(value) for value in (dedup_task_ids or []))})
 
     async def reserve(self, expression: str, settings: dict, source: str,
@@ -238,15 +246,28 @@ class ResearchLedger:
         normalized_alpha_hash = compute_expression_hash(expression)
         async with AsyncSessionLocal() as db:
             async with db.begin():
-                run = (await db.execute(
-                    select(ExperimentRun).where(ExperimentRun.id == self.run_id).with_for_update()
+                root = (await db.execute(
+                    select(ExperimentRun).where(ExperimentRun.id == self.budget_root_run_id).with_for_update()
                 )).scalar_one()
+                run = root if root.id == self.run_id else await db.get(ExperimentRun, self.run_id)
+                if run is None:
+                    raise ValueError("Research run missing")
                 if run.task_id != self.task_id:
                     raise ValueError("Research run does not belong to task")
+                scope = sorted(set([root.id, *((root.checkpoint or {}).get("campaign_run_ids") or [])]))
+                if root.id != run.id:
+                    root_config = ((root.config_snapshot or {}).get("task") or {}).get("config") or {}
+                    own_config = ((run.config_snapshot or {}).get("task") or {}).get("config") or {}
+                    if (self.max_requests != 80 or root_config.get("research_protocol") not in {"theme_ppa_v1", "theme_ppa_v2"}
+                            or (root_config.get("ppa_manifest") or {}).get("theme_id") != (own_config.get("ppa_manifest") or {}).get("theme_id")):
+                        raise ValueError("PPA_CAMPAIGN_SCOPE_MISMATCH")
+                    if run.id not in scope:
+                        scope.append(run.id)
+                        root.checkpoint = {**(root.checkpoint or {}), "campaign_run_ids": sorted(scope)}
                 task = await db.get(MiningTask, self.task_id)
                 existing = (await db.execute(
                     select(ResearchCandidate.id).where(
-                        ResearchCandidate.run_id == self.run_id,
+                        ResearchCandidate.run_id.in_(scope),
                         ResearchCandidate.expression_hash == expr_hash,
                         ResearchCandidate.settings_hash == settings_hash,
                         ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
@@ -300,7 +321,7 @@ class ResearchLedger:
                 if self.max_requests is not None:
                     used = (await db.execute(
                         select(func.count(ResearchCandidate.id)).where(
-                            ResearchCandidate.run_id == self.run_id,
+                            ResearchCandidate.run_id.in_(scope),
                             ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
                         )
                     )).scalar_one()
@@ -319,7 +340,7 @@ class ResearchLedger:
                     rejection_reason=reason,
                     request_status="RESERVED" if reason is None else "NOT_REQUESTED",
                     gate_failures=[], metrics={},
-                    result_snapshot={},
+                    result_snapshot={"research_case": metadata.get("research_case") or {}},
                 )
                 db.add(candidate)
                 await db.flush()
@@ -359,7 +380,10 @@ class ResearchLedger:
             )
             candidate.wq_alpha_id = result.get("alpha_id")
             candidate.metrics = safe_metrics(result)
-            candidate.result_snapshot = safe_result(result)
+            candidate.result_snapshot = {**(candidate.result_snapshot or {}), **safe_result(result)}
+            candidate.result_snapshot = {**candidate.result_snapshot, "request": {
+                **(candidate.result_snapshot.get("request") or {}),
+                "finished_at": datetime.now(timezone.utc).isoformat()}}
             candidate.updated_at = datetime.now(timezone.utc)
             await db.commit()
 
@@ -368,14 +392,46 @@ class ResearchLedger:
             candidate = await db.get(ResearchCandidate, candidate_id)
             if candidate is not None and candidate.request_status == "RESERVED":
                 candidate.request_status = "REQUESTED"
+                candidate.result_snapshot = {**(candidate.result_snapshot or {}), "request": {
+                    **((candidate.result_snapshot or {}).get("request") or {}),
+                    "sent_at": datetime.now(timezone.utc).isoformat()}}
                 await db.commit()
+
+    async def record_location(self, candidate_id: int, location: str) -> None:
+        from urllib.parse import urlparse
+        parsed = urlparse(location)
+        if (parsed.scheme and (parsed.scheme != "https" or parsed.netloc != "api.worldquantbrain.com")) or not re.fullmatch(r"/simulations/[A-Za-z0-9_-]+", parsed.path):
+            raise ValueError("PPA_INVALID_SIMULATION_LOCATION")
+        async with AsyncSessionLocal() as db:
+            row = await db.get(ResearchCandidate, candidate_id)
+            if row is None or row.run_id != self.run_id:
+                raise ValueError("Candidate scope mismatch")
+            row.result_snapshot = {**(row.result_snapshot or {}), "request": {
+                **((row.result_snapshot or {}).get("request") or {}), "location": parsed.path}}
+            await db.commit()
+
+    async def reconcile(self, poll) -> None:
+        """Read existing requests only. Caller must ensure this worker is not sending."""
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(select(ResearchCandidate).where(
+                ResearchCandidate.run_id == self.run_id,
+                ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN")),
+            ))).scalars().all()
+            pending = [(row.id, (row.result_snapshot or {}).get("request", {}).get("location")) for row in rows]
+        for candidate_id, location in pending:
+            result = await poll(location) if location else {"error": "uncertain request without location"}
+            if not result.get("alpha_id") and not result.get("error"):
+                result = {**result, "error": "uncertain simulation still pending"}
+            await self.finish(candidate_id, result)
 
     async def recover(self, expression: str, settings: dict) -> dict | None:
         """Return a prior completed response without another WQ request."""
         expr_hash, settings_hash = signature(expression, settings)
         async with AsyncSessionLocal() as db:
+            root = await db.get(ExperimentRun, self.budget_root_run_id)
+            scope = [self.budget_root_run_id, *((root.checkpoint or {}).get("campaign_run_ids") or [])] if root else [self.run_id]
             candidate = (await db.execute(select(ResearchCandidate).where(
-                ResearchCandidate.run_id == self.run_id,
+                ResearchCandidate.run_id.in_(scope),
                 ResearchCandidate.expression_hash == expr_hash,
                 ResearchCandidate.settings_hash == settings_hash,
                 ResearchCandidate.request_status == "RESULT",
@@ -446,7 +502,12 @@ class ResearchBudgetBrain:
                     for _, candidate_id in reservations:
                         await mark_requested(candidate_id)
                 if len(allowed) == 1 and hasattr(self.brain, "simulate_single"):
-                    network_results = [await self.brain.simulate_single(allowed[0], **settings)]
+                    send_settings = dict(settings)
+                    if getattr(self.brain, "supports_request_tracking", False) is True:
+                        async def on_location(location):
+                            await self.ledger.record_location(reservations[0][1], location)
+                        send_settings["on_location"] = on_location
+                    network_results = [await self.brain.simulate_single(allowed[0], **send_settings)]
                 else:
                     network_results = await self.brain.simulate_batch(allowed, **settings)
             except Exception:

@@ -109,6 +109,9 @@ def validate_theme_task(task) -> str | None:
             return "PPA_MANIFEST_INCOMPLETE"
     except (KeyError, TypeError, ValueError):
         return "PPA_MANIFEST_INCOMPLETE"
+    if config.get("research_protocol") == "theme_ppa_v2":
+        from backend.services.theme_ppa_v2 import validate_v2_manifest
+        return validate_v2_manifest(task)
     if (any(not isinstance(manifest.get(phase), list) for phase in PHASE_LIMITS)
             or len(manifest.get("discovery") or []) != 24
             or any(len(manifest.get(phase) or []) > limit

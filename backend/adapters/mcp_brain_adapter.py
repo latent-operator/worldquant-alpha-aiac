@@ -276,6 +276,12 @@ class MCPBrainAdapter:
         results = await self.simulate_batch([expression], **kwargs)
         return results[0] if results else {"success": False, "error": "No simulation result returned"}
 
+    supports_request_tracking = True
+
+    async def poll_existing_simulation(self, location: str) -> Dict[str, Any]:
+        fallback = await self._ensure_fallback()
+        return await fallback._wait_for_simulation(location)
+
     async def simulate_single(self, expression: str, **kwargs) -> Dict[str, Any]:
         """Explicit one-expression WQ request for audited runs, without padding."""
         fallback = await self._ensure_fallback()

@@ -133,10 +133,21 @@ def evaluate_ppa_candidate(snapshot: dict, manifest: dict, power_pool_corr: floa
     amer_threshold = (manifest.get("theme_requirements") or {}).get(
         "amer_sharpe_strictly_greater_than")
     amer_value = metrics.get("amer_sharpe")
+    check_amer = next((check.get("value") for check in checks
+                      if str(check.get("name") or "").upper() == "LOW_GLB_AMER_SHARPE"
+                      and check.get("value") is not None), None)
+    if amer_value is not None and check_amer is not None:
+        try:
+            if abs(float(amer_value) - float(check_amer)) > 1e-9:
+                pending.append("AMER_EVIDENCE_CONFLICT")
+        except (TypeError, ValueError):
+            pending.append("AMER_EVIDENCE_CONFLICT")
     if amer_value is None:
         amer_value = next((check.get("value") for check in checks
                            if str(check.get("name") or "").upper() == "LOW_GLB_AMER_SHARPE"
                            and check.get("value") is not None), None)
+    if amer_threshold is not None and amer_value is None:
+        pending.append("AMER_SHARPE_MISSING")
     if amer_threshold is not None and amer_value is not None:
         try:
             amer_sharpe = float(amer_value)
@@ -168,10 +179,17 @@ def evaluate_ppa_candidate(snapshot: dict, manifest: dict, power_pool_corr: floa
         pending.append("POSITION_CONCENTRATION_UNVERIFIED")
 
     status = "PPA_REJECTED" if rejected else "PPA_PENDING" if pending else "PPA_READY"
+    periods = snapshot.get("periods") or {}
+    two_year_period, test_period = periods.get("two_year") or {}, periods.get("test") or {}
+    overlap = None
+    if all(period.get("start") and period.get("end") for period in (two_year_period, test_period)):
+        overlap = max(two_year_period["start"], test_period["start"]) <= min(two_year_period["end"], test_period["end"])
     return {
         "status": status,
         "reasons": sorted(set(rejected + pending)),
         "theme_id": theme_id or None,
         "check_source": "WQ_ALPHA_DETAILS_AND_POWER_POOL_CORRELATION",
         "observed_at": datetime.now(timezone.utc).isoformat(),
+        "evidence_periods": {"two_year": two_year_period, "test": test_period,
+                             "overlap": overlap, "independent_periods_verified": overlap is False},
     }

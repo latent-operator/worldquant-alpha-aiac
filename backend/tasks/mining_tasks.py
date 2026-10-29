@@ -227,8 +227,10 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     logger.warning(f"Failed to load operator registry in worker: {e}")
 
                 async with MCPBrainAdapter() as brain:
-                    if (task.config or {}).get("research_protocol") == "theme_ppa_v1":
+                    if (task.config or {}).get("research_protocol") in {"theme_ppa_v1", "theme_ppa_v2"}:
                         from backend.services.theme_ppa import run_theme_dispatch
+                        if task.config["research_protocol"] == "theme_ppa_v2":
+                            from backend.services.theme_ppa_v2 import run_theme_v2 as run_theme_dispatch
 
                         fields = {}
                         for dataset_id in (task.target_datasets or []):
