@@ -164,6 +164,15 @@ def test_explicit_amer_sharpe_must_exceed_theme_threshold():
     assert evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)["status"] == "PPA_READY"
 
 
+def test_platform_amer_check_value_is_used_when_metric_is_absent():
+    snapshot = ready_snapshot()
+    snapshot["checks"].append({"name": "LOW_GLB_AMER_SHARPE",
+                               "result": "WARNING", "value": 0.62})
+    result = evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)
+    assert result["status"] == "PPA_REJECTED"
+    assert "AMER_SHARPE_BELOW_THEME" in result["reasons"]
+
+
 def test_theme_check_pass_is_authoritative_when_amer_metric_not_returned():
     snapshot = ready_snapshot()
     assert "amer_sharpe" not in snapshot["metrics"]

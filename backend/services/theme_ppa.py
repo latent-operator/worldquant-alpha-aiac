@@ -260,6 +260,25 @@ def first_batch_review_reason(rows: list) -> str:
     return "PPA_CLASSIFICATION_UNVERIFIED"
 
 
+def first_batch_ineligibility_explained(rows: list, expected_count: int) -> bool:
+    """Allow deliberate continuation when every unclassified probe failed AMER."""
+    if len(rows) != expected_count:
+        return False
+    for row in rows:
+        if row.request_status != "RESULT":
+            return False
+        snapshot = row.result_snapshot or {}
+        reasons = ((snapshot.get("platform_ppa_evaluation") or {}).get("reasons") or [])
+        if "POWER_POOL_CLASSIFICATION" not in reasons:
+            return False
+        if not any(str(check.get("name") or "").upper() == "LOW_GLB_AMER_SHARPE"
+                   and str(check.get("result") or "").upper() == "FAIL"
+                   for check in (snapshot.get("checks") or [])
+                   if isinstance(check, dict)):
+            return False
+    return True
+
+
 async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> dict:
     """Process a bounded slice of a frozen theme experiment."""
     reason = validate_theme_task(task)
@@ -307,7 +326,11 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
                 "ppa_evaluation": {**evaluation, "status": "PPA_PENDING",
                     "reasons": ["ROBUSTNESS_REVIEW_PENDING"]}
                 if evaluation["status"] == "PPA_READY" else evaluation}
-        if first_batch_review_reason(first_rows) == "PPA_CLASSIFICATION_UNVERIFIED":
+        classification_unverified = (
+            first_batch_review_reason(first_rows) == "PPA_CLASSIFICATION_UNVERIFIED"
+        )
+        explained = first_batch_ineligibility_explained(first_rows, len(first_ids))
+        if classification_unverified and not explained:
             reason = "PPA_CLASSIFICATION_UNVERIFIED"
             task.status = run.status = "PAUSED"
             run.block_reason = reason
@@ -315,6 +338,13 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
             await db.commit()
             return {"done": True, "reason": reason, "phase": "discovery",
                     "cursor": cursor, "ready": 0}
+        if explained:
+            checkpoint["ppa_first_batch_review"] = {
+                "status": "INELIGIBLE_EXPLAINED",
+                "reason": "ALL_FIVE_FAIL_GLB_AMER_SHARPE",
+                "classification_evidence": "PENDING",
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+            }
         checkpoint.pop("ppa_first_batch_review_pending")
         run.block_reason = None
     while cursor >= len(manifest[phase]):
