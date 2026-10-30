@@ -153,7 +153,7 @@ async def persist_result(db, brain, task, run, case, settings, result, phase, qu
                            "platform_ppa_evaluation": platform, "ppa_evaluation": final,
                            "power_pool_correlation": corr_value,
                            "evaluated_at": datetime.now(timezone.utc).isoformat()}
-    saved = (await db.execute(select(Alpha.id).where(Alpha.run_id == run.id, Alpha.alpha_id == alpha_id))).first()
+    saved = (await db.execute(select(Alpha.id).where(Alpha.alpha_id == alpha_id))).first()
     if not saved:
         db.add(Alpha(task_id=task.id, run_id=run.id, alpha_id=alpha_id, expression=case["expression"],
                      expression_hash=compute_expression_hash(case["expression"]), settings=settings,

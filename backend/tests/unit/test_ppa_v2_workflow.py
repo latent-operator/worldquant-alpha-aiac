@@ -67,6 +67,26 @@ class Brain:
 
 
 @pytest.mark.asyncio
+async def test_existing_alpha_id_in_historical_run_does_not_fail_new_run(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    async def quality(**kwargs): return "OPTIMIZE"
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        old_run = await db.get(ExperimentRun, task.config["budget_root_run_id"])
+        db.add(Alpha(alpha_id="alpha1", expression="rank(old_field)", region="USA",
+                     universe="TOP3000", task_id=old_run.task_id, run_id=old_run.id, status="simulated"))
+        await db.commit()
+        context = await workflow.feedback_context(db, task, run)
+        await workflow.import_batch(db, task, run, freeze_batch(base, context, discovery()))
+        task.status = run.status = "RUNNING"
+        await db.commit()
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"} for name in base["datasets"]["dataset1"]]}
+        await workflow.run_theme_v2(db, Brain(), task, run, fields, quality_evaluator=quality)
+        assert len((await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id == rid))).scalars().all()) == 4
+        assert len((await db.execute(select(Alpha).where(Alpha.alpha_id == "alpha1"))).scalars().all()) == 1
+
+
+@pytest.mark.asyncio
 async def test_discovery_winner_can_confirm_and_finish_without_forced_refinement(async_engine, monkeypatch):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     async def quality(**kwargs): return "OPTIMIZE"
