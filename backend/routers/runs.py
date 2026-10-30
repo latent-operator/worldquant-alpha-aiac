@@ -54,8 +54,8 @@ async def get_ppa_feedback(run_id: int, db: AsyncSession = Depends(get_db)):
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     task = await db.get(MiningTask, run.task_id)
-    if (task.config or {}).get("research_protocol") != "theme_ppa_v2":
-        raise HTTPException(status_code=400, detail="Not a PPA v2 task")
+    if (task.config or {}).get("research_protocol") not in {"theme_ppa_v2", "theme_ppa_v3"}:
+        raise HTTPException(status_code=400, detail="Not a PPA feedback task")
     try:
         return await feedback_context(db, task, run)
     except ValueError as exc:

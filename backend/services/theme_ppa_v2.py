@@ -48,6 +48,7 @@ async def campaign_rows(db, task, run):
 
 
 async def feedback_context(db, task, run):
+    continuous = task.config.get("research_protocol") == "theme_ppa_v3"
     root, rows = await campaign_rows(db, task, run)
     base = task.config["ppa_manifest"]
     historical = ((root.config_snapshot or {}).get("task") or {}).get("config", {}).get("ppa_manifest") or {}
@@ -61,10 +62,17 @@ async def feedback_context(db, task, run):
             item["dataset_id"] = case.get("dataset_id")
             item["mechanism_id"] = (base.get("historical_mechanisms") or {}).get(case.get("pair_id"))
         converted.append(item)
+    epoch = int((run.checkpoint or {}).get("ppa_epoch", 0))
     phase_counts = dict(Counter(row.source.lower() for row in rows
-                                if row.run_id != root.id and row.request_status in CHARGED))
-    remaining = max(0, 80 - sum(row.request_status in CHARGED for row in rows))
-    context = build_feedback(converted, remaining, phase_counts)
+                                if row.run_id != root.id and row.request_status in CHARGED
+                                and (not continuous or
+                                     (row.result_snapshot or {}).get("research_case", {}).get("epoch", 0) == epoch)))
+    remaining = None if continuous else max(0, 80 - sum(row.request_status in CHARGED for row in rows))
+    context = build_feedback(converted, remaining, phase_counts, continuous=continuous)
+    context["epoch"] = epoch
+    context["campaign_requests"] = sum(row.request_status in CHARGED for row in rows)
+    if continuous:
+        context["max_batch_cases"] = 4
     # Unknown historical mechanism assignments are visible but not proposed as parents.
     context["seeds"] = [row for row in context["seeds"] if row["mechanism_id"] in base["mechanisms"]]
     context["finalists"] = [row for row in context["finalists"] if row["mechanism_id"] in base["mechanisms"]]
@@ -78,7 +86,7 @@ async def feedback_context(db, task, run):
 
 
 async def import_batch(db, task, run, batch):
-    if task.status != "PAUSED" or run.status != "PAUSED" or task.config.get("research_protocol") != "theme_ppa_v2":
+    if task.status != "PAUSED" or run.status != "PAUSED" or task.config.get("research_protocol") not in {"theme_ppa_v2", "theme_ppa_v3"}:
         raise ValueError("PPA_BATCH_IMPORT_REQUIRES_PAUSED_V2")
     await db.refresh(run, with_for_update=True)
     checkpoint = dict(run.checkpoint or {})
@@ -202,6 +210,7 @@ async def finish_confirmation(db, task, run, batch):
 
 
 async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluator=None):
+    continuous = task.config.get("research_protocol") == "theme_ppa_v3"
     if task.status != "RUNNING":
         return {"done": True, "reason": task.status}
     from backend.services.theme_ppa import validate_theme_task, _timestamp
@@ -219,7 +228,8 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
         return await pause(db, task, run, "PPA_BATCH_HASH_INVALID")
     if any(not fields_by_dataset.get(key) for key in base["datasets"]):
         return await pause(db, task, run, "PPA_FIELDS_NOT_AVAILABLE")
-    ledger = ResearchLedger(task.id, run.id, 80, f"theme_ppa_v2:{base['theme_id']}",
+    ledger = ResearchLedger(task.id, run.id, None if continuous else 80,
+                            f"theme_ppa_v3:{base['theme_id']}" if continuous else f"theme_ppa_v2:{base['theme_id']}",
                             budget_root_run_id=task.config["budget_root_run_id"])
     if hasattr(brain, "poll_existing_simulation"):
         await ledger.reconcile(brain.poll_existing_simulation)
@@ -232,7 +242,7 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
         await db.refresh(task)
         if task.status != "RUNNING":
             return {"done": True, "reason": task.status}
-        case = batch["cases"][index]
+        case = {**batch["cases"][index], "epoch": int((run.checkpoint or {}).get("ppa_epoch", 0))} if continuous else batch["cases"][index]
         settings = {**base["settings"], **case.get("settings", {}), "region": task.region,
                     "universe": task.universe, "delay": base["delay"]}
         from backend.alpha_semantic_validator import AlphaSemanticValidator
@@ -268,6 +278,9 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
     if run.checkpoint["ppa_batch_cursor"] >= len(batch["cases"]):
         context = await feedback_context(db, task, run)
         if context["next_phase"] is None:
+            if continuous:
+                run.checkpoint = {**run.checkpoint, "ppa_epoch": int(run.checkpoint.get("ppa_epoch", 0)) + 1}
+                return await pause(db, task, run, "AWAITING_RESEARCH_BATCH")
             task.status = run.status = "COMPLETED"
             run.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
             run.checkpoint = {**run.checkpoint, "ppa_stop_reason": context["stop_reason"]}

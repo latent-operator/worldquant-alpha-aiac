@@ -41,7 +41,7 @@ def research_row(row):
             "request_status": row.get("request_status", "RESULT")}
 
 
-def build_feedback(rows, budget_remaining, phase_counts):
+def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False):
     measured = [research_row(row) for row in rows]
     measured = [row for row in measured if row["request_status"] in {"RESULT", "CACHED"}]
     by_id = {row["id"]: row for row in measured}
@@ -58,11 +58,11 @@ def build_feedback(rows, budget_remaining, phase_counts):
                  and row.get("source") != "CONFIRMATION"
                  and confirmed_counts[row["id"]] < 2
                  and row["ppa_evaluation"].get("status") != "PPA_READY"][:6]
-    if budget_remaining < 2:
+    if budget_remaining is not None and budget_remaining < 2:
         phase, reason = None, "PPA_BUDGET_INSUFFICIENT"
     elif finalists and phase_counts.get("confirmation", 0) < 12:
         phase, reason = "confirmation", None
-    elif not phase_counts.get("discovery", 0):
+    elif phase_counts.get("discovery", 0) < PHASE_LIMITS["discovery"] and not seeds:
         phase, reason = "discovery", None
     elif seeds and phase_counts.get("refinement", 0) < 12:
         phase, reason = "refinement", None
@@ -80,13 +80,20 @@ def freeze_batch(base, evidence, proposal):
     if phase != evidence.get("next_phase") or phase not in PHASE_LIMITS or not isinstance(cases, list):
         raise ValueError("PPA_BATCH_PHASE_INVALID")
     if phase == "confirmation":
-        capacity = min(12 - evidence["phase_counts"].get(phase, 0), evidence["budget_remaining"])
+        capacity = 12 - evidence["phase_counts"].get(phase, 0)
+        if evidence["budget_remaining"] is not None:
+            capacity = min(capacity, evidence["budget_remaining"])
+        if evidence.get("max_batch_cases") is not None:
+            capacity = min(capacity, evidence["max_batch_cases"])
         cases = [case for parent in evidence["finalists"][:capacity // 2]
                  for case in confirmation_cases(parent, base["confirmation_settings"])]
     limit = PHASE_LIMITS[phase] - evidence["phase_counts"].get(phase, 0)
     if not cases or len(cases) > limit:
         raise ValueError("PPA_BATCH_PHASE_LIMIT")
-    if len(cases) + (0 if phase == "confirmation" else 2) > evidence["budget_remaining"]:
+    if evidence.get("max_batch_cases") is not None and len(cases) > evidence["max_batch_cases"]:
+        raise ValueError("PPA_BATCH_SIZE_LIMIT")
+    if (evidence["budget_remaining"] is not None
+            and len(cases) + (0 if phase == "confirmation" else 2) > evidence["budget_remaining"]):
         raise ValueError("PPA_BATCH_BUDGET")
     parents = {row["case_id"]: row for row in evidence["seeds" if phase == "refinement" else "rows"]}
     mechanisms = base.get("mechanisms") or {}
@@ -172,8 +179,10 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
               "from registry, arm, changed_element (ONE conceptual change), expected_effect targeting AMER, "
               "risk and stop_condition. Discovery: complete groups of 1 CONTROL plus 3 TREATMENT with pair_id. "
               "Refinement: parent_case_id from seeds, max 4 children per parent. No invented WQ results. "
-              "Do not change settings. Confirmation will be generated deterministically from finalists.\n"
-              + json.dumps({"base": base, "evidence": evidence}, ensure_ascii=False, allow_nan=False))
+              "Do not change settings. Confirmation will be generated deterministically from finalists. "
+              "Respect max_batch_cases; use case IDs unique across all prior batches.\n"
+              + json.dumps({"base": base, "evidence": {**evidence, "rows": evidence["rows"][-100:]}},
+                           ensure_ascii=False, allow_nan=False))
     with tempfile.TemporaryDirectory(prefix="ppa-feedback-") as directory:
         path = Path(directory) / "prompt.txt"
         for attempt in range(3):

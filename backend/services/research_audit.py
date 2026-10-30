@@ -258,7 +258,9 @@ class ResearchLedger:
                 if root.id != run.id:
                     root_config = ((root.config_snapshot or {}).get("task") or {}).get("config") or {}
                     own_config = ((run.config_snapshot or {}).get("task") or {}).get("config") or {}
-                    if (self.max_requests != 80 or root_config.get("research_protocol") not in {"theme_ppa_v1", "theme_ppa_v2"}
+                    if (not ((self.max_requests == 80)
+                             or (self.max_requests is None and own_config.get("research_protocol") == "theme_ppa_v3"))
+                            or root_config.get("research_protocol") not in {"theme_ppa_v1", "theme_ppa_v2", "theme_ppa_v3"}
                             or (root_config.get("ppa_manifest") or {}).get("theme_id") != (own_config.get("ppa_manifest") or {}).get("theme_id")):
                         raise ValueError("PPA_CAMPAIGN_SCOPE_MISMATCH")
                     if run.id not in scope:
