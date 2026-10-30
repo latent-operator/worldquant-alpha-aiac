@@ -103,3 +103,21 @@ async def test_continuous_run_saves_first_batch_without_eighty_cap(async_engine,
         assert result["reason"] == "PPA_FIRST_BATCH_REVIEW"
         report = await research_report(db, run_id)
         assert report["budget"] == {"limit": None, "remaining": None, "reserved": 4}
+
+
+@pytest.mark.asyncio
+async def test_next_epoch_discovers_when_only_seed_has_unknown_mechanism(async_engine, monkeypatch):
+    maker, task_id, run_id, _ = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True,
+                       "research_request_budget": None}
+        run.checkpoint = {"ppa_epoch": 1}
+        await db.commit()
+        monkeypatch.setattr(workflow, "build_feedback", lambda *args, **kwargs: {
+            "rows": [], "seeds": [{"mechanism_id": "unmapped"}], "finalists": [],
+            "stopped_families": [], "phase_counts": {}, "next_phase": "refinement",
+            "stop_reason": None, "evidence_hash": "stub"})
+        evidence = await workflow.feedback_context(db, task, run)
+        assert evidence["next_phase"] == "discovery"
+        assert evidence["stop_reason"] is None
