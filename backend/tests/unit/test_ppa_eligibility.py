@@ -25,7 +25,7 @@ def ready_snapshot():
         "classifications": [{"name": "POWER_POOL", "value": "POWER_POOL_ELIGIBLE"}],
         "themes": [{"id": "theme-2026-11"}],
         "checks": [{"name": "MATCHES_THEMES", "result": "PASS"}],
-        "metrics": {"sharpe": 1.3, "two_year_sharpe": 0.8,
+        "metrics": {"sharpe": 1.3, "amer_sharpe": 1.2, "two_year_sharpe": 0.8,
                     "test_sharpe": 0.6, "turnover": 0.2,
                     "long_count": 100, "short_count": 100},
     }
@@ -36,6 +36,29 @@ def test_ready_requires_explicit_platform_and_robustness_evidence():
     assert result["status"] == "PPA_READY"
     assert result["reasons"] == []
     assert result["theme_id"] == "theme-2026-11"
+
+
+def test_missing_amer_is_pending_even_when_every_other_check_passes():
+    snapshot = ready_snapshot()
+    snapshot["metrics"].pop("amer_sharpe")
+    result = evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)
+    assert result["status"] == "PPA_PENDING"
+    assert "AMER_SHARPE_MISSING" in result["reasons"]
+
+
+def test_conflicting_amer_evidence_is_not_ready():
+    snapshot = ready_snapshot()
+    snapshot["checks"].append({"name": "LOW_GLB_AMER_SHARPE", "value": 0.8})
+    result = evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)
+    assert result["status"] != "PPA_READY"
+    assert "AMER_EVIDENCE_CONFLICT" in result["reasons"]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 1.0, 0.9])
+def test_amer_boundary_and_nonfinite_never_ready(value):
+    snapshot = ready_snapshot()
+    snapshot["metrics"]["amer_sharpe"] = value
+    assert evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)["status"] != "PPA_READY"
 
 
 def test_platform_power_pool_classification_can_confirm_empty_manifest_ids():
@@ -166,6 +189,7 @@ def test_explicit_amer_sharpe_must_exceed_theme_threshold():
 
 def test_platform_amer_check_value_is_used_when_metric_is_absent():
     snapshot = ready_snapshot()
+    snapshot["metrics"].pop("amer_sharpe")
     snapshot["checks"].append({"name": "LOW_GLB_AMER_SHARPE",
                                "result": "WARNING", "value": 0.62})
     result = evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)
@@ -173,10 +197,11 @@ def test_platform_amer_check_value_is_used_when_metric_is_absent():
     assert "AMER_SHARPE_BELOW_THEME" in result["reasons"]
 
 
-def test_theme_check_pass_is_authoritative_when_amer_metric_not_returned():
+def test_theme_check_pass_does_not_replace_missing_amer_measurement():
     snapshot = ready_snapshot()
+    snapshot["metrics"].pop("amer_sharpe")
     assert "amer_sharpe" not in snapshot["metrics"]
-    assert evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)["status"] == "PPA_READY"
+    assert evaluate_ppa_candidate(snapshot, MANIFEST, 0.3)["status"] == "PPA_PENDING"
 
 
 def test_audit_snapshot_preserves_safe_ppa_evidence():

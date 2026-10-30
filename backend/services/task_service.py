@@ -289,8 +289,8 @@ class TaskService(BaseService):
         """
         config = dict(data.config or {})
         continuous_mode = data.continuous_mode or config.get("continuous_mode") is True
-        if config.get("research_protocol") == "theme_ppa_v1":
-            if continuous_mode:
+        if config.get("research_protocol") in {"theme_ppa_v1", "theme_ppa_v2", "theme_ppa_v3"}:
+            if continuous_mode and config.get("research_protocol") != "theme_ppa_v3":
                 raise ValueError("PPA_CONTINUOUS_FORBIDDEN")
             from backend.services.theme_ppa import validate_theme_task
             reason = validate_theme_task(data)

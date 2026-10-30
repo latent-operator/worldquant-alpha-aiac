@@ -127,7 +127,7 @@ async def research_report(db, run_id: int) -> dict:
     ppa_counts = Counter()
     ppa_phase_counts = {}
     robustness_reviews = []
-    if protocol == "theme_ppa_v1":
+    if protocol in {"theme_ppa_v1", "theme_ppa_v2", "theme_ppa_v3"}:
         snapshots = (await db.execute(select(
             ResearchCandidate.experiment_group, ResearchCandidate.result_snapshot).where(
             ResearchCandidate.run_id == run_id,
@@ -150,7 +150,7 @@ async def research_report(db, run_id: int) -> dict:
                 continue
             ppa_phase_counts.setdefault(phase, {})[status] = count
     paired = []
-    if protocol in {"paper_news17_ablation_v1", "theme_ppa_v1"}:
+    if protocol in {"paper_news17_ablation_v1", "theme_ppa_v1", "theme_ppa_v2", "theme_ppa_v3"}:
         # Both fixed protocols are bounded; do not materialize continuous runs.
         paired_rows = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == run_id,
@@ -158,7 +158,7 @@ async def research_report(db, run_id: int) -> dict:
         paired = paired_deltas(paired_rows)
     budget_limit = None if config.get("continuous_mode") is True else config.get("research_request_budget")
     reserved = sum(statuses[name] for name in ("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN"))
-    return {
+    result = {
         "run_id": run.id, "task_id": run.task_id, "status": run.status,
         "source": "AIAC persisted candidate audit and Alpha rows",
         "observed_at": datetime.now(timezone.utc).isoformat(),
@@ -195,6 +195,28 @@ async def research_report(db, run_id: int) -> dict:
         "best_sharpe_alpha": ({"id": best.id, "wq_alpha_id": best.alpha_id,
                                "sharpe": best.is_sharpe, "fitness": best.is_fitness,
                                "quality_status": best.quality_status} if best else None),
-        "stop_reason": (run.checkpoint or {}).get("ppa_stop_reason") if protocol == "theme_ppa_v1"
+        "ppa_v2_progress": (await _v2_progress(db, run, continuous=protocol == "theme_ppa_v3")) if protocol in {"theme_ppa_v2", "theme_ppa_v3"} else None,
+        "stop_reason": (run.checkpoint or {}).get("ppa_stop_reason") if protocol in {"theme_ppa_v1", "theme_ppa_v2", "theme_ppa_v3"}
                        else (run.checkpoint or {}).get("paper_stop_reason"),
     }
+    if protocol in {"theme_ppa_v2", "theme_ppa_v3"}:
+        result["budget"] = result["ppa_v2_progress"]["campaign_budget"]
+    return result
+
+
+async def _v2_progress(db, run, *, continuous=False):
+    from backend.services.ppa_progress import progress_report
+    root_id = (((run.config_snapshot or {}).get("task") or {}).get("config") or {}).get("budget_root_run_id")
+    root = await db.get(ExperimentRun, root_id) if root_id else None
+    ids = sorted(set([run.id, root_id, *((root.checkpoint or {}).get("campaign_run_ids") or [])])) if root else [run.id]
+    rows = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id.in_(ids))
+                             .order_by(ResearchCandidate.id.desc() if continuous else ResearchCandidate.id)
+                             .limit(1000))).scalars().all()
+    result = progress_report(rows, run.id)
+    reserved = (await db.execute(select(func.count(ResearchCandidate.id)).where(
+        ResearchCandidate.run_id.in_(ids), ResearchCandidate.request_status.in_(
+            ("RESERVED", "REQUESTED", "UNKNOWN", "FAILED", "RESULT"))))).scalar_one()
+    result["campaign_budget"] = {"limit": None if continuous else 80, "reserved": reserved}
+    result["campaign_budget"]["remaining"] = None if continuous else max(0, 80 - result["campaign_budget"]["reserved"])
+    result["robustness_reviews"] = (run.checkpoint or {}).get("ppa_robustness_reviews") or {}
+    return result

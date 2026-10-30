@@ -45,6 +45,38 @@ async def get_research_report(run_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
+@router.get("/{run_id}/ppa-feedback")
+async def get_ppa_feedback(run_id: int, db: AsyncSession = Depends(get_db)):
+    """Give the host-only Cockpit preparer measured, bounded research context."""
+    from backend.models import ExperimentRun, MiningTask
+    from backend.services.theme_ppa_v2 import feedback_context
+    run = await db.get(ExperimentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    task = await db.get(MiningTask, run.task_id)
+    if (task.config or {}).get("research_protocol") not in {"theme_ppa_v2", "theme_ppa_v3"}:
+        raise HTTPException(status_code=400, detail="Not a PPA feedback task")
+    try:
+        return await feedback_context(db, task, run)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.post("/{run_id}/ppa-batch")
+async def post_ppa_batch(run_id: int, batch: dict, db: AsyncSession = Depends(get_db)):
+    """Import one validated immutable batch while the run remains paused."""
+    from backend.models import ExperimentRun, MiningTask
+    from backend.services.theme_ppa_v2 import import_batch
+    run = await db.get(ExperimentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    task = await db.get(MiningTask, run.task_id)
+    try:
+        return await import_batch(db, task, run, batch)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 # =============================================================================
 # DEPENDENCY INJECTION
 # =============================================================================

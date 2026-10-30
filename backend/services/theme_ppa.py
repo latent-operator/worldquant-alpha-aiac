@@ -51,14 +51,19 @@ def validate_theme_task(task) -> str | None:
     """Fail closed before any theme-specific WQ request."""
     config = task.config or {}
     manifest = config.get("ppa_manifest") or {}
-    if config.get("continuous_mode") is True:
+    continuous = config.get("research_protocol") == "theme_ppa_v3"
+    if config.get("continuous_mode") is True and not continuous:
         return "PPA_CONTINUOUS_FORBIDDEN"
-    try:
-        budget = int(config.get("research_request_budget") or 0)
-    except (TypeError, ValueError):
-        budget = 0
-    if budget != 80:
-        return "PPA_BUDGET_MUST_BE_80"
+    if continuous:
+        if config.get("continuous_mode") is not True or config.get("research_request_budget") is not None:
+            return "PPA_CONTINUOUS_CONFIG_INVALID"
+    else:
+        try:
+            budget = int(config.get("research_request_budget") or 0)
+        except (TypeError, ValueError):
+            budget = 0
+        if budget != 80:
+            return "PPA_BUDGET_MUST_BE_80"
     if not str(manifest.get("theme_id") or manifest.get("theme_name") or "").strip():
         return "PPA_THEME_ID_MISSING"
     if manifest.get("verified_source") != "platform":
@@ -109,6 +114,9 @@ def validate_theme_task(task) -> str | None:
             return "PPA_MANIFEST_INCOMPLETE"
     except (KeyError, TypeError, ValueError):
         return "PPA_MANIFEST_INCOMPLETE"
+    if config.get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
+        from backend.services.theme_ppa_v2 import validate_v2_manifest
+        return validate_v2_manifest(task)
     if (any(not isinstance(manifest.get(phase), list) for phase in PHASE_LIMITS)
             or len(manifest.get("discovery") or []) != 24
             or any(len(manifest.get(phase) or []) > limit

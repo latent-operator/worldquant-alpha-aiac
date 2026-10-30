@@ -309,7 +309,7 @@ class BrainAdapter:
     # ... Methods (simulate_alpha, get_datasets, etc.) need to use self.client ...
     # I will replicate them below, ensuring they use self.client and handle errors.
     
-    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M", retry_post: bool = True) -> Dict:
+    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M", retry_post: bool = True, on_location=None) -> Dict:
         # Construct payload
         sim_payload = {
             "type": "REGULAR",
@@ -343,6 +343,11 @@ class BrainAdapter:
                  location = f"/simulations/{response.json().get('id')}"
                  
             logger.info(f"Simulation started | location={location}")
+            if on_location is not None:
+                try:
+                    await on_location(location)
+                except Exception:
+                    return {"success": False, "error": "uncertain request location persistence failed"}
             return await self._wait_for_simulation(location)
         except Exception as e:
             error = _format_exception(e)
