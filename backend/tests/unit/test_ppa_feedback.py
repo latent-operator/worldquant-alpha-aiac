@@ -81,6 +81,7 @@ def test_cockpit_invalid_output_repairs_at_most_twice(tmp_path):
         feedback.prepare_batch(base(), feedback.build_feedback([candidate()], 51, {}), script, runner=runner)
     assert runner.call_count == 3
     assert all("gpt-6-luna" in c.args[0] for c in runner.call_args_list)
+    assert all(c.args[0][0] == "pwsh" for c in runner.call_args_list)
 
 
 def test_cockpit_failure_does_not_fallback_or_retry(tmp_path):

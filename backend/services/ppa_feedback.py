@@ -187,7 +187,7 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
         path = Path(directory) / "prompt.txt"
         for attempt in range(3):
             path.write_text(prompt, encoding="utf-8")
-            completed = runner(["powershell.exe", "-NoProfile", "-File", str(script),
+            completed = runner(["pwsh", "-NoProfile", "-File", str(script),
                                 "-PromptFile", str(path), "-Model", "gpt-6-luna", "-MaxOutputTokens", "12000"],
                                capture_output=True, text=True, encoding="utf-8", check=True, timeout=180)
             try:
