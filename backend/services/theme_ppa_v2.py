@@ -77,7 +77,11 @@ async def feedback_context(db, task, run):
     context["seeds"] = [row for row in context["seeds"] if row["mechanism_id"] in base["mechanisms"]]
     context["finalists"] = [row for row in context["finalists"] if row["mechanism_id"] in base["mechanisms"]]
     if context["next_phase"] == "refinement" and not context["seeds"]:
-        context.update(next_phase=None, stop_reason="PPA_NO_QUALIFIED_SEEDS")
+        available_families = set(base["mechanisms"]) - set(context["stopped_families"])
+        if continuous and available_families and context["phase_counts"].get("discovery", 0) < 12:
+            context.update(next_phase="discovery", stop_reason=None)
+        else:
+            context.update(next_phase=None, stop_reason="PPA_NO_QUALIFIED_SEEDS")
     if context["next_phase"] == "confirmation" and not context["finalists"]:
         context.update(next_phase=None, stop_reason="PPA_NO_FINALISTS")
     context["evidence_hash"] = digest({key: value for key, value in context.items() if key != "evidence_hash"})
