@@ -79,7 +79,12 @@ async def feedback_context(db, task, run):
                                  if row.validation_status == "VALID" and row.request_status in ACCEPTED))
                     if continuous else request_phase_counts)
     remaining = None if continuous else max(0, 80 - sum(row.request_status in CHARGED for row in rows))
-    phase_limit = int((run.checkpoint or {}).get("ppa_phase_limit", 12)) if continuous else 12
+    checkpoint = run.checkpoint or {}
+    old_batch = checkpoint.get("ppa_batch") or {}
+    completed_old_batch = checkpoint.get("ppa_batch_cursor", 0) >= len(old_batch.get("cases") or [])
+    legacy_auto_boundary = (continuous and "ppa_phase_limit" not in checkpoint and epoch > 0
+                            and not epoch_rows and bool(old_batch.get("cases")) and completed_old_batch)
+    phase_limit = int(checkpoint.get("ppa_phase_limit", 16 if legacy_auto_boundary else 12)) if continuous else 12
     context = build_feedback(converted, remaining, phase_counts, continuous=continuous,
                              phase_limit=phase_limit)
     context["epoch"] = epoch
@@ -161,7 +166,8 @@ async def import_batch(db, task, run, batch):
         history.append(old)
     run.checkpoint = {**checkpoint, "ppa_batch": batch, "ppa_batch_cursor": 0,
                       "ppa_batch_history": history, "ppa_stop_reason": None,
-                      "ppa_execution_started_at": None, "ppa_batch_completed": []}
+                      "ppa_execution_started_at": None, "ppa_batch_completed": [],
+                      "ppa_phase_limit": evidence["phase_limit"]}
     run.block_reason = "PPA_BATCH_READY"
     await db.commit()
     return {"batch_hash": generation["plan_sha256"], "cases": len(batch["cases"]), "status": "PAUSED"}
@@ -641,7 +647,8 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
         context = await feedback_context(db, task, run)
         if context["next_phase"] is None:
             if continuous:
-                run.checkpoint = {**run.checkpoint, "ppa_epoch": int(run.checkpoint.get("ppa_epoch", 0)) + 1}
+                run.checkpoint = {**run.checkpoint, "ppa_epoch": int(run.checkpoint.get("ppa_epoch", 0)) + 1,
+                                  "ppa_phase_limit": 16}
                 return await pause(db, task, run, "AWAITING_RESEARCH_BATCH")
             task.status = run.status = "COMPLETED"
             run.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)

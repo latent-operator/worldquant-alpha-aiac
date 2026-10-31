@@ -178,6 +178,23 @@ async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_legacy_auto_epoch_boundary_upgrades_capacity_before_import(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "research_request_budget": None, "continuous_mode": True}
+        run.checkpoint = {"ppa_epoch": 4, "ppa_batch": {"cases": [{"case_id": "old1"},
+            {"case_id": "old2"}]}, "ppa_batch_cursor": 2}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        assert evidence["phase_limit"] == 16
+        assert evidence["max_batch_cases"] == 16
+        await workflow.import_batch(db, task, run, freeze_batch(base, evidence, discovery()))
+        assert run.checkpoint["ppa_phase_limit"] == 16
+
+
+@pytest.mark.asyncio
 async def test_existing_alpha_id_in_historical_run_does_not_fail_new_run(async_engine, monkeypatch):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     async def quality(**kwargs): return "OPTIMIZE"
