@@ -84,6 +84,33 @@ def test_cockpit_invalid_output_repairs_at_most_twice(tmp_path):
     assert all(c.args[0][0] == "pwsh" for c in runner.call_args_list)
 
 
+def test_cockpit_empty_stdout_reports_validation_error(tmp_path):
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    runner = Mock(return_value=SimpleNamespace(stdout=None))
+    with pytest.raises(ValueError, match="COCKPIT_BATCH_INVALID:ValueError:COCKPIT_EMPTY_OUTPUT"):
+        feedback.prepare_batch(base(), feedback.build_feedback([candidate()], 51, {"discovery": 4}),
+                               script, runner=runner)
+    assert runner.call_count == 3
+    assert all(call.kwargs.get("errors") == "replace" for call in runner.call_args_list)
+
+
+def test_cockpit_wrong_phase_repair_names_required_phase(tmp_path):
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    prompts = []
+    def runner(argv, **kwargs):
+        prompts.append(__import__("pathlib").Path(argv[5]).read_text(encoding="utf-8"))
+        return SimpleNamespace(stdout=json.dumps({"phase": "discovery", "cases": []}))
+    evidence = feedback.build_feedback([candidate()], 51, {"discovery": 4})
+    assert evidence["next_phase"] == "refinement"
+    with pytest.raises(ValueError, match="PPA_BATCH_PHASE_INVALID"):
+        feedback.prepare_batch(base(), evidence, script, runner=runner)
+    assert len(prompts) == 3
+    assert "phase MUST be refinement" in prompts[0]
+    assert "phase MUST be refinement" in prompts[1]
+
+
 def test_cockpit_failure_does_not_fallback_or_retry(tmp_path):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")
