@@ -10,7 +10,7 @@ Provides methods for:
 
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func
@@ -419,6 +419,10 @@ class TaskService(BaseService):
             if active_run and active_run.status in {"RUNNING", "WAITING_LLM"}:
                 active_run.status = "PAUSED"
                 active_run.next_retry_at = None
+                if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
+                    active_run.checkpoint = {**(active_run.checkpoint or {}),
+                        "ppa_pause_started_at": (active_run.checkpoint or {}).get("ppa_pause_started_at")
+                        or datetime.now(timezone.utc).isoformat()}
             await self.task_repo.update_status(task_id, "PAUSED")
             await self.commit()
             return {"action": "paused", "new_status": "PAUSED"}
@@ -434,6 +438,16 @@ class TaskService(BaseService):
             if paused_run and paused_run.status == "PAUSED":
                 paused_run.status = "RUNNING"
                 paused_run.next_retry_at = None
+                if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
+                    checkpoint = dict(paused_run.checkpoint or {})
+                    began = checkpoint.pop("ppa_pause_started_at", None)
+                    if began:
+                        try:
+                            seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(began)).total_seconds()
+                            checkpoint["ppa_pause_seconds"] = checkpoint.get("ppa_pause_seconds", 0) + max(0, seconds)
+                        except (TypeError, ValueError):
+                            pass
+                    paused_run.checkpoint = checkpoint
                 await self.commit()
                 from backend.tasks import run_mining_task
                 queued = run_mining_task.delay(task_id, paused_run.id)

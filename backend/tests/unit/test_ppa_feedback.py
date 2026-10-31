@@ -91,3 +91,77 @@ def test_cockpit_failure_does_not_fallback_or_retry(tmp_path):
     with pytest.raises(TimeoutError):
         feedback.prepare_batch(base(), feedback.build_feedback([candidate()], 51, {}), script, runner=runner)
     assert runner.call_count == 1
+
+
+def test_frozen_discovery_rejects_unknown_campaign_signature():
+    from backend.services.research_audit import signature
+    data = base()
+    data["datasets"]["pv1"] = ["returns", "adv20", "close", "open"]
+    evidence = feedback.build_feedback([], None, {}, continuous=True)
+    settings = data["settings"]
+    evidence["history_signatures"] = [list(signature("rank(returns)", settings))]
+    proposal = {"phase": "discovery", "cases": [dict(case_id=f"c{i}", pair_id="p1",
+        arm="CONTROL" if i == 0 else "TREATMENT", dataset_id="pv1",
+        mechanism_id="reversal", expression=f"rank({field})", changed_element="field",
+        expected_effect="improve AMER", risk="noise", stop_condition="no gain")
+        for i, field in enumerate(data["datasets"]["pv1"])]}
+    with pytest.raises(ValueError, match="PPA_DUPLICATE_HISTORICAL"):
+        feedback.freeze_batch(data, evidence, proposal)
+
+
+def test_cockpit_repair_receives_exact_validation_code(tmp_path):
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    prompts = []
+    def runner(argv, **kwargs):
+        prompts.append(__import__("pathlib").Path(argv[5]).read_text(encoding="utf-8"))
+        return SimpleNamespace(stdout="not-json")
+    with pytest.raises(ValueError, match="COCKPIT_BATCH_INVALID:.*JSON"):
+        feedback.prepare_batch(base(), feedback.build_feedback([candidate()], 51, {}), script, runner=runner)
+    assert len(prompts) == 3
+    assert "JSONDecodeError" in prompts[1]
+
+
+def test_failed_window_template_is_rejected_before_import():
+    data = base()
+    evidence = feedback.build_feedback([], None, {}, continuous=True)
+    evidence["exhausted_templates"] = [["reversal", "rank(ts_sum(returns,#))"]]
+    proposal = {"phase": "discovery", "cases": [dict(case_id=f"c{i}", pair_id="p1",
+        arm="CONTROL" if i == 0 else "TREATMENT", dataset_id="pv1",
+        mechanism_id="reversal", expression=f"rank(ts_sum(returns,{window}))",
+        changed_element="window", expected_effect="improve AMER", risk="noise",
+        stop_condition="no gain") for i, window in enumerate((3, 5, 10, 20))]}
+    with pytest.raises(ValueError, match="PPA_TEMPLATE_EXHAUSTED"):
+        feedback.freeze_batch(data, evidence, proposal)
+
+
+def test_four_failed_windows_exhaust_only_that_template():
+    rows = []
+    for i, window in enumerate((3, 5, 10, 20)):
+        row = candidate(test=-0.1, case=f"case{i}")
+        row.update(id=i + 1, expression=f"rank(ts_sum(returns,{window}))",
+                   source="DISCOVERY", request_status="RESULT")
+        rows.append(row)
+    evidence = feedback.build_feedback(rows, None, {}, continuous=True)
+    assert ["reversal", "rank(ts_sum(returns,#))"] in evidence["exhausted_templates"]
+    assert ["reversal", "rank(ts_mean(returns,#))"] not in evidence["exhausted_templates"]
+
+
+def test_failed_children_do_not_ban_stronger_parent_or_new_template():
+    parent = candidate(amer=0.79, sharpe=1.56, fitness=0.69, test=1.38)
+    parent.update(source="DISCOVERY", request_status="RESULT")
+    children = []
+    for i, window in enumerate((3, 5, 10, 20)):
+        row = candidate(amer=0.4, sharpe=0.7, fitness=0.2, test=-0.1, case=f"bad{i}")
+        row.update(id=i + 2, source="REFINEMENT", request_status="RESULT",
+                   parent_candidate_id=parent["id"], expression=f"rank(ts_sum(returns,{window}))")
+        children.append(row)
+    evidence = feedback.build_feedback([parent, *children], None,
+                                       {"discovery": 4, "refinement": 4}, continuous=True)
+    assert "reversal" in evidence["stopped_families"]
+    assert evidence["seeds"][0]["id"] == parent["id"]
+    proposal = plan()
+    proposal["cases"][0]["expression"] = "rank(ts_mean(returns,2))"
+    data = base()
+    data["allowed_operators"].append("ts_mean")
+    assert feedback.freeze_batch(data, evidence, proposal)["phase"] == "refinement"

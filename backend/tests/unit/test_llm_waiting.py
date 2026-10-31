@@ -263,6 +263,25 @@ async def test_pause_then_resume_running_task_reuses_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resuming_ppa_run_records_paused_time(monkeypatch):
+    began = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    run = SimpleNamespace(id=18, status="PAUSED", next_retry_at=None,
+                          checkpoint={"ppa_pause_started_at": began, "ppa_pause_seconds": 5},
+                          celery_task_id="old")
+    task = SimpleNamespace(id=14, status="PAUSED", config={"research_protocol": "theme_ppa_v3"})
+    db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+        scalar_one_or_none=lambda: run)), commit=AsyncMock(), rollback=AsyncMock())
+    service = TaskService(db)
+    service.task_repo.get_by_id = AsyncMock(return_value=task)
+    service.task_repo.update_status = AsyncMock()
+    monkeypatch.setattr("backend.tasks.run_mining_task.delay",
+                        Mock(return_value=SimpleNamespace(id="new")))
+    await service.intervene_task(14, "RESUME")
+    assert 65 <= run.checkpoint["ppa_pause_seconds"] < 70
+    assert "ppa_pause_started_at" not in run.checkpoint
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_waiting_run():
     run = SimpleNamespace(id=9, status="WAITING_LLM", next_retry_at=datetime.now(timezone.utc), finished_at=None)
     task = SimpleNamespace(id=3, status="WAITING_LLM")

@@ -35,11 +35,16 @@ def seed_decision(row):
     evaluation = snapshot.get("platform_ppa_evaluation") or {}
     allowed = {"AMER_SHARPE_BELOW_THEME", "POWER_POOL_CLASSIFICATION", "THEME_UNVERIFIED",
                "THEME_CHECK_PENDING", "PLATFORM_CHECK_PENDING", "PRE_SUBMIT_UNVERIFIED",
-               "POWER_POOL_CORRELATION_MISSING"}
+               "POWER_POOL_CORRELATION_MISSING", "PLATFORM_CHECK_FAILED", "TURNOVER_EXCESS"}
     reasons.extend(reason for reason in evaluation.get("reasons", []) if reason not in allowed)
     if any("INELIGIBLE" in str(item).upper() for item in snapshot.get("classifications", [])):
         reasons.append("POWER_POOL_CLASSIFICATION_INELIGIBLE")
-    if any(c.get("result") == "FAIL" for c in snapshot.get("checks", [])):
+    remediable_checks = {"LOW_SHARPE", "LOW_FITNESS", "LOW_2Y_SHARPE", "LOW_MARGIN", "LOW_TURNOVER",
+                         "HIGH_TURNOVER", "LOW_GLB_AMER_SHARPE", "LOW_GLB_EMEA_SHARPE",
+                         "LOW_GLB_APAC_SHARPE", "LOW_SUB_UNIVERSE_SHARPE"}
+    failed_checks = [c for c in snapshot.get("checks", []) if c.get("result") == "FAIL"]
+    if ("PLATFORM_CHECK_FAILED" in evaluation.get("reasons", []) and not failed_checks) or any(
+            c.get("name") not in remediable_checks for c in failed_checks):
         reasons.append("PLATFORM_CHECK_FAILED")
     if (metrics.get("turnover") is not None and not 0 < metrics["turnover"] <= 1
             or any(metrics.get(key) is not None and metrics[key] <= 0 for key in ("long_count", "short_count"))):

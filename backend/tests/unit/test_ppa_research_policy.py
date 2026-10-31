@@ -32,6 +32,21 @@ def test_seed_order_prefers_amer_then_test():
     assert policy.select_seeds([candidate(sharpe=3), best])[0]["case_id"] == "discovery"
 
 
+def test_research_seed_can_have_remediable_platform_failure():
+    row = candidate(amer=0.79, sharpe=1.56, fitness=0.69, test=1.38)
+    row["platform_ppa_evaluation"]["reasons"] += ["PLATFORM_CHECK_FAILED", "TURNOVER_EXCESS"]
+    row["checks"] = [{"name": "LOW_GLB_AMER_SHARPE", "result": "FAIL", "value": 0.79}]
+    assert policy.seed_decision(row)["eligible"]
+    row["platform_ppa_evaluation"]["reasons"].append("THEME_MISMATCH")
+    assert not policy.seed_decision(row)["eligible"]
+
+
+def test_unexplained_platform_failure_is_not_a_research_seed():
+    row = candidate()
+    row["platform_ppa_evaluation"]["reasons"].append("PLATFORM_CHECK_FAILED")
+    assert not policy.seed_decision(row)["eligible"]
+
+
 @pytest.mark.parametrize("case", ["REFINE_1", "REFINE_2", "discovery"])
 def test_every_winner_gets_two_distinct_confirmation_routes(case):
     parent = candidate(case=case)
