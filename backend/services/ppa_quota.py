@@ -49,12 +49,15 @@ def choose_parallelism(current, history, transport="single"):
     if history and history[-1].get("concurrency") == current and (
             history[-1].get("unknown", 0) or history[-1].get("rate_limited")):
         return max(2, current // 2)
-    measured = {}
+    totals = {}
     for row in history:
         level, count, seconds = row.get("concurrency"), row.get("completed", 0), row.get("wall_seconds", 0)
-        if (level in (2, 4, 8) and count >= 8 and seconds > 0
+        if (level in (2, 4, 8) and count > 0 and seconds > 0
                 and not row.get("unknown") and not row.get("rate_limited")):
-            measured[level] = count / seconds
+            prior_count, prior_seconds = totals.get(level, (0, 0))
+            totals[level] = prior_count + count, prior_seconds + seconds
+    measured = {level: count / seconds for level, (count, seconds) in totals.items()
+                if count >= 8}
     if current == 2 and 2 in measured and 4 not in measured:
         return 4
     if current == 4 and 4 in measured and 8 not in measured:
