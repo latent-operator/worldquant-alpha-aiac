@@ -375,6 +375,15 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         run.checkpoint = {**checkpoint, "ppa_execution_started_at": datetime.now(timezone.utc).isoformat()}
         await db.commit()
     concurrency = min(8, max(1, int(checkpoint.get("ppa_max_in_flight", 2))))
+    if not checkpoint.get("ppa_batch_completed") and not checkpoint.get("ppa_batch_cursor"):
+        from backend.services.ppa_quota import choose_parallelism
+        measured_level = choose_parallelism(concurrency,
+                                            checkpoint.get("ppa_throughput_history") or [],
+                                            checkpoint.get("ppa_transport", "single"))
+        if measured_level != concurrency:
+            concurrency = measured_level
+            run.checkpoint = {**(run.checkpoint or {}), "ppa_max_in_flight": concurrency}
+            await db.commit()
     semaphore = asyncio.Semaphore(concurrency)
     stop_dispatch = asyncio.Event()
     quota_exhausted = asyncio.Event()
