@@ -2,7 +2,7 @@
 import asyncio
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 
 from backend.models import MiningTask, ExperimentRun, ResearchCandidate, Alpha, TraceStep
@@ -79,7 +79,9 @@ async def feedback_context(db, task, run):
                                  if row.validation_status == "VALID" and row.request_status in ACCEPTED))
                     if continuous else request_phase_counts)
     remaining = None if continuous else max(0, 80 - sum(row.request_status in CHARGED for row in rows))
-    context = build_feedback(converted, remaining, phase_counts, continuous=continuous)
+    phase_limit = int((run.checkpoint or {}).get("ppa_phase_limit", 12)) if continuous else 12
+    context = build_feedback(converted, remaining, phase_counts, continuous=continuous,
+                             phase_limit=phase_limit)
     context["epoch"] = epoch
     context["campaign_requests"] = sum(row.request_status in CHARGED for row in rows)
     context["request_phase_counts"] = request_phase_counts
@@ -90,13 +92,13 @@ async def feedback_context(db, task, run):
         for row in rows if row.expression and row.validation_status == "VALID"})
     context["unresolved_requests"] = sum(row.run_id == run.id and needs_reconciliation(row) for row in rows)
     if continuous:
-        context["max_batch_cases"] = 4
+        context["max_batch_cases"] = 16 if phase_limit == 16 else 4
     # Unknown historical mechanism assignments are visible but not proposed as parents.
     context["seeds"] = [row for row in context["seeds"] if row["mechanism_id"] in base["mechanisms"]]
     context["finalists"] = [row for row in context["finalists"] if row["mechanism_id"] in base["mechanisms"]]
     if context["next_phase"] == "refinement" and not context["seeds"]:
         available_families = set(base["mechanisms"])
-        if continuous and available_families and context["phase_counts"].get("discovery", 0) <= 8:
+        if continuous and available_families and context["phase_counts"].get("discovery", 0) <= phase_limit - 4:
             context.update(next_phase="discovery", stop_reason=None)
         else:
             context.update(next_phase=None, stop_reason="PPA_NO_QUALIFIED_SEEDS")
@@ -130,7 +132,8 @@ async def advance_epoch(db, task, run, *, expected_epoch):
     history = list(checkpoint.get("ppa_epoch_history") or [])
     history.append({"from": current, "to": current + 1, "reason": evidence["stop_reason"],
                     "at": datetime.now(timezone.utc).isoformat(), "phase_counts": evidence["phase_counts"]})
-    run.checkpoint = {**checkpoint, "ppa_epoch": current + 1, "ppa_epoch_history": history}
+    run.checkpoint = {**checkpoint, "ppa_epoch": current + 1, "ppa_epoch_history": history,
+                      "ppa_phase_limit": 16}
     await db.commit()
     return {"run_id": run.id, "epoch": current + 1, "previous_reason": evidence["stop_reason"]}
 
@@ -157,18 +160,18 @@ async def import_batch(db, task, run, batch):
     if old:
         history.append(old)
     run.checkpoint = {**checkpoint, "ppa_batch": batch, "ppa_batch_cursor": 0,
-                      "ppa_batch_history": history, "ppa_stop_reason": None}
+                      "ppa_batch_history": history, "ppa_stop_reason": None,
+                      "ppa_execution_started_at": None, "ppa_batch_completed": []}
     run.block_reason = "PPA_BATCH_READY"
     await db.commit()
     return {"batch_hash": generation["plan_sha256"], "cases": len(batch["cases"]), "status": "PAUSED"}
 
 
 async def pause(db, task, run, reason):
+    from backend.services.ppa_progress import begin_pause
     task.status = run.status = "PAUSED"
     run.block_reason = reason
-    run.checkpoint = {**(run.checkpoint or {}), "ppa_stop_reason": reason,
-                      "ppa_pause_started_at": (run.checkpoint or {}).get("ppa_pause_started_at")
-                      or datetime.now(timezone.utc).isoformat()}
+    run.checkpoint = {**begin_pause(run.checkpoint, reason), "ppa_stop_reason": reason}
     await db.commit()
     return {"done": True, "reason": reason}
 
@@ -243,7 +246,11 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
         result = row.result_snapshot or {}
     else:
         try:
-            result = await asyncio.wait_for(brain.poll_existing_simulation(location), timeout=20)
+            if (row.result_snapshot or {}).get("request", {}).get("transport") == "paired_multi":
+                result = await asyncio.wait_for(
+                    brain.poll_existing_multisim(location, row.expression), timeout=20)
+            else:
+                result = await asyncio.wait_for(brain.poll_existing_simulation(location), timeout=20)
         except asyncio.TimeoutError:
             return {"resolved": 0, "pending": len(candidates)}
     definitive_failure = str(result.get("status") or "").upper() in {"ERROR", "FAILED"}
@@ -280,7 +287,15 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
                             row.request_status == "FAILED"))
     remaining = len(candidates) - resolved
     if not remaining and run.block_reason == "PPA_REQUEST_RECONCILIATION_PENDING":
-        run.block_reason = "AWAITING_RESEARCH_BATCH"
+        batch_cases = ((run.checkpoint or {}).get("ppa_batch") or {}).get("cases") or []
+        current = {item.experiment_group: item for item in rows}
+        unfinished = any(
+            not current.get(case["case_id"])
+            or needs_reconciliation(current[case["case_id"]])
+            or current[case["case_id"]].request_status not in {"RESULT", "CACHED", "FAILED"}
+            for case in batch_cases
+        )
+        run.block_reason = "PPA_BATCH_READY" if unfinished else "AWAITING_RESEARCH_BATCH"
         await db.commit()
     return {"resolved": resolved, "pending": remaining}
 
@@ -324,6 +339,215 @@ async def finish_confirmation(db, task, run, batch):
     return False
 
 
+async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_dataset,
+                             quality_evaluator, ledger):
+    """Overlap independent WQ requests; commit each result as it arrives."""
+    from backend.alpha_semantic_validator import AlphaSemanticValidator
+
+    cases = batch["cases"]
+    checkpoint = run.checkpoint or {}
+    existing = (await db.execute(select(ResearchCandidate).where(
+        ResearchCandidate.run_id == run.id,
+        ResearchCandidate.experiment_group.in_([case["case_id"] for case in cases]),
+    ))).scalars().all()
+    finished = {row.experiment_group for row in existing if row.request_status == "FAILED"
+                or (row.request_status in {"RESULT", "CACHED"}
+                    and (row.result_snapshot or {}).get("ppa_evaluation"))}
+    first_review = (batch["phase"] == "discovery" and not checkpoint.get("ppa_first_batch_reviewed"))
+    ceiling = min(4, len(cases)) if first_review else len(cases)
+    pending = []
+    for index, case in enumerate(cases[:ceiling]):
+        if case["case_id"] in finished:
+            continue
+        validated = AlphaSemanticValidator(
+            fields=fields_by_dataset[case["dataset_id"]], strict_field_check=True,
+        ).validate(case["expression"])
+        if not validated.valid:
+            return await pause(db, task, run, "PPA_CASE_INVALID")
+        pending.append((index, case))
+    if pending and not checkpoint.get("ppa_execution_started_at"):
+        run.checkpoint = {**checkpoint, "ppa_execution_started_at": datetime.now(timezone.utc).isoformat()}
+        await db.commit()
+    concurrency = min(8, max(1, int(checkpoint.get("ppa_max_in_flight", 2))))
+    semaphore = asyncio.Semaphore(concurrency)
+    stop_dispatch = asyncio.Event()
+    quota_exhausted = asyncio.Event()
+    retry_wait = 0.0
+
+    def review_result(result):
+        nonlocal retry_wait
+        if result.get("http_status") == 429 or result.get("error") in {
+            "BUDGET_EXHAUSTED", "TASK_NOT_RUNNING",
+        } or (not result.get("alpha_id") and "uncertain" in str(result.get("error", "")).lower()):
+            stop_dispatch.set()
+            try:
+                retry_wait = max(retry_wait, float(result.get("retry_after") or 0))
+            except (TypeError, ValueError):
+                pass
+        quota = getattr(ledger, "quota_window", None)
+        if quota is not None and isinstance(result.get("rate_limit"), dict):
+            quota.observe(result["rate_limit"])
+            if quota.remaining == 0:
+                quota_exhausted.set()
+                stop_dispatch.set()
+
+    def prepare_case(original):
+        case = {**original, "epoch": int((run.checkpoint or {}).get("ppa_epoch", 0))}
+        settings = {**base["settings"], **case.get("settings", {}), "region": task.region,
+                    "universe": task.universe, "delay": base["delay"]}
+        return case, settings
+
+    async def simulate_one(index, original):
+        if stop_dispatch.is_set():
+            return index, original, None, None, None
+        case, settings = prepare_case(original)
+        wrapped = ResearchBudgetBrain(brain, ledger)
+        wrapped.register(case["expression"], group=case["case_id"], arm=case.get("arm"),
+                         pair_id=case.get("pair_id"), parent_candidate_id=case.get("parent_candidate_id"),
+                         research_case=case)
+        quota = getattr(ledger, "quota_window", None)
+        result = await ledger.recover(case["expression"], settings)
+        if not result:
+            if quota is not None and not quota.claim():
+                quota_exhausted.set()
+                stop_dispatch.set()
+                return index, case, settings, None, wrapped
+            with wrapped.source(batch["phase"].upper()):
+                result = await wrapped.simulate_alpha(case["expression"], **settings)
+        else:
+            await ledger.reserve(case["expression"], settings, batch["phase"].upper(),
+                                 wrapped.metadata[case["expression"]])
+        review_result(result)
+        return index, case, settings, result, wrapped
+
+    async def simulate_group(group):
+        async with semaphore:
+            if stop_dispatch.is_set():
+                return []
+            if len(group) == 1:
+                return [await simulate_one(*group[0])]
+            prepared = [(index, *prepare_case(original)) for index, original in group]
+            cached = [await ledger.recover(case["expression"], settings)
+                      for _, case, settings in prepared]
+            if any(cached):
+                return [await simulate_one(index, original) for index, original in group]
+            quota = getattr(ledger, "quota_window", None)
+            if quota is not None and not quota.claim_many(2):
+                quota_exhausted.set()
+                stop_dispatch.set()
+                return []
+            wrapped = ResearchBudgetBrain(brain, ledger)
+            for _, case, _ in prepared:
+                wrapped.register(case["expression"], group=case["case_id"], arm=case.get("arm"),
+                                 pair_id=case.get("pair_id"), parent_candidate_id=case.get("parent_candidate_id"),
+                                 research_case=case)
+            with wrapped.source(batch["phase"].upper()):
+                results = await wrapped.simulate_audited_pair(
+                    [case["expression"] for _, case, _ in prepared], **prepared[0][2])
+            output = []
+            for (index, case, settings), result in zip(prepared, results):
+                review_result(result)
+                output.append((index, case, settings, result, wrapped))
+            return output
+
+    transport = checkpoint.get("ppa_transport", "single")
+    groups = []
+    if transport == "paired_multi" and hasattr(brain, "simulate_audited_pair"):
+        index = 0
+        while index < len(pending):
+            pair = pending[index:index + 2]
+            if len(pair) == 2 and pair[0][1].get("settings", {}) == pair[1][1].get("settings", {}):
+                groups.append(pair)
+                index += 2
+            else:
+                groups.append(pair[:1])
+                index += 1
+    else:
+        groups = [[item] for item in pending]
+    running = [asyncio.create_task(simulate_group(group)) for group in groups]
+    block_reason = None
+    try:
+        for completed in asyncio.as_completed(running):
+            try:
+                outcomes = await completed
+            except Exception as exc:
+                stop_dispatch.set()
+                block_reason = "PPA_EXECUTION_ERROR"
+                run.checkpoint = {**(run.checkpoint or {}), "ppa_execution_error": type(exc).__name__}
+                continue
+            for index, case, settings, result, wrapped in outcomes:
+                if result is None:
+                    continue
+                row = await persist_result(db, wrapped, task, run, case, settings, result, batch["phase"],
+                                           quality_evaluator, fields_by_dataset[case["dataset_id"]])
+                finished.add(case["case_id"])
+                done_indices = {i for i, item in enumerate(cases) if item["case_id"] in finished}
+                cursor = next((i for i in range(len(cases)) if i not in done_indices), len(cases))
+                run.checkpoint = {**(run.checkpoint or {}), "ppa_batch_cursor": cursor,
+                                  "ppa_batch_completed": sorted(done_indices)}
+                await db.commit()
+                if result.get("http_status") == 429:
+                    block_reason = "PPA_RATE_LIMIT"
+                elif not result.get("alpha_id") and "uncertain" in str(result.get("error", "")).lower():
+                    block_reason = "PPA_REQUEST_RECONCILIATION_PENDING"
+                elif row and (row.result_snapshot or {}).get("platform_ppa_evaluation", {}).get("status") == "PPA_PENDING":
+                    metrics = evidence_metrics(research_row(row))
+                    if metrics.get("amer_sharpe") is None or metrics["amer_sharpe"] > 1:
+                        block_reason = block_reason or "PPA_QUALIFICATION_EVIDENCE_PENDING"
+    finally:
+        if running:
+            await asyncio.gather(*running, return_exceptions=True)
+    if quota_exhausted.is_set():
+        block_reason = block_reason or "PPA_RATE_LIMIT"
+    if block_reason:
+        if block_reason == "PPA_RATE_LIMIT":
+            quota = getattr(ledger, "quota_window", None)
+            reset_at = getattr(quota, "reset_at", None)
+            wait_seconds = max(0, reset_at - time.monotonic()) if reset_at is not None else retry_wait
+            if wait_seconds:
+                run.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=wait_seconds)
+        return await pause(db, task, run, block_reason)
+    if first_review and all(case["case_id"] in finished for case in cases[:ceiling]):
+        run.checkpoint = {**(run.checkpoint or {}), "ppa_first_batch_reviewed": True}
+        return await pause(db, task, run, "PPA_FIRST_BATCH_REVIEW")
+    if len(finished) >= len(cases):
+        if batch["phase"] == "confirmation" and await finish_confirmation(db, task, run, batch):
+            return {"done": True, "reason": "PPA_READY"}
+        from backend.services.ppa_quota import next_transport
+        rows = (await db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.run_id == run.id,
+            ResearchCandidate.experiment_group.in_([case["case_id"] for case in cases]),
+        ))).scalars().all()
+        completed_count = sum(row.request_status == "RESULT" for row in rows)
+        unknown_count = sum(row.request_status == "UNKNOWN" for row in rows)
+        from backend.services.ppa_progress import interval_union_seconds
+        intervals = []
+        for row in rows:
+            request = (row.result_snapshot or {}).get("request") or {}
+            try:
+                start = datetime.fromisoformat(request["sent_at"])
+                finish = datetime.fromisoformat(request["finished_at"])
+                if finish >= start:
+                    intervals.append((start, finish))
+            except (KeyError, TypeError, ValueError):
+                continue
+        # Pauses and qualification checks are outside WQ's active request wall time.
+        wall_seconds = max(0.001, interval_union_seconds(intervals)) if intervals else 0
+        history = list((run.checkpoint or {}).get("ppa_throughput_history") or [])[-19:]
+        history.append({"transport": transport, "concurrency": concurrency, "completed": completed_count,
+                        "wall_seconds": round(wall_seconds, 3), "unknown": unknown_count,
+                        "rate_limited": False})
+        next_mode, next_level = next_transport(transport, concurrency, history)
+        run.checkpoint = {**(run.checkpoint or {}), "ppa_throughput_history": history,
+                          "ppa_max_in_flight": next_level, "ppa_transport": next_mode}
+        await db.commit()
+        context = await feedback_context(db, task, run)
+        if context["next_phase"] is None:
+            run.checkpoint = {**run.checkpoint, "ppa_epoch": int(run.checkpoint.get("ppa_epoch", 0)) + 1}
+        return await pause(db, task, run, "AWAITING_RESEARCH_BATCH")
+    return {"done": False, "cursor": run.checkpoint.get("ppa_batch_cursor", 0)}
+
+
 async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluator=None):
     continuous = task.config.get("research_protocol") == "theme_ppa_v3"
     if task.status != "RUNNING":
@@ -348,15 +572,21 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
                             budget_root_run_id=task.config["budget_root_run_id"])
     pending = (await db.execute(select(ResearchCandidate).where(
         ResearchCandidate.run_id == run.id,
-        ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN", "RESULT"))
+        ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN", "RESULT", "FAILED"))
     ))).scalars().all()
     if any(needs_reconciliation(row) for row in pending):
         return await pause(db, task, run, "PPA_REQUEST_RECONCILIATION_PENDING")
+    if continuous:
+        from backend.services.ppa_quota import restore_quota
+        ledger.quota_window = restore_quota([(row.result_snapshot or {}) for row in pending])
     wrapped = ResearchBudgetBrain(brain, ledger)
     if quality_evaluator is None:
         from backend.agents.mining_agent import MiningAgent
         quality_evaluator = MiningAgent(db, wrapped)._quality_status_for_optimization_result
     start = int((run.checkpoint or {}).get("ppa_batch_cursor", 0))
+    if continuous and (run.checkpoint or {}).get("ppa_phase_limit") == 16:
+        return await run_parallel_batch(db, brain, task, run, batch, base, fields_by_dataset,
+                                        quality_evaluator, ledger)
     for index in range(start, min(start + 4, len(batch["cases"]))):
         await db.refresh(task)
         if task.status != "RUNNING":
@@ -386,8 +616,15 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
         await db.commit()
         if row and batch["phase"] == "confirmation" and await finish_confirmation(db, task, run, batch):
             return {"done": True, "reason": "PPA_READY"}
-        if result.get("http_status") == 429 or (not result.get("alpha_id") and result.get("error") in {"BUDGET_EXHAUSTED", "DUPLICATE", "TASK_NOT_RUNNING"}):
-            return await pause(db, task, run, result.get("error") or "PPA_RATE_LIMIT")
+        if result.get("http_status") == 429 or (not result.get("alpha_id") and result.get("error") == "BUDGET_EXHAUSTED"):
+            reset_at = getattr(ledger.quota_window, "reset_at", None)
+            wait_seconds = (max(0, reset_at - time.monotonic()) if reset_at is not None
+                            else max(0, float(result.get("retry_after") or 0)))
+            if wait_seconds:
+                run.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=wait_seconds)
+            return await pause(db, task, run, "PPA_RATE_LIMIT")
+        if not result.get("alpha_id") and result.get("error") in {"DUPLICATE", "TASK_NOT_RUNNING"}:
+            return await pause(db, task, run, result["error"])
         if row and (row.result_snapshot or {}).get("platform_ppa_evaluation", {}).get("status") == "PPA_PENDING" and (evidence_metrics(research_row(row)).get("amer_sharpe") is None or evidence_metrics(research_row(row))["amer_sharpe"] > 1):
             return await pause(db, task, run, "PPA_QUALIFICATION_EVIDENCE_PENDING")
         if (batch["phase"] == "discovery" and index + 1 == 4

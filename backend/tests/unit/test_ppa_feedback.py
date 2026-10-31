@@ -111,6 +111,30 @@ def test_cockpit_wrong_phase_repair_names_required_phase(tmp_path):
     assert "phase MUST be refinement" in prompts[1]
 
 
+def test_refinement_generation_clamps_to_remaining_slots(tmp_path):
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    prompts = []
+    proposal = plan()
+    proposal["cases"] = []
+    for index, window in enumerate((2, 3, 4)):
+        item = deepcopy(plan()["cases"][0])
+        item["case_id"] = f"r{index}"
+        item["expression"] = f"rank(ts_sum(returns,{window}))"
+        proposal["cases"].append(item)
+    def runner(argv, **kwargs):
+        prompts.append(__import__("pathlib").Path(argv[5]).read_text(encoding="utf-8"))
+        return SimpleNamespace(stdout=json.dumps(proposal))
+    evidence = feedback.build_feedback([candidate()], None,
+                                       {"discovery": 4, "refinement": 10}, continuous=True)
+    batch = feedback.prepare_batch(base(), evidence, script, runner=runner)
+    assert [case["case_id"] for case in batch["cases"]] == ["r0", "r1"]
+    assert batch["candidate_generation"]["proposed_cases"] == 3
+    assert batch["candidate_generation"]["truncated_cases"] == 1
+    assert len(prompts) == 1
+    assert "at most 2 cases" in prompts[0]
+
+
 def test_cockpit_failure_does_not_fallback_or_retry(tmp_path):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")

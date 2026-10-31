@@ -252,6 +252,7 @@ class MCPBrainAdapter:
         self.fallback = fallback or BrainAdapter()
         self.mcp = mcp_client or MCPToolClient()
         self._fallback_entered = False
+        self._fallback_lock = asyncio.Lock()
         self.no_fallback_on_simulation_error = False
 
     async def __aenter__(self):
@@ -263,9 +264,10 @@ class MCPBrainAdapter:
             self._fallback_entered = False
 
     async def _ensure_fallback(self) -> BrainAdapter:
-        if not self._fallback_entered:
-            await self.fallback.__aenter__()
-            self._fallback_entered = True
+        async with self._fallback_lock:
+            if not self._fallback_entered:
+                await self.fallback.__aenter__()
+                self._fallback_entered = True
         return self.fallback
 
     async def enabled_tool_names(self) -> List[str]:
@@ -286,6 +288,24 @@ class MCPBrainAdapter:
         """Explicit one-expression WQ request for audited runs, without padding."""
         fallback = await self._ensure_fallback()
         return await fallback.simulate_alpha(expression=expression, retry_post=False, **kwargs)
+
+    async def simulate_audited_pair(self, expressions: List[str], **kwargs) -> List[Dict[str, Any]]:
+        if len(expressions) != 2:
+            raise ValueError("PPA_AUDITED_PAIR_REQUIRES_TWO")
+        fallback = await self._ensure_fallback()
+        return await fallback.simulate_batch(expressions, retry_post=False,
+                                             audit_match=True, **kwargs)
+
+    async def poll_existing_multisim(self, location: str, expression: str) -> Dict[str, Any]:
+        from backend.adapters.brain_adapter import match_audited_children
+        fallback = await self._ensure_fallback()
+        parent = await fallback._wait_for_multisim(location)
+        if not parent.get("success"):
+            return {"success": False, "error": "uncertain original parent poll"}
+        matching = [row for row in parent.get("results", []) if
+                    match_audited_children([expression], [row]) is not None]
+        return matching[0] if len(matching) == 1 else {
+            "success": False, "error": "uncertain original child mapping"}
 
     async def simulate_batch(
         self,

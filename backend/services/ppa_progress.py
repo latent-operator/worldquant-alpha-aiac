@@ -5,6 +5,48 @@ from backend.services.ppa_feedback import research_row
 from backend.services.ppa_research_policy import evidence_metrics, effective_improvement
 
 
+def begin_pause(checkpoint, reason, now=None):
+    now = now or datetime.now(timezone.utc)
+    updated = dict(checkpoint or {})
+    if updated.get("ppa_pause_started_at"):
+        if updated.get("ppa_pause_reason") == reason:
+            return updated
+        updated = close_pause(updated, now)
+    updated["ppa_pause_started_at"] = now.isoformat()
+    updated["ppa_pause_reason"] = reason
+    return updated
+
+
+def close_pause(checkpoint, now=None):
+    now = now or datetime.now(timezone.utc)
+    updated = dict(checkpoint or {})
+    began = updated.pop("ppa_pause_started_at", None)
+    reason = updated.pop("ppa_pause_reason", "UNATTRIBUTED")
+    if began:
+        try:
+            seconds = max(0, (now - datetime.fromisoformat(began)).total_seconds())
+            updated["ppa_pause_seconds"] = updated.get("ppa_pause_seconds", 0) + seconds
+            by_reason = dict(updated.get("ppa_pause_by_reason") or {})
+            by_reason[reason] = by_reason.get(reason, 0) + seconds
+            updated["ppa_pause_by_reason"] = by_reason
+        except (TypeError, ValueError):
+            pass
+    return updated
+
+
+def interval_union_seconds(intervals):
+    total = 0
+    end = None
+    for start, finish in sorted(intervals):
+        if end is None or start > end:
+            total += (finish - start).total_seconds()
+            end = finish
+        elif finish > end:
+            total += (finish - end).total_seconds()
+            end = finish
+    return total
+
+
 def progress_report(rows, current_run_id, checkpoint=None):
     checkpoint = checkpoint or {}
     raw = [row if isinstance(row, dict) else {key: getattr(row, key, None) for key in (
@@ -28,7 +70,7 @@ def progress_report(rows, current_run_id, checkpoint=None):
                 and row["metrics"].get("amer_sharpe") is not None]
     best = max(positive, key=lambda row: row["metrics"]["amer_sharpe"], default=None)
     missing = Counter(reason for row in measured for reason in row["platform_ppa_evaluation"].get("reasons", []))
-    durations, recovered, recovery_durations, qualification_durations = [], 0, [], []
+    durations, intervals, recovered, recovery_durations, qualification_durations = [], [], 0, [], []
     for row in new:
         snapshot = row.get("result_snapshot") or {}
         request = snapshot.get("request") or {}
@@ -41,18 +83,28 @@ def progress_report(rows, current_run_id, checkpoint=None):
             qualification_durations.append(snapshot["qualification_seconds"])
         try:
             if row["request_status"] == "RESULT" and not recovery:
-                durations.append((datetime.fromisoformat(request["finished_at"]) - datetime.fromisoformat(request["sent_at"])).total_seconds())
+                start, finish = datetime.fromisoformat(request["sent_at"]), datetime.fromisoformat(request["finished_at"])
+                durations.append((finish - start).total_seconds())
+                intervals.append((start, finish))
         except (KeyError, TypeError, ValueError):
             pass
     generations = [batch.get("candidate_generation", {}).get("generation_seconds") for batch in
                    [*(checkpoint.get("ppa_batch_history") or []), checkpoint.get("ppa_batch") or {}]]
     generations = [value for value in generations if isinstance(value, (int, float))]
+    quota_observations = [((row.get("result_snapshot") or {}).get("request") or {}) for row in raw]
+    quota_observations = [request for request in quota_observations if request.get("rate_limit_observed_at")
+                          and isinstance(request.get("rate_limit"), dict)]
+    latest_quota = (max(quota_observations, key=lambda request: request["rate_limit_observed_at"])
+                    if quota_observations else None)
     pause_seconds = checkpoint.get("ppa_pause_seconds")
+    pause_by_reason = dict(checkpoint.get("ppa_pause_by_reason") or {})
     if checkpoint.get("ppa_pause_started_at"):
         try:
             active = (datetime.now(timezone.utc) - datetime.fromisoformat(
                 checkpoint["ppa_pause_started_at"])).total_seconds()
             pause_seconds = (pause_seconds or 0) + max(0, active)
+            reason = checkpoint.get("ppa_pause_reason") or "UNATTRIBUTED"
+            pause_by_reason[reason] = pause_by_reason.get(reason, 0) + max(0, active)
         except (TypeError, ValueError):
             pass
     return {"new_requests": len(new), "effective_improvements": gains,
@@ -62,10 +114,18 @@ def progress_report(rows, current_run_id, checkpoint=None):
                 "gap": max(0, 1 - best["metrics"]["amer_sharpe"])} if best else None,
             "ppa_ready": sum(row["ppa_evaluation"].get("status") == "PPA_READY" for row in measured),
             "evidence_reasons": dict(missing), "cached_results": sum(r["request_status"] == "CACHED" for r in raw),
-            "timing": {"wq_seconds": sum(durations) if durations else None, "timed_requests": len(durations),
+            "observed_quota": ({**latest_quota["rate_limit"],
+                                "observed_at": latest_quota["rate_limit_observed_at"]}
+                               if latest_quota else None),
+            "parallelism": checkpoint.get("ppa_max_in_flight", 1),
+            "batch_throughput": (checkpoint.get("ppa_throughput_history") or [])[-20:],
+            "timing": {"wq_seconds": sum(durations) if durations else None,
+                       "wq_wall_seconds": interval_union_seconds(intervals) if intervals else None,
+                       "timed_requests": len(durations),
                        "recovered_requests": recovered,
                        "generation_seconds": sum(generations) if generations else None,
                        "qualification_seconds": sum(qualification_durations) if qualification_durations else None,
                        "pause_seconds": pause_seconds,
+                       "pause_seconds_by_reason": pause_by_reason,
                        "recovery_seconds": sum(recovery_durations) if recovery_durations else None},
             "speed_claim": "NO_TIME_TO_PASS_ESTIMATE"}

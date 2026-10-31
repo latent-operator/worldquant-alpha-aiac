@@ -1,6 +1,7 @@
 import asyncio
 
 from backend.adapters.brain_adapter import BrainAdapter
+from backend.adapters.brain_adapter import match_audited_children
 
 
 class _Response:
@@ -105,6 +106,46 @@ def test_multisim_timeout_boundary_fetches_completed_children():
     assert result["success"] is True
     assert [item["alpha_id"] for item in result["results"]] == ["alpha_a", "alpha_b"]
     assert all(item["location"].endswith("/simulations/parent") for item in result["results"])
+
+
+def test_audited_multisim_maps_children_by_expression_not_position():
+    results = [{"alpha_id": "b", "expression": "rank(b)"},
+               {"alpha_id": "a", "expression": "rank(a)"}]
+    matched = match_audited_children(["rank(a)", "rank(b)"], results)
+    assert [item["alpha_id"] for item in matched] == ["a", "b"]
+    assert match_audited_children(["rank(a)", "rank(b)"], [{"alpha_id": "a"}, results[0]]) is None
+
+
+def test_audited_pair_persists_parent_location_before_polling():
+    class PairAdapter(BrainAdapter):
+        async def _safe_api_call(self, method, endpoint, **kwargs):
+            return _Response({}, status_code=201, headers={"Location": "/simulations/parent"})
+        async def _wait_for_multisim(self, location, **kwargs):
+            assert events == [("location", "/simulations/parent")]
+            return {"success": True, "results": [
+                {"alpha_id": "b", "expression": "rank(b)"},
+                {"alpha_id": "a", "expression": "rank(a)"}]}
+    events = []
+    async def saved(location):
+        events.append(("location", location))
+    results = asyncio.run(PairAdapter().simulate_batch(
+        ["rank(a)", "rank(b)"], retry_post=False, audit_match=True, on_location=saved))
+    assert [row["alpha_id"] for row in results] == ["a", "b"]
+
+
+def test_audited_pair_429_is_reported_for_both_without_retry():
+    class Limited(BrainAdapter):
+        calls = 0
+        async def _safe_api_call(self, method, endpoint, **kwargs):
+            self.calls += 1
+            return _Response({}, status_code=429, headers={"Retry-After": "30",
+                                                           "X-Ratelimit-Remaining": "0"})
+    brain = Limited()
+    results = asyncio.run(brain.simulate_batch(["rank(a)", "rank(b)"],
+                                               retry_post=False, audit_match=True))
+    assert brain.calls == 1
+    assert len(results) == 2
+    assert all(row["http_status"] == 429 and row["retry_after"] == 30 for row in results)
 
 
 def test_alpha_details_polling_is_bounded():
