@@ -44,6 +44,37 @@ def _format_exception(exc: Exception) -> str:
         return f"{type(exc).__name__}: {message}"
     return f"{type(exc).__name__}: {exc!r}"
 
+
+def _simulation_rate_limit(headers) -> Dict[str, int]:
+    values = {}
+    for header, name in (("X-Ratelimit-Limit", "limit"),
+                         ("X-Ratelimit-Remaining", "remaining"),
+                         ("X-Ratelimit-Reset", "reset_seconds")):
+        try:
+            value = int(headers.get(header))
+            if 0 <= value <= 1_000_000_000:
+                values[name] = value
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return values
+
+
+def match_audited_children(expressions: List[str], results: List[Dict]) -> Optional[List[Dict]]:
+    """Never infer child identity from the order returned by a multi-simulation."""
+    if len(results) != len(expressions):
+        return None
+    key = lambda value: "".join(str(value or "").lower().split())
+    expected = [key(value) for value in expressions]
+    if len(set(expected)) != len(expected):
+        return None
+    by_expression = {}
+    for result in results:
+        expression = key(result.get("expression"))
+        if not expression or expression in by_expression:
+            return None
+        by_expression[expression] = result
+    return [by_expression[value] for value in expected] if set(by_expression) == set(expected) else None
+
 class BrainAdapter:
     """
     Adapter for WorldQuant BRAIN platform.
@@ -309,7 +340,7 @@ class BrainAdapter:
     # ... Methods (simulate_alpha, get_datasets, etc.) need to use self.client ...
     # I will replicate them below, ensuring they use self.client and handle errors.
     
-    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M", retry_post: bool = True, on_location=None) -> Dict:
+    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M", retry_post: bool = True, on_location=None, on_rate_limit=None) -> Dict:
         # Construct payload
         sim_payload = {
             "type": "REGULAR",
@@ -325,12 +356,19 @@ class BrainAdapter:
         try:
             response = await self._safe_api_call("post", "/simulations", json=sim_payload,
                                                  retry_writes=retry_post)
+            rate_limit = _simulation_rate_limit(response.headers)
             if response.status_code not in [200, 201, 202]:
+                if on_rate_limit is not None and rate_limit:
+                    try:
+                        await on_rate_limit(rate_limit)
+                    except Exception:
+                        logger.warning("Simulation quota metadata could not be persisted")
                 if not retry_post and response.status_code >= 500:
-                    return {"success": False, "error": "uncertain server error"}
+                    return {"success": False, "error": "uncertain server error",
+                            "http_status": response.status_code, "rate_limit": rate_limit}
                 logger.error(f"Brain Simulation Failed [{response.status_code}] | Payload: {json.dumps(sim_payload)} | Response: {response.text}")
                 failure = {"success": False, "error": f"Creation failed: {response.text}",
-                           "http_status": response.status_code}
+                           "http_status": response.status_code, "rate_limit": rate_limit}
                 if response.status_code == 429:
                     try:
                         failure["retry_after"] = max(0, float(response.headers.get("Retry-After")))
@@ -340,7 +378,11 @@ class BrainAdapter:
             
             location = response.headers.get("Location")
             if not location:
-                 location = f"/simulations/{response.json().get('id')}"
+                sim_id = response.json().get("id")
+                if not sim_id:
+                    return {"success": False, "error": "uncertain no location header",
+                            "http_status": response.status_code, "rate_limit": rate_limit}
+                location = f"/simulations/{sim_id}"
                  
             logger.info(f"Simulation started | location={location}")
             if on_location is not None:
@@ -348,7 +390,13 @@ class BrainAdapter:
                     await on_location(location)
                 except Exception:
                     return {"success": False, "error": "uncertain request location persistence failed"}
-            return await self._wait_for_simulation(location)
+            if on_rate_limit is not None and rate_limit:
+                try:
+                    await on_rate_limit(rate_limit)
+                except Exception:
+                    logger.warning("Simulation quota metadata could not be persisted")
+            result = await self._wait_for_simulation(location)
+            return {**result, "rate_limit": rate_limit}
         except Exception as e:
             error = _format_exception(e)
             logger.error(f"Simulate error: {error}")
@@ -368,6 +416,9 @@ class BrainAdapter:
         timeout_grace_seconds: int = 180,
         no_child_timeout_seconds: int = 0,
         retry_post: bool = True,
+        audit_match: bool = False,
+        on_location=None,
+        on_rate_limit=None,
     ) -> List[Dict]:
         """
         Simulate multiple alphas in a single batch request (Multi-Simulation).
@@ -400,13 +451,24 @@ class BrainAdapter:
             # POST list of configs
             response = await self._safe_api_call("post", "/simulations", json=sim_payloads,
                                                  retry_writes=retry_post)
+            rate_limit = _simulation_rate_limit(response.headers)
             
             if response.status_code not in [200, 201, 202]:
+                if on_rate_limit is not None and rate_limit:
+                    await on_rate_limit(rate_limit)
                 if not retry_post and response.status_code >= 500:
-                    return [{"success": False, "error": "uncertain server error"} for _ in expressions]
+                    return [{"success": False, "error": "uncertain server error",
+                             "http_status": response.status_code, "rate_limit": rate_limit}
+                            for _ in expressions]
                 logger.error(f"Batch Simulation Failed [{response.status_code}] | Response: {response.text}")
                 # Return failures for all
-                return [{"success": False, "error": f"Batch creation failed: {response.text}"} for _ in expressions]
+                try:
+                    retry_after = max(0, float(response.headers.get("Retry-After")))
+                except (TypeError, ValueError):
+                    retry_after = None
+                return [{"success": False, "error": f"Batch creation failed: {response.text}",
+                         "http_status": response.status_code, "retry_after": retry_after,
+                         "rate_limit": rate_limit} for _ in expressions]
             
             location = response.headers.get("Location")
             if not location:
@@ -414,6 +476,14 @@ class BrainAdapter:
                 return [{"success": False, "error": "uncertain no location header"} for _ in expressions]
                  
             logger.info(f"Batch simulation started | count={len(expressions)} location={location}")
+            if on_location is not None:
+                try:
+                    await on_location(location)
+                except Exception:
+                    return [{"success": False, "error": "uncertain parent location persistence failed"}
+                            for _ in expressions]
+            if on_rate_limit is not None and rate_limit:
+                await on_rate_limit(rate_limit)
             # Wait for parent simulation
             parent_result = await self._wait_for_multisim(
                 location,
@@ -437,7 +507,14 @@ class BrainAdapter:
             # Better: match by alpha ID if possible? 
             # Actually ace_lib iterates children and fetches results.
             
-            return parent_result["results"]
+            results = parent_result["results"]
+            if audit_match:
+                matched = match_audited_children(expressions, results)
+                if matched is None:
+                    return [{"success": False, "error": "uncertain child expression mapping",
+                             "location": location} for _ in expressions]
+                results = matched
+            return [{**result, "rate_limit": rate_limit} for result in results]
             
         except Exception as e:
             error = _format_exception(e)

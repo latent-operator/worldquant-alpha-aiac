@@ -236,6 +236,8 @@ class ResearchLedger:
         self.family_id = family_id
         self.budget_root_run_id = budget_root_run_id or run_id
         self.dedup_task_ids = sorted({int(task_id), *(int(value) for value in (dedup_task_ids or []))})
+        from backend.services.ppa_quota import QuotaWindow
+        self.quota_window = QuotaWindow()
 
     async def reserve(self, expression: str, settings: dict, source: str,
                       metadata: dict | None = None) -> tuple[int | None, str | None]:
@@ -399,17 +401,40 @@ class ResearchLedger:
                     "sent_at": datetime.now(timezone.utc).isoformat()}}
                 await db.commit()
 
-    async def record_location(self, candidate_id: int, location: str) -> None:
+    async def record_location(self, candidate_id: int, location: str, *, transport: str = "single") -> None:
+        await self.record_locations([candidate_id], location, transport=transport)
+
+    async def record_locations(self, candidate_ids: list[int], location: str, *, transport: str = "single") -> None:
         from urllib.parse import urlparse
         parsed = urlparse(location)
         if (parsed.scheme and (parsed.scheme != "https" or parsed.netloc != "api.worldquantbrain.com")) or not re.fullmatch(r"/simulations/[A-Za-z0-9_-]+", parsed.path):
             raise ValueError("PPA_INVALID_SIMULATION_LOCATION")
+        if not candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
+            raise ValueError("PPA_INVALID_LOCATION_CANDIDATES")
+        async with AsyncSessionLocal() as db:
+            for candidate_id in candidate_ids:
+                row = await db.get(ResearchCandidate, candidate_id)
+                if row is None or row.run_id != self.run_id:
+                    raise ValueError("Candidate scope mismatch")
+                row.result_snapshot = {**(row.result_snapshot or {}), "request": {
+                    **((row.result_snapshot or {}).get("request") or {}), "location": parsed.path,
+                    "transport": transport if transport in {"single", "paired_multi"} else "single"}}
+            await db.commit()
+
+    async def record_rate_limit(self, candidate_id: int, values: dict) -> None:
+        allowed = {key: value for key, value in values.items()
+                   if key in {"limit", "remaining", "reset_seconds"}
+                   and type(value) is int and 0 <= value <= 1_000_000_000}
+        if not allowed:
+            return
+        self.quota_window.observe(allowed)
         async with AsyncSessionLocal() as db:
             row = await db.get(ResearchCandidate, candidate_id)
             if row is None or row.run_id != self.run_id:
                 raise ValueError("Candidate scope mismatch")
             row.result_snapshot = {**(row.result_snapshot or {}), "request": {
-                **((row.result_snapshot or {}).get("request") or {}), "location": parsed.path}}
+                **((row.result_snapshot or {}).get("request") or {}),
+                "rate_limit": allowed, "rate_limit_observed_at": datetime.now(timezone.utc).isoformat()}}
             await db.commit()
 
     async def reconcile(self, poll) -> None:
@@ -479,7 +504,12 @@ class ResearchBudgetBrain:
         results = await self.simulate_batch([expression], **settings)
         return results[0]
 
-    async def simulate_batch(self, expressions: list[str], **settings) -> list[dict]:
+    async def simulate_audited_pair(self, expressions: list[str], **settings) -> list[dict]:
+        if len(expressions) != 2:
+            raise ValueError("PPA_AUDITED_PAIR_REQUIRES_TWO")
+        return await self.simulate_batch(expressions, audit_pair=True, **settings)
+
+    async def simulate_batch(self, expressions: list[str], audit_pair: bool = False, **settings) -> list[dict]:
         results: list[dict | None] = [None] * len(expressions)
         allowed: list[str] = []
         reservations: list[tuple[int, int]] = []
@@ -509,7 +539,25 @@ class ResearchBudgetBrain:
                         async def on_location(location):
                             await self.ledger.record_location(reservations[0][1], location)
                         send_settings["on_location"] = on_location
+                        if hasattr(self.ledger, "record_rate_limit"):
+                            async def on_rate_limit(values):
+                                await self.ledger.record_rate_limit(reservations[0][1], values)
+                            send_settings["on_rate_limit"] = on_rate_limit
                     network_results = [await self.brain.simulate_single(allowed[0], **send_settings)]
+                elif len(allowed) == 2 and audit_pair and hasattr(self.brain, "simulate_audited_pair"):
+                    send_settings = dict(settings)
+                    if getattr(self.brain, "supports_request_tracking", False) is True:
+                        async def on_location(location):
+                            await self.ledger.record_locations(
+                                [candidate_id for _, candidate_id in reservations], location,
+                                transport="paired_multi")
+                        send_settings["on_location"] = on_location
+                        if hasattr(self.ledger, "record_rate_limit"):
+                            async def on_rate_limit(values):
+                                for _, candidate_id in reservations:
+                                    await self.ledger.record_rate_limit(candidate_id, values)
+                            send_settings["on_rate_limit"] = on_rate_limit
+                    network_results = await self.brain.simulate_audited_pair(allowed, **send_settings)
                 else:
                     network_results = await self.brain.simulate_batch(allowed, **settings)
             except Exception:

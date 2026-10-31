@@ -439,15 +439,8 @@ class TaskService(BaseService):
                 paused_run.status = "RUNNING"
                 paused_run.next_retry_at = None
                 if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
-                    checkpoint = dict(paused_run.checkpoint or {})
-                    began = checkpoint.pop("ppa_pause_started_at", None)
-                    if began:
-                        try:
-                            seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(began)).total_seconds()
-                            checkpoint["ppa_pause_seconds"] = checkpoint.get("ppa_pause_seconds", 0) + max(0, seconds)
-                        except (TypeError, ValueError):
-                            pass
-                    paused_run.checkpoint = checkpoint
+                    from backend.services.ppa_progress import close_pause
+                    paused_run.checkpoint = close_pause(paused_run.checkpoint)
                 await self.commit()
                 from backend.tasks import run_mining_task
                 queued = run_mining_task.delay(task_id, paused_run.id)

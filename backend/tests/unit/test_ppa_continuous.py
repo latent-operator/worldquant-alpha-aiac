@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 from backend.services.theme_ppa import validate_theme_task
 from backend.services.ppa_feedback import build_feedback, freeze_batch
 from backend.tests.unit.test_theme_ppa import manifest
@@ -173,8 +174,18 @@ async def test_epoch_advance_is_atomic_and_stale_retry_is_rejected(async_engine,
         await db.commit()
         result = await workflow.advance_epoch(db, task, run, expected_epoch=1)
         assert result["epoch"] == 2
+        assert run.checkpoint["ppa_phase_limit"] == 16
+        next_evidence = await workflow.feedback_context(db, task, run)
+        assert next_evidence["max_batch_cases"] == 16
+        assert next_evidence["phase_limit"] == 16
         with pytest.raises(ValueError, match="STALE_EPOCH"):
             await workflow.advance_epoch(db, task, run, expected_epoch=1)
+
+
+def test_sixteen_slot_epoch_keeps_full_discovery_groups():
+    evidence = build_feedback([], None, {"discovery": 12}, continuous=True, phase_limit=16)
+    assert evidence["next_phase"] == "discovery"
+    assert evidence["phase_limit"] == 16
 
 
 def test_watcher_advances_exhausted_epoch_before_generation(tmp_path, monkeypatch):
@@ -218,3 +229,66 @@ def test_watcher_reconciles_unknown_without_generating(tmp_path, monkeypatch):
     assert watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 18,
                                 tmp_path / "ask.ps1", tmp_path) == "WAIT_RECONCILE"
     assert any(url.endswith("/ppa-reconcile") for url, _ in calls)
+
+
+def test_watcher_waits_for_rate_reset_then_resumes_same_run(tmp_path, monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    calls = []
+    retry_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    def request(url, payload=None):
+        calls.append((url, payload))
+        if url.endswith("/tasks/14"):
+            return {"status": "PAUSED"}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 18, "status": "PAUSED", "block_reason": "PPA_RATE_LIMIT",
+                     "next_retry_at": retry_at.isoformat()}]
+        if url.endswith("/intervene"):
+            return {"action": "resumed"}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    args = ("http://127.0.0.1:8003/api/v1", 14, 18, tmp_path / "ask.ps1", tmp_path)
+    assert watch_theme_ppa.step(*args) == "WAIT_RATE_LIMIT"
+    assert not any(url.endswith("/intervene") for url, _ in calls)
+    retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert watch_theme_ppa.step(*args) == "RESUMED_RATE_LIMIT"
+    assert calls[-1][1] == {"action": "RESUME"}
+
+
+def test_watcher_retries_cockpit_failure_and_records_heartbeat(tmp_path):
+    attempts = []
+    def once():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ValueError("COCKPIT_BATCH_INVALID:temporary")
+        return "IMPORTED:test.json"
+    waits = []
+    result = watch_theme_ppa.run_step_with_retry(once, tmp_path, sleep=waits.append)
+    assert result == "IMPORTED:test.json"
+    assert waits == [10]
+    assert len(attempts) == 2
+    assert (tmp_path / "coordinator-heartbeat.json").exists()
+
+
+def test_watcher_single_instance_lease(tmp_path):
+    first = watch_theme_ppa.acquire_lease(18, port=0)
+    try:
+        port = first.getsockname()[1]
+        with pytest.raises(OSError):
+            watch_theme_ppa.acquire_lease(18, port=port)
+    finally:
+        first.close()
+
+
+def test_watcher_alerts_after_bounded_retry_cycle(tmp_path):
+    attempts = []
+    def unavailable():
+        attempts.append(1)
+        raise ValueError("COCKPIT_BATCH_INVALID:empty")
+    waits = []
+    with pytest.raises(watch_theme_ppa.CoordinatorRetryExhausted):
+        watch_theme_ppa.run_step_with_retry(unavailable, tmp_path, sleep=waits.append)
+    assert len(attempts) == 4
+    assert waits == [10, 30, 60]
+    alert = json.loads((tmp_path / "coordinator-alert.json").read_text(encoding="utf-8"))
+    assert alert["attention_required"] is True
+    assert alert["consecutive_failures"] == 4
