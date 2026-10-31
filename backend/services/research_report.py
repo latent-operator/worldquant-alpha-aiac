@@ -212,7 +212,7 @@ async def _v2_progress(db, run, *, continuous=False):
     rows = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id.in_(ids))
                              .order_by(ResearchCandidate.id.desc() if continuous else ResearchCandidate.id)
                              .limit(1000))).scalars().all()
-    result = progress_report(rows, run.id)
+    result = progress_report(rows, run.id, checkpoint=run.checkpoint)
     reserved = (await db.execute(select(func.count(ResearchCandidate.id)).where(
         ResearchCandidate.run_id.in_(ids), ResearchCandidate.request_status.in_(
             ("RESERVED", "REQUESTED", "UNKNOWN", "FAILED", "RESULT"))))).scalar_one()

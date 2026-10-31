@@ -44,6 +44,11 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
     reason = run.get("block_reason")
     if reason == "PPA_FIRST_BATCH_REVIEW":
         evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
+        if evidence.get("unresolved_requests"):
+            recovered = request_json(f"{api}/runs/{run_id}/ppa-reconcile", {})
+            if recovered["pending"]:
+                return "WAIT_RECONCILE"
+            evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
         if not first_batch_reviewable(evidence, run_id):
             raise ValueError("PPA_FIRST_BATCH_EVIDENCE_INCOMPLETE")
         request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME"})
@@ -51,11 +56,22 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
     if reason == "PPA_BATCH_READY":
         request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME"})
         return "RESUMED_BATCH"
+    if reason == "PPA_REQUEST_RECONCILIATION_PENDING":
+        recovered = request_json(f"{api}/runs/{run_id}/ppa-reconcile", {})
+        return "WAIT_RECONCILE" if recovered["pending"] else "RECONCILED"
     if reason != "AWAITING_RESEARCH_BATCH":
         raise ValueError(f"PPA_REQUIRES_REVIEW:{reason}")
     evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
+    if evidence.get("unresolved_requests"):
+        recovered = request_json(f"{api}/runs/{run_id}/ppa-reconcile", {})
+        return "WAIT_RECONCILE" if recovered["pending"] else "RECONCILED"
     if evidence["next_phase"] is None:
-        raise ValueError(f"PPA_NO_NEXT_PHASE:{evidence['stop_reason']}")
+        if not evidence.get("continuous"):
+            raise ValueError(f"PPA_NO_NEXT_PHASE:{evidence['stop_reason']}")
+        request_json(f"{api}/runs/{run_id}/ppa-epoch", {"expected_epoch": evidence["epoch"]})
+        evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
+        if evidence["next_phase"] is None:
+            raise ValueError(f"PPA_NO_NEXT_PHASE:{evidence['stop_reason']}")
     batch = prepare_batch(evidence["base"], evidence, cockpit_script)
     output_dir.mkdir(parents=True, exist_ok=True)
     batch_path = output_dir / f"run-{run_id}-epoch-{evidence['epoch']}-{batch['phase']}-{batch['candidate_generation']['plan_sha256'][:12]}.json"
@@ -80,7 +96,7 @@ def main():
         print(json.dumps({"at": datetime.now(timezone.utc).isoformat(), "action": action}), flush=True)
         if action == "STOP":
             break
-        time.sleep(10)
+        time.sleep(60 if action == "WAIT_RECONCILE" else 10)
 
 
 if __name__ == "__main__":

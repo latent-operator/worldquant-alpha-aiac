@@ -133,3 +133,138 @@ async def test_missing_batch_and_paused_tasks_never_simulate(async_engine, monke
         await workflow.run_theme_v2(db, brain, task, run, {})
         assert brain.calls == 0 and task.status == "PAUSED"
         assert run.block_reason == "AWAITING_RESEARCH_BATCH"
+
+
+@pytest.mark.asyncio
+async def test_paused_unknown_is_polled_from_original_location_and_fully_evaluated(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    class PollOnly(Brain):
+        polls = 0
+        async def simulate_single(self, *args, **kwargs):
+            pytest.fail("Recovery must never create another simulation")
+        async def poll_existing_simulation(self, location):
+            assert location == "/simulations/original"
+            self.polls += 1
+            return {"success": True, "alpha_id": "recovered-alpha", "stage": "IS",
+                    "status": "UNSUBMITTED", "checks": [{"name": "MATCHES_THEMES", "result": "PASS"}],
+                    "metrics": {"sharpe": 0.8, "fitness": 0.4, "test_sharpe": 0.3,
+                                "amer_sharpe": 0.7, "turnover": 0.2, "margin": 0.001,
+                                "long_count": 100, "short_count": 100}}
+    async def quality(**kwargs): return "OPTIMIZE"
+    case = discovery()["cases"][0]
+    case["epoch"] = 1
+    settings = {**base["settings"], "region": "USA", "universe": "TOP3000", "delay": 1}
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True,
+                       "research_request_budget": None}
+        run.checkpoint = {"ppa_epoch": 1, "ppa_batch": {"cases": [case]}, "ppa_batch_cursor": 1}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+            family_id="theme_ppa_v3:nov", experiment_group=case["case_id"],
+            expression=case["expression"], expression_hash="expr", settings_hash="settings",
+            settings=settings, validation_status="VALID", request_status="UNKNOWN",
+            gate_failures=[], metrics={}, result_snapshot={"research_case": case,
+                "request": {"location": "/simulations/original"}}))
+        await db.commit()
+        brain = PollOnly()
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"} for name in base["datasets"]["dataset1"]]}
+        result = await workflow.reconcile_paused(db, task, run, brain, fields, quality_evaluator=quality)
+        assert result == {"resolved": 1, "pending": 0}
+        row = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id == rid))).scalar_one()
+        assert row.request_status == "RESULT"
+        assert row.result_snapshot["ppa_evaluation"]["status"] == "PPA_REJECTED"
+        await workflow.reconcile_paused(db, task, run, brain, fields, quality_evaluator=quality)
+        assert brain.polls == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_without_location_remains_charged_and_unpolled(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+            family_id="theme_ppa_v3:nov", experiment_group="unknown", expression="rank(field_0_0)",
+            expression_hash="expr", settings_hash="settings", settings={}, validation_status="VALID",
+            request_status="UNKNOWN", gate_failures=[], metrics={}, result_snapshot={}))
+        await db.commit()
+        with pytest.raises(ValueError, match="PPA_RECOVERY_LOCATION_MISSING"):
+            await workflow.reconcile_paused(db, task, run, Brain(), {}, quality_evaluator=None)
+        assert (await db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.run_id == rid))).scalar_one().request_status == "UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_pending_original_poll_stays_unknown(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    class PendingBrain(Brain):
+        async def poll_existing_simulation(self, location):
+            assert location == "/simulations/ongoing"
+            return {"status": "PENDING"}
+        async def simulate_single(self, *args, **kwargs):
+            pytest.fail("Never resubmit an unknown request")
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+            family_id="theme_ppa_v3:nov", experiment_group="unknown", expression="rank(field_0_0)",
+            expression_hash="expr", settings_hash="settings", settings={}, validation_status="VALID",
+            request_status="UNKNOWN", gate_failures=[], metrics={}, result_snapshot={
+                "request": {"location": "/simulations/ongoing"}}))
+        await db.commit()
+        assert await workflow.reconcile_paused(db, task, run, PendingBrain(), {}) == {
+            "resolved": 0, "pending": 1}
+        row = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id == rid))).scalar_one()
+        assert row.request_status == "UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_definitive_original_poll_error_is_failed(async_engine, monkeypatch):
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    class FailedBrain(Brain):
+        async def poll_existing_simulation(self, location):
+            assert location == "/simulations/failed"
+            return {"status": "ERROR"}
+        async def simulate_single(self, *args, **kwargs):
+            pytest.fail("Never resubmit an unknown request")
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+            family_id="theme_ppa_v3:nov", experiment_group="failed", expression="rank(field_0_0)",
+            expression_hash="expr", settings_hash="settings", settings={}, validation_status="VALID",
+            request_status="UNKNOWN", gate_failures=[], metrics={}, result_snapshot={
+                "request": {"location": "/simulations/failed"}}))
+        await db.commit()
+        assert await workflow.reconcile_paused(db, task, run, FailedBrain(), {}) == {
+            "resolved": 1, "pending": 0}
+        row = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id == rid))).scalar_one()
+        assert row.request_status == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_unevaluated_result_blocks_new_simulation(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    case = discovery()["cases"][0]
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True,
+                       "research_request_budget": None}
+        run.checkpoint = {}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+            family_id="theme_ppa_v3:nov", experiment_group="older", expression="rank(field_0_1)",
+            expression_hash="expr", settings_hash="settings", settings={}, validation_status="VALID",
+            request_status="RESULT", wq_alpha_id="older-alpha", gate_failures=[], metrics={},
+            result_snapshot={"alpha_id": "older-alpha"}))
+        await db.commit()
+        context = await workflow.feedback_context(db, task, run)
+        assert context["unresolved_requests"] == 1
+        batch = freeze_batch(base, context, discovery())
+        await workflow.import_batch(db, task, run, batch)
+        task.status = run.status = "RUNNING"
+        await db.commit()
+        brain = Brain()
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"} for name in base["datasets"]["dataset1"]]}
+        outcome = await workflow.run_theme_v2(db, brain, task, run, fields)
+        assert outcome["reason"] == "PPA_REQUEST_RECONCILIATION_PENDING"
+        assert brain.calls == 0

@@ -77,6 +77,45 @@ async def post_ppa_batch(run_id: int, batch: dict, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
+class EpochAdvanceRequest(BaseModel):
+    expected_epoch: int
+
+
+@router.post("/{run_id}/ppa-epoch")
+async def post_ppa_epoch(run_id: int, request: EpochAdvanceRequest, db: AsyncSession = Depends(get_db)):
+    """Advance an exhausted paused continuous run without starting a simulation."""
+    from backend.models import ExperimentRun, MiningTask
+    from backend.services.theme_ppa_v2 import advance_epoch
+    run = await db.get(ExperimentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    task = await db.get(MiningTask, run.task_id)
+    try:
+        return await advance_epoch(db, task, run, expected_epoch=request.expected_epoch)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.post("/{run_id}/ppa-reconcile")
+async def post_ppa_reconcile(run_id: int, db: AsyncSession = Depends(get_db)):
+    """Poll an existing WQ simulation; never create or resubmit an Alpha."""
+    from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
+    from backend.models import ExperimentRun, MiningTask
+    from backend.services.theme_ppa_v2 import reconcile_paused
+    from backend.tasks.mining_tasks import _get_dataset_fields
+    run = await db.get(ExperimentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    task = await db.get(MiningTask, run.task_id)
+    try:
+        fields = {dataset: await _get_dataset_fields(db, dataset, task.region, task.universe)
+                  for dataset in (task.config or {}).get("ppa_manifest", {}).get("datasets", {})}
+        async with MCPBrainAdapter() as brain:
+            return await reconcile_paused(db, task, run, brain, fields)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 # =============================================================================
 # DEPENDENCY INJECTION
 # =============================================================================
