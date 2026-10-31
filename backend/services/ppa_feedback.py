@@ -19,8 +19,25 @@ PHASE_LIMITS = {"discovery": 12, "refinement": 12, "confirmation": 12}
 
 
 def expression_template(expression):
-    """Group lookback-only variants without merging distinct operators or directions."""
-    return re.sub(r"\b\d+(?:\.\d+)?\b", "#", "".join(expression.lower().split()))
+    """Group lookback-only variants after the narrow measured equivalence rule."""
+    return re.sub(r"\b\d+(?:\.\d+)?\b", "#", behavioral_expression(expression))
+
+
+def behavioral_expression(expression):
+    """Collapse the measured ranked returns mean/sum alias; leave other fields alone."""
+    compact = "".join(expression.lower().split())
+    direct = re.fullmatch(r"rank\(ts_(?:mean|sum)\((returns),(\d+)\)\)", compact)
+    if direct:
+        return f"rank(ts_sum({direct.group(1)},{int(direct.group(2))}))"
+    inverted = re.fullmatch(
+        r"rank\(multiply\(-1,ts_(?:mean|sum)\((returns),(\d+)\)\)\)", compact)
+    if inverted:
+        return f"rank(multiply(-1,ts_sum({inverted.group(1)},{int(inverted.group(2))})))"
+    return compact
+
+
+def behavioral_signature(expression, settings):
+    return signature(behavioral_expression(expression), settings)
 
 
 def case_settings(base, overrides):
@@ -123,8 +140,9 @@ def freeze_batch(base, evidence, proposal):
         raise ValueError("PPA_BATCH_BUDGET")
     parents = {row["case_id"]: row for row in evidence["seeds" if phase == "refinement" else "rows"]}
     mechanisms = base.get("mechanisms") or {}
-    ids, signatures, pairs, parent_counts = set(), set(), {}, Counter()
+    ids, signatures, behavioral_signatures, pairs, parent_counts = set(), set(), set(), {}, Counter()
     historical = {tuple(item) for item in evidence.get("history_signatures", [])}
+    historical_behavioral = {tuple(item) for item in evidence.get("history_behavioral_signatures", [])}
     exhausted = {tuple(item) for item in evidence.get("exhausted_templates", [])}
     normalized = []
     for original in cases:
@@ -169,9 +187,13 @@ def freeze_batch(base, evidence, proposal):
             raise ValueError("PPA_DUPLICATE_CASE")
         if identity in historical:
             raise ValueError("PPA_DUPLICATE_HISTORICAL")
+        behavior = behavioral_signature(case["expression"], settings)
+        if behavior in historical_behavioral or behavior in behavioral_signatures:
+            raise ValueError("PPA_DUPLICATE_BEHAVIORAL")
         if (case["mechanism_id"], expression_template(case["expression"])) in exhausted:
             raise ValueError("PPA_TEMPLATE_EXHAUSTED")
         signatures.add(identity)
+        behavioral_signatures.add(behavior)
         # Validating this now guarantees every non-confirmation branch has a legal exit.
         if phase != "confirmation":
             confirmation_cases({**case, "settings": settings}, base["confirmation_settings"])
@@ -213,7 +235,8 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
               "Do not change settings. Confirmation will be generated deterministically from finalists. "
               "Respect max_batch_cases; use case IDs unique across all prior batches. "
               "Stalled families remain eligible for a different expression template. "
-              "Do not repeat historical expression/settings or exhausted window-only templates.\n"
+              "Do not repeat historical expression/settings or exhausted window-only templates. "
+              "A ranked fixed-window mean of returns is treated as the same signal as its sum at that window.\n"
               + json.dumps({"base": base, "evidence": {**evidence, "rows": evidence["rows"][-100:],
                                                    "history_signatures": "checked by host"}},
                            ensure_ascii=False, allow_nan=False))
