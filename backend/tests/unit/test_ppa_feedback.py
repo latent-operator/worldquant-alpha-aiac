@@ -109,6 +109,31 @@ def test_frozen_discovery_rejects_unknown_campaign_signature():
         feedback.freeze_batch(data, evidence, proposal)
 
 
+def test_ranked_fixed_window_mean_rejects_measured_sum_alias():
+    data = base()
+    data["allowed_operators"] += ["multiply", "ts_mean"]
+    evidence = feedback.build_feedback([candidate()], None, {"discovery": 4}, continuous=True)
+    settings = data["settings"]
+    evidence["history_behavioral_signatures"] = [list(feedback.behavioral_signature(
+        "rank(multiply(-1,ts_sum(returns,2)))", settings))]
+    proposal = plan()
+    proposal["cases"][0]["expression"] = "rank(multiply(-1,ts_mean(returns,2)))"
+    with pytest.raises(ValueError, match="PPA_DUPLICATE_BEHAVIORAL"):
+        feedback.freeze_batch(data, evidence, proposal)
+
+
+def test_lookback_mean_sum_alias_is_limited_to_direct_ranked_field():
+    settings = base()["settings"]
+    assert feedback.behavioral_signature("rank(ts_mean(returns,2))", settings) == (
+        feedback.behavioral_signature("rank(ts_sum(returns,2))", settings))
+    assert feedback.behavioral_signature("rank(ts_mean(returns,2))", settings) != (
+        feedback.behavioral_signature("rank(ts_sum(returns,3))", settings))
+    assert feedback.behavioral_signature("rank(multiply(returns,ts_mean(returns,2)))", settings) != (
+        feedback.behavioral_signature("rank(multiply(returns,ts_sum(returns,2)))", settings))
+    assert feedback.behavioral_signature("rank(ts_mean(close,2))", settings) != (
+        feedback.behavioral_signature("rank(ts_sum(close,2))", settings))
+
+
 def test_cockpit_repair_receives_exact_validation_code(tmp_path):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")
@@ -144,7 +169,8 @@ def test_four_failed_windows_exhaust_only_that_template():
         rows.append(row)
     evidence = feedback.build_feedback(rows, None, {}, continuous=True)
     assert ["reversal", "rank(ts_sum(returns,#))"] in evidence["exhausted_templates"]
-    assert ["reversal", "rank(ts_mean(returns,#))"] not in evidence["exhausted_templates"]
+    assert ("reversal", feedback.expression_template("rank(ts_mean(returns,7))")) in {
+        tuple(item) for item in evidence["exhausted_templates"]}
 
 
 def test_failed_children_do_not_ban_stronger_parent_or_new_template():
@@ -161,7 +187,7 @@ def test_failed_children_do_not_ban_stronger_parent_or_new_template():
     assert "reversal" in evidence["stopped_families"]
     assert evidence["seeds"][0]["id"] == parent["id"]
     proposal = plan()
-    proposal["cases"][0]["expression"] = "rank(ts_mean(returns,2))"
+    proposal["cases"][0]["expression"] = "rank(ts_std_dev(returns,2))"
     data = base()
-    data["allowed_operators"].append("ts_mean")
+    data["allowed_operators"].append("ts_std_dev")
     assert feedback.freeze_batch(data, evidence, proposal)["phase"] == "refinement"

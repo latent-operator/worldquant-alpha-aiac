@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from backend.models import MiningTask, ExperimentRun, ResearchCandidate, Alpha, TraceStep
 from backend.alpha_semantic_validator import compute_expression_hash
-from backend.services.ppa_feedback import build_feedback, digest, freeze_batch, research_row
+from backend.services.ppa_feedback import behavioral_signature, build_feedback, digest, freeze_batch, research_row
 from backend.services.ppa_eligibility import evaluate_ppa_candidate
 from backend.services.ppa_research_policy import evidence_metrics, seed_decision
 from backend.services.research_audit import ResearchLedger, ResearchBudgetBrain, safe_result, signature
@@ -86,6 +86,8 @@ async def feedback_context(db, task, run):
     context["continuous"] = continuous
     context["history_signatures"] = sorted({signature(row.expression, row.settings or {}) for row in rows
                                              if row.expression and row.validation_status == "VALID"})
+    context["history_behavioral_signatures"] = sorted({behavioral_signature(row.expression, row.settings or {})
+        for row in rows if row.expression and row.validation_status == "VALID"})
     context["unresolved_requests"] = sum(row.run_id == run.id and needs_reconciliation(row) for row in rows)
     if continuous:
         context["max_batch_cases"] = 4
