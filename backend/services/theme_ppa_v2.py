@@ -303,7 +303,9 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
             or current[case["case_id"]].request_status not in {"RESULT", "CACHED", "FAILED"}
             for case in batch_cases
         )
-        run.block_reason = "PPA_BATCH_READY" if unfinished else "AWAITING_RESEARCH_BATCH"
+        needs_batch_close = (run.checkpoint or {}).get("ppa_batch_cursor", 0) < len(batch_cases)
+        run.block_reason = ("PPA_BATCH_READY" if unfinished or needs_batch_close
+                            else "AWAITING_RESEARCH_BATCH")
         await db.commit()
     return {"resolved": resolved, "pending": remaining}
 
@@ -651,6 +653,11 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         run.checkpoint = {**(run.checkpoint or {}), "ppa_first_batch_reviewed": True}
         return await pause(db, task, run, "PPA_FIRST_BATCH_REVIEW")
     if len(finished) >= len(cases):
+        # A recovered final request may leave the cursor behind even though all
+        # original Alpha results are persisted. Close the batch before importing another.
+        run.checkpoint = {**(run.checkpoint or {}), "ppa_batch_cursor": len(cases),
+                          "ppa_batch_completed": list(range(len(cases)))}
+        await db.commit()
         if batch["phase"] == "confirmation" and await finish_confirmation(db, task, run, batch):
             return {"done": True, "reason": "PPA_READY"}
         from backend.services.ppa_quota import next_transport
