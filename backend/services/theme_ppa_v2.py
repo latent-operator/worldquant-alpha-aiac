@@ -308,7 +308,7 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
     return {"resolved": resolved, "pending": remaining}
 
 
-async def reconcile_qualification(db, task, run, brain, limit=5):
+async def reconcile_qualification(db, task, run, brain, limit=1):
     """Refresh existing Alpha evidence with GETs; never resimulate or submit."""
     if task.config.get("research_protocol") != "theme_ppa_v3" or run.task_id != task.id:
         raise ValueError("PPA_QUALIFICATION_SCOPE_INVALID")
@@ -319,6 +319,11 @@ async def reconcile_qualification(db, task, run, brain, limit=5):
         ResearchCandidate.wq_alpha_id.is_not(None),
     ).order_by(ResearchCandidate.id.desc()).execution_options(populate_existing=True))).scalars().all()
     now = datetime.now(timezone.utc)
+    shared_retry = (run.checkpoint or {}).get("ppa_qualification_retry_at")
+    try:
+        check_throttled = bool(shared_retry and datetime.fromisoformat(shared_retry) > now)
+    except (TypeError, ValueError):
+        check_throttled = False
     def due(row):
         retry = ((row.result_snapshot or {}).get("qualification_check") or {}).get("next_retry_at")
         if not retry:
@@ -330,7 +335,7 @@ async def reconcile_qualification(db, task, run, brain, limit=5):
     pending = [row for row in rows
                if (row.result_snapshot or {}).get("platform_ppa_evaluation", {}).get("status") == "PPA_PENDING"
                and due(row)]
-    selected = pending[:limit]
+    selected = [] if check_throttled else pending[:limit]
     async def fetch(row):
         alpha_id = row.wq_alpha_id
         old_corr = (row.result_snapshot or {}).get("power_pool_correlation")
@@ -369,13 +374,20 @@ async def reconcile_qualification(db, task, run, brain, limit=5):
         platform = evaluate_ppa_candidate(updated, task.config["ppa_manifest"], corr_value)
         final = (platform if platform["status"] != "PPA_READY" else
                  {**platform, "status": "PPA_PENDING", "reasons": ["ROBUSTNESS_REVIEW_PENDING"]})
-        next_retry = ((now + timedelta(minutes=5)).isoformat()
+        retry_seconds = max(60.0, min(3600.0, float(checked.get("retry_after") or 60)))
+        if checked.get("status") == "THROTTLED":
+            checkpoint = dict(run.checkpoint or {})
+            checkpoint["ppa_qualification_retry_at"] = (now + timedelta(seconds=retry_seconds)).isoformat()
+            run.checkpoint = checkpoint
+        next_retry = ((now + timedelta(seconds=retry_seconds if checked.get("status") == "THROTTLED" else 300)).isoformat()
                       if platform["status"] == "PPA_PENDING" else None)
         row.metrics = updated.get("metrics") or {}
         row.result_snapshot = {**updated, "platform_ppa_evaluation": platform,
                                "ppa_evaluation": final, "power_pool_correlation": corr_value,
                                "qualification_check": {"source": "WQ_ALPHA_CHECK",
                                    "status": checked.get("status"), "observed_at": now.isoformat(),
+                                   "http_status": checked.get("http_status"),
+                                   "retry_after": checked.get("retry_after"),
                                    "next_retry_at": next_retry}}
         await db.commit()
     batch = (run.checkpoint or {}).get("ppa_batch") or {}

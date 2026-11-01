@@ -1082,7 +1082,8 @@ class BrainAdapter:
             logger.error(f"Get alpha details error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _safe_api_call(self, method: str, endpoint: str, retry_writes: bool = True, **kwargs) -> httpx.Response:
+    async def _safe_api_call(self, method: str, endpoint: str, retry_writes: bool = True,
+                             retry_rate_limit: bool = True, **kwargs) -> httpx.Response:
         """
         Execute API call with auto-reauth on 401 and retry on 429/5xx.
         """
@@ -1108,6 +1109,8 @@ class BrainAdapter:
                 
                 # 2. Handle 429 Too Many Requests (Rate Limit)
                 if response.status_code == 429:
+                    if not retry_rate_limit:
+                        return response
                     retry_after = response.headers.get("Retry-After")
                     wait_time = float(retry_after) if retry_after else (2 ** (retries + 1))
                     logger.warning(f"429 Rate Limit for {endpoint}. Sleeping {wait_time}s (Attempt {retries+1}/{max_retries})")
@@ -1238,7 +1241,15 @@ class BrainAdapter:
             raise ValueError("PPA_ALPHA_ID_INVALID")
         deadline = asyncio.get_running_loop().time() + max(0, max_wait)
         for attempt in range(10):
-            response = await self._safe_api_call("GET", f"/alphas/{alpha_id}/check")
+            response = await self._safe_api_call("GET", f"/alphas/{alpha_id}/check",
+                                                 retry_rate_limit=False)
+            if response.status_code == 429:
+                try:
+                    retry_after = max(0.0, float(response.headers.get("Retry-After", 60)))
+                except (TypeError, ValueError):
+                    retry_after = 60.0
+                return {"status": "THROTTLED", "checks": [], "http_status": 429,
+                        "retry_after": retry_after}
             if response.status_code != 200:
                 return {"status": "ERROR", "checks": [], "http_status": response.status_code}
             try:
