@@ -504,6 +504,48 @@ async def test_paused_unknown_is_polled_from_original_location_and_fully_evaluat
 
 
 @pytest.mark.asyncio
+async def test_recovered_last_case_finishes_batch_without_resimulation(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    case = discovery()["cases"][0]
+    case["epoch"] = 1
+    settings = {**base["settings"], "region": "USA", "universe": "TOP3000", "delay": 1}
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True,
+                       "research_request_budget": None}
+        run.block_reason = "PPA_REQUEST_RECONCILIATION_PENDING"
+        run.checkpoint = {"ppa_epoch": 1, "ppa_phase_limit": 16,
+                          "ppa_batch": {"phase": "refinement", "cases": [case]},
+                          "ppa_batch_cursor": 0, "ppa_batch_completed": []}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="REFINEMENT",
+            family_id="theme_ppa_v3:nov", experiment_group=case["case_id"],
+            expression=case["expression"], expression_hash="expr", settings_hash="settings",
+            settings=settings, validation_status="VALID", request_status="UNKNOWN",
+            gate_failures=[], metrics={}, result_snapshot={"research_case": case,
+                "request": {"location": "/simulations/original"}}))
+        await db.commit()
+        class RecoveryBrain(Brain):
+            async def poll_existing_simulation(self, location):
+                return {"success": True, "alpha_id": "recovered", "status": "UNSUBMITTED",
+                        "stage": "IS", "metrics": {"sharpe": 0.8, "fitness": 0.4,
+                        "test_sharpe": 0.3, "amer_sharpe": 0.7}}
+            async def simulate_single(self, *args, **kwargs):
+                pytest.fail("Recovered case must not be posted again")
+        brain = RecoveryBrain()
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"}
+                               for name in base["datasets"]["dataset1"]]}
+        async def quality(**kwargs): return "OPTIMIZE"
+        assert (await workflow.reconcile_paused(db, task, run, brain, fields,
+                                                quality_evaluator=quality))["pending"] == 0
+        assert run.block_reason == "PPA_BATCH_READY"
+        task.status = run.status = "RUNNING"
+        await workflow.run_parallel_batch(db, brain, task, run, run.checkpoint["ppa_batch"],
+                                          base, fields, quality, object())
+        assert run.checkpoint["ppa_batch_cursor"] == 1
+        assert run.checkpoint["ppa_batch_completed"] == [0]
+
+
+@pytest.mark.asyncio
 async def test_paused_multi_child_recovers_by_parent_and_expression(async_engine, monkeypatch):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     case = discovery()["cases"][0]
