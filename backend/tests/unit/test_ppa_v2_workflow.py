@@ -68,9 +68,12 @@ class Brain:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("transport,expected_pairs", [("single", 0), ("paired_multi", 2)])
+@pytest.mark.parametrize("transport,expected_pairs,history,expected_peak", [
+    ("single", 0, [], 2), ("paired_multi", 2, [], 2),
+    ("single", 0, [{"transport": "single", "concurrency": 2, "completed": 4,
+                    "wall_seconds": 600, "unknown": 0, "rate_limited": False}] * 2, 4)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
-                                                                  transport, expected_pairs):
+                                                                  transport, expected_pairs, history, expected_peak):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -112,7 +115,7 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
                        "research_request_budget": None, "continuous_mode": True}
         run.checkpoint = {"ppa_phase_limit": 16, "ppa_transport": transport,
-                          "ppa_max_in_flight": 2}
+                          "ppa_max_in_flight": 2, "ppa_throughput_history": history}
         run.config_snapshot = {"task": {"config": task.config}}
         await db.commit()
         evidence = await workflow.feedback_context(db, task, run)
@@ -128,7 +131,7 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         await db.commit()
         fields = {"dataset1": [{"id": name, "type": "MATRIX"} for name in base["datasets"]["dataset1"]]}
         await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
-        assert brain.peak >= 2
+        assert brain.peak >= expected_peak
         assert brain.pairs == expected_pairs
         assert len((await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == rid))).scalars().all()) == 4

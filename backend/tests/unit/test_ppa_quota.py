@@ -37,6 +37,17 @@ def test_parallelism_ramps_only_after_measured_batch_and_selects_best():
     assert choose_parallelism(4, [two, {**four, "unknown": 1}]) == 2
 
 
+def test_four_case_batches_accumulate_evidence_for_each_ramp():
+    two = {"transport": "single", "concurrency": 2, "completed": 4,
+           "wall_seconds": 600, "unknown": 0, "rate_limited": False}
+    four = {"transport": "single", "concurrency": 4, "completed": 4,
+            "wall_seconds": 350, "unknown": 0, "rate_limited": False}
+    assert choose_parallelism(2, [two]) == 2
+    assert choose_parallelism(2, [two, two]) == 4
+    assert choose_parallelism(4, [two, two, four]) == 4
+    assert choose_parallelism(4, [two, two, four, four]) == 8
+
+
 def test_quota_restores_only_unexpired_observation():
     now = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
     recent = {"request": {"rate_limit": {"remaining": 3, "reset_seconds": 3600},
