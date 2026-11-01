@@ -135,6 +135,32 @@ def test_refinement_generation_clamps_to_remaining_slots(tmp_path):
     assert "at most 2 cases" in prompts[0]
 
 
+def test_discovery_top_up_combines_distinct_complete_groups(tmp_path):
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    def group(prefix, start):
+        return [{"case_id": f"{prefix}{index}", "pair_id": prefix,
+                 "arm": "CONTROL" if index == 0 else "TREATMENT",
+                 "dataset_id": "pv1", "mechanism_id": "reversal",
+                 "expression": f"rank(ts_sum(returns,{start + index}))",
+                 "changed_element": "window", "expected_effect": "AMER test",
+                 "risk": "noise", "stop_condition": "no gain"} for index in range(4)]
+    proposals = iter([{"phase": "discovery", "cases": group("g1", 2)},
+                      {"phase": "discovery", "cases": group("g2", 7)}])
+    calls = []
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(stdout=json.dumps(next(proposals)))
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    assert evidence["next_phase"] == "discovery"
+    evidence["max_batch_cases"] = 8
+    batch = feedback.prepare_batch_filled(base(), evidence, script, runner=runner)
+    assert len(batch["cases"]) == 8
+    assert len(calls) == 2
+    assert batch["candidate_generation"]["top_up_calls"] == 2
+    assert {case["pair_id"] for case in batch["cases"]} == {"g1", "g2"}
+
+
 def test_cockpit_failure_does_not_fallback_or_retry(tmp_path):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")

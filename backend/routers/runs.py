@@ -116,6 +116,24 @@ async def post_ppa_reconcile(run_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
+@router.post("/{run_id}/ppa-qualification-reconcile")
+async def post_ppa_qualification_reconcile(run_id: int, db: AsyncSession = Depends(get_db)):
+    """Refresh existing Alpha checks with WQ GETs only; no simulation or submission."""
+    from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
+    from backend.models import ExperimentRun, MiningTask
+    from backend.services.theme_ppa_v2 import reconcile_qualification
+
+    run = await db.get(ExperimentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    task = await db.get(MiningTask, run.task_id)
+    try:
+        async with MCPBrainAdapter() as brain:
+            return await reconcile_qualification(db, task, run, brain)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 # =============================================================================
 # DEPENDENCY INJECTION
 # =============================================================================

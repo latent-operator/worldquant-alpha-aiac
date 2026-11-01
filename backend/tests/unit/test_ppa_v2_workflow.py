@@ -70,8 +70,8 @@ class Brain:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport,expected_pairs,history,expected_peak", [
     ("single", 0, [], 2), ("paired_multi", 2, [], 2),
-    ("single", 0, [{"transport": "single", "concurrency": 2, "completed": 4,
-                    "wall_seconds": 600, "unknown": 0, "rate_limited": False}] * 2, 4)])
+    ("single", 0, [{"transport": "single", "concurrency": 2, "completed": 12,
+                    "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
                                                                   transport, expected_pairs, history, expected_peak):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
@@ -115,7 +115,8 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
                        "research_request_budget": None, "continuous_mode": True}
         run.checkpoint = {"ppa_phase_limit": 16, "ppa_transport": transport,
-                          "ppa_max_in_flight": 2, "ppa_throughput_history": history}
+                          "ppa_max_in_flight": 2, "ppa_throughput_history": history,
+                          "ppa_first_batch_reviewed": True}
         run.config_snapshot = {"task": {"config": task.config}}
         await db.commit()
         evidence = await workflow.feedback_context(db, task, run)
@@ -133,12 +134,14 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
         assert brain.peak >= expected_peak
         assert brain.pairs == expected_pairs
+        assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] >= expected_peak
         assert len((await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == rid))).scalars().all()) == 4
 
 
 @pytest.mark.asyncio
-async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch):
+@pytest.mark.parametrize("remaining,expected_max_wait", [(4900, 120), (0, 3700)])
+async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch, remaining, expected_max_wait):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class PreparedLedger:
         def __init__(self, *args, **kwargs): pass
@@ -152,7 +155,8 @@ async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch):
         async def simulate_single(self, expression, **settings):
             self.calls += 1
             return {"success": False, "http_status": 429, "retry_after": 30,
-                    "error": "rate limited"}
+                    "rate_limit": {"limit": 5000, "remaining": remaining,
+                                   "reset_seconds": 3600}, "error": "rate limited"}
     async def quality(**kwargs): return "OPTIMIZE"
     brain = LimitedBrain()
     async with maker() as db:
@@ -178,6 +182,150 @@ async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch):
         assert result["reason"] == "PPA_RATE_LIMIT"
         assert brain.calls <= 2
         assert run.next_retry_at is not None
+        from datetime import datetime, timezone
+        wait = (run.next_retry_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+        assert 0 <= wait <= expected_max_wait
+        if remaining == 0:
+            assert wait > 3500
+
+
+@pytest.mark.asyncio
+async def test_pending_platform_qualification_does_not_stop_new_research(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    class PreparedLedger:
+        def __init__(self, *args, **kwargs): pass
+        async def recover(self, *args): return None
+        async def reserve(self, *args, **kwargs): return 1, None
+        async def mark_requested(self, *args): pass
+        async def finish(self, *args): pass
+    monkeypatch.setattr(workflow, "ResearchLedger", PreparedLedger)
+    class PendingBrain(Brain):
+        async def simulate_single(self, expression, **settings):
+            result = await super().simulate_single(expression, **settings)
+            return {**result, "classifications": [], "themes": [], "checks": [],
+                    "platform_can_submit": False}
+    async def quality(**kwargs): return "OPTIMIZE"
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "research_request_budget": None, "continuous_mode": True}
+        run.checkpoint = {"ppa_phase_limit": 16, "ppa_max_in_flight": 2,
+                          "ppa_first_batch_reviewed": True}
+        run.config_snapshot = {"task": {"config": task.config}}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        await workflow.import_batch(db, task, run, freeze_batch(base, evidence, discovery()))
+        for case in discovery()["cases"]:
+            db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+                family_id="theme_ppa_v3:nov", experiment_group=case["case_id"],
+                expression=case["expression"], expression_hash=case["case_id"],
+                settings_hash="settings", settings={}, validation_status="VALID",
+                request_status="NOT_REQUESTED", gate_failures=[], metrics={},
+                result_snapshot={"research_case": case}))
+        task.status = run.status = "RUNNING"
+        await db.commit()
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"}
+                               for name in base["datasets"]["dataset1"]]}
+        result = await workflow.run_theme_v2(db, PendingBrain(), task, run, fields,
+                                             quality_evaluator=quality)
+        assert result["reason"] == "AWAITING_RESEARCH_BATCH"
+        rows = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id == rid))).scalars().all()
+        assert all((row.result_snapshot or {})["ppa_evaluation"]["status"] == "PPA_PENDING"
+                   for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_qualification_reconcile_reads_original_alpha_and_releases_pending_pause(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3"}
+        run.block_reason = "PPA_QUALIFICATION_EVIDENCE_PENDING"
+        run.checkpoint = {"ppa_batch": {"phase": "confirmation", "cases": [{"case_id": "pending1"}]},
+                          "ppa_batch_cursor": 1, "ppa_max_in_flight": 8,
+                          "ppa_transport": "paired_multi"}
+        row = ResearchCandidate(task_id=tid, run_id=rid, source="REFINEMENT",
+            family_id="theme_ppa_v3:nov", experiment_group="pending1",
+            expression="rank(field_0_1)", expression_hash="pending1", settings_hash="settings",
+            settings={}, validation_status="VALID", request_status="RESULT",
+            wq_alpha_id="alpha-957", gate_failures=[], metrics={"amer_sharpe": 1.06},
+            result_snapshot={"success": True, "alpha_id": "alpha-957", "stage": "IS",
+                "status": "UNSUBMITTED", "classifications": [], "themes": [], "checks": [],
+                "metrics": {"amer_sharpe": 1.06},
+                "platform_ppa_evaluation": {"status": "PPA_PENDING"},
+                "ppa_evaluation": {"status": "PPA_PENDING"}})
+        db.add(row)
+        await db.commit()
+        class ReadOnlyBrain:
+            calls = []
+            active = 0
+            peak = 0
+            async def overlap(self):
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+                await asyncio.sleep(0.01)
+                self.active -= 1
+            async def read_pre_submit_checks(self, alpha_id, max_wait=10):
+                self.calls.append(("check", alpha_id))
+                await self.overlap()
+                return {"status": "COMPLETE", "checks": [
+                    {"name": "LOW_GLB_AMER_SHARPE", "result": "PASS", "value": 1.06},
+                    {"name": "LOW_SHARPE", "result": "FAIL", "value": 0.8}]}
+            async def get_alpha_evidence(self, alpha_id):
+                self.calls.append(("details", alpha_id))
+                await self.overlap()
+                return {"success": True, "alpha_id": alpha_id, "stage": "IS",
+                        "status": "UNSUBMITTED", "classifications": [], "themes": [],
+                        "metrics": {"amer_sharpe": 1.06, "sharpe": 0.8}}
+            async def check_power_pool_correlation(self, alpha_id):
+                self.calls.append(("power_pool_corr", alpha_id))
+                await self.overlap()
+                return {"max": 0.3}
+        brain = ReadOnlyBrain()
+        confirmation_calls = []
+        async def reviewed(*args):
+            confirmation_calls.append(1)
+            return False
+        monkeypatch.setattr(workflow, "finish_confirmation", reviewed)
+        result = await workflow.reconcile_qualification(db, task, run, brain)
+        await db.refresh(row)
+        assert result["reviewed"] == 1
+        assert row.result_snapshot["platform_ppa_evaluation"]["status"] == "PPA_REJECTED"
+        assert row.result_snapshot["qualification_check"]["source"] == "WQ_ALPHA_CHECK"
+        assert run.block_reason == "AWAITING_RESEARCH_BATCH"
+        assert run.checkpoint["ppa_max_in_flight"] == 2
+        assert run.checkpoint["ppa_transport"] == "single"
+        assert {alpha for _, alpha in brain.calls} == {"alpha-957"}
+        assert brain.peak >= 2
+        assert confirmation_calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_continuous_result_defers_qualification_gets_to_coordinator(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    case = discovery()["cases"][0]
+    class CountingBrain(Brain):
+        checks = 0
+        async def check_power_pool_correlation(self, alpha):
+            self.checks += 1
+            return {"max": 0.2}
+    async def quality(**kwargs): return "OPTIMIZE"
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3"}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+            family_id="theme_ppa_v3:nov", experiment_group=case["case_id"],
+            expression=case["expression"], expression_hash="e1", settings_hash="s1",
+            settings={}, validation_status="VALID", request_status="RESULT",
+            gate_failures=[], metrics={}, result_snapshot={"research_case": case}))
+        await db.commit()
+        brain = CountingBrain()
+        result = await brain.simulate_single(case["expression"])
+        settings = {**base["settings"], "region": task.region,
+                    "universe": task.universe, "delay": 1}
+        await workflow.persist_result(db, brain, task, run, case, settings, result,
+                                      "discovery", quality, [])
+        assert brain.checks == 0
 
 
 @pytest.mark.asyncio

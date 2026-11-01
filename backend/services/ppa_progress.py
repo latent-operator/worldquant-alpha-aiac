@@ -1,6 +1,6 @@
 """Auditable progress, never a prediction of time-to-PASS."""
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from backend.services.ppa_feedback import research_row
 from backend.services.ppa_research_policy import evidence_metrics, effective_improvement
 
@@ -96,6 +96,36 @@ def progress_report(rows, current_run_id, checkpoint=None):
                           and isinstance(request.get("rate_limit"), dict)]
     latest_quota = (max(quota_observations, key=lambda request: request["rate_limit_observed_at"])
                     if quota_observations else None)
+    observed_quota = None
+    daily_window = None
+    if latest_quota:
+        observed_quota = {**latest_quota["rate_limit"],
+                          "observed_at": latest_quota["rate_limit_observed_at"]}
+        limit, remaining = observed_quota.get("limit"), observed_quota.get("remaining")
+        if type(limit) is int and type(remaining) is int and 0 <= remaining <= limit:
+            observed_quota["account_spent"] = limit - remaining
+        reset_seconds = observed_quota.get("reset_seconds")
+        if type(reset_seconds) is int and reset_seconds >= 0:
+            try:
+                observed_at = datetime.fromisoformat(observed_quota["observed_at"])
+                reset_at = observed_at + timedelta(seconds=reset_seconds)
+                started_at = reset_at - timedelta(days=1)
+                as_of = min(datetime.now(timezone.utc), reset_at)
+                successful = 0
+                for row in raw:
+                    if row.get("run_id") != current_run_id or row.get("request_status") != "RESULT":
+                        continue
+                    finished_at = ((row.get("result_snapshot") or {}).get("request") or {}).get("finished_at")
+                    try:
+                        successful += started_at <= datetime.fromisoformat(finished_at) <= as_of
+                    except (TypeError, ValueError):
+                        continue
+                hours = max(0.0, (as_of - started_at).total_seconds() / 3600)
+                daily_window = {"started_at": started_at.isoformat(), "reset_at": reset_at.isoformat(),
+                                "successful_results": successful, "elapsed_hours": round(hours, 3),
+                                "successful_per_hour": round(successful / hours, 3) if hours else None}
+            except (TypeError, ValueError, OverflowError):
+                pass
     pause_seconds = checkpoint.get("ppa_pause_seconds")
     pause_by_reason = dict(checkpoint.get("ppa_pause_by_reason") or {})
     if checkpoint.get("ppa_pause_started_at"):
@@ -114,10 +144,11 @@ def progress_report(rows, current_run_id, checkpoint=None):
                 "gap": max(0, 1 - best["metrics"]["amer_sharpe"])} if best else None,
             "ppa_ready": sum(row["ppa_evaluation"].get("status") == "PPA_READY" for row in measured),
             "evidence_reasons": dict(missing), "cached_results": sum(r["request_status"] == "CACHED" for r in raw),
-            "observed_quota": ({**latest_quota["rate_limit"],
-                                "observed_at": latest_quota["rate_limit_observed_at"]}
-                               if latest_quota else None),
+            "observed_quota": observed_quota,
+            "daily_window": daily_window,
             "parallelism": checkpoint.get("ppa_max_in_flight", 1),
+            "actual_parent_peak": ((checkpoint.get("ppa_throughput_history") or [])[-1].get("parent_peak")
+                                   if checkpoint.get("ppa_throughput_history") else None),
             "batch_throughput": (checkpoint.get("ppa_throughput_history") or [])[-20:],
             "timing": {"wq_seconds": sum(durations) if durations else None,
                        "wq_wall_seconds": interval_union_seconds(intervals) if intervals else None,

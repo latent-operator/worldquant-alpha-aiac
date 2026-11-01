@@ -436,6 +436,14 @@ class MCPBrainAdapter:
         payload = await fallback.check_power_pool_correlation(alpha_id)
         return {"max": _max_correlation(payload), "source": "brain_api_power_pool"}
 
+    async def read_pre_submit_checks(self, alpha_id: str, max_wait: float = 10.0) -> Dict[str, Any]:
+        fallback = await self._ensure_fallback()
+        return await fallback.read_pre_submit_checks(alpha_id, max_wait=max_wait)
+
+    async def get_alpha_evidence(self, alpha_id: str) -> Dict[str, Any]:
+        fallback = await self._ensure_fallback()
+        return await fallback.get_alpha_evidence(alpha_id)
+
     async def get_datasets(self, region: str = "USA", delay: int = 1, universe: str = "TOP3000") -> List[Dict[str, Any]]:
         if await self.mcp.is_tool_enabled("get_datasets"):
             try:

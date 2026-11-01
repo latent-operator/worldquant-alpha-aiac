@@ -254,6 +254,104 @@ def test_watcher_waits_for_rate_reset_then_resumes_same_run(tmp_path, monkeypatc
     assert calls[-1][1] == {"action": "RESUME"}
 
 
+def test_watcher_refreshes_pending_qualification_and_keeps_existing_run(tmp_path, monkeypatch):
+    calls = []
+    def request(url, payload=None):
+        calls.append((url, payload))
+        if url.endswith("/tasks/14"):
+            return {"status": "PAUSED"}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 18, "status": "PAUSED",
+                     "block_reason": "PPA_QUALIFICATION_EVIDENCE_PENDING"}]
+        if url.endswith("/ppa-qualification-reconcile"):
+            return {"reviewed": 2, "pending": 1}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    result = watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 18,
+                                  tmp_path / "ask.ps1", tmp_path)
+    assert result == "QUALIFICATION_RECONCILED"
+    assert any(url.endswith("/ppa-qualification-reconcile") for url, _ in calls)
+
+
+def test_watcher_qualifies_existing_alphas_while_simulation_runs(tmp_path, monkeypatch):
+    calls = []
+    def request(url, payload=None):
+        calls.append(url)
+        if url.endswith("/tasks/14"):
+            return {"status": "RUNNING"}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 18, "status": "RUNNING", "block_reason": None}]
+        if url.endswith("/ppa-qualification-reconcile"):
+            return {"reviewed": 1, "pending": 2}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    assert watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 18,
+                                tmp_path / "ask.ps1", tmp_path) == "WAIT"
+    assert any(url.endswith("/ppa-qualification-reconcile") for url in calls)
+
+
+def test_watcher_prefetches_next_discovery_batch_while_worker_is_busy(tmp_path, monkeypatch):
+    calls = []
+    def request(url, payload=None):
+        calls.append(url)
+        if url.endswith("/tasks/14"):
+            return {"status": "RUNNING"}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 18, "status": "RUNNING", "block_reason": None,
+                     "checkpoint": {"ppa_batch": {"phase": "discovery", "cases": [{}] * 8},
+                                    "ppa_batch_cursor": 4}}]
+        if url.endswith("/ppa-qualification-reconcile"):
+            return {"reviewed": 0, "pending": 0}
+        if url.endswith("/ppa-feedback"):
+            return {"epoch": 3, "next_phase": "discovery", "base": {}}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    generated = []
+    def prepare(*args):
+        generated.append(1)
+        return {"phase": "discovery", "cases": [{"case_id": "p1"}],
+                "candidate_generation": {"plan_sha256": "abc"}}
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", prepare)
+    args = ("http://127.0.0.1:8003/api/v1", 14, 18, tmp_path / "ask.ps1", tmp_path)
+    assert watch_theme_ppa.step(*args) == "WAIT"
+    assert (tmp_path / "run-18-prefetch.json").exists()
+    assert watch_theme_ppa.step(*args) == "WAIT"
+    assert len(generated) == 1
+
+
+def test_watcher_revalidates_prefetch_against_current_feedback_before_import(tmp_path, monkeypatch):
+    prefetched = tmp_path / "run-18-prefetch.json"
+    prefetched.write_text(json.dumps({"epoch": 3, "phase": "discovery",
+                                      "cases": [{"case_id": "p1"}]}), encoding="utf-8")
+    calls = []
+    def request(url, payload=None):
+        calls.append((url, payload))
+        if url.endswith("/tasks/14"):
+            return {"status": "PAUSED"}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 18, "status": "PAUSED", "block_reason": "AWAITING_RESEARCH_BATCH"}]
+        if url.endswith("/ppa-feedback"):
+            return {"epoch": 3, "next_phase": "discovery", "unresolved_requests": 0,
+                    "base": {"theme_id": "current"}, "evidence_hash": "current-hash"}
+        if url.endswith("/ppa-batch") or url.endswith("/intervene"):
+            return {"ok": True}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    def freeze(base, evidence, proposal):
+        assert evidence["evidence_hash"] == "current-hash"
+        assert proposal["cases"][0]["case_id"] == "p1"
+        return {"phase": "discovery", "cases": proposal["cases"],
+                "candidate_generation": {"plan_sha256": "new-hash"}}
+    monkeypatch.setattr(watch_theme_ppa, "freeze_batch", freeze)
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", lambda *args: pytest.fail("must reuse prefetch"))
+    result = watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 18,
+                                  tmp_path / "ask.ps1", tmp_path)
+    assert result.startswith("IMPORTED:")
+    assert not prefetched.exists()
+    imported = next(payload for url, payload in calls if url.endswith("/ppa-batch"))
+    assert imported["candidate_generation"]["plan_sha256"] == "new-hash"
+
+
 def test_watcher_retries_cockpit_failure_and_records_heartbeat(tmp_path):
     attempts = []
     def once():

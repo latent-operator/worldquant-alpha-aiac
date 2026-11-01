@@ -11,7 +11,7 @@ import time
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from backend.services.ppa_feedback import prepare_batch
+from backend.services.ppa_feedback import prepare_batch_filled as prepare_batch, freeze_batch
 
 
 class CoordinatorRetryExhausted(Exception):
@@ -87,6 +87,25 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
     if task["status"] in {"COMPLETED", "STOPPED", "FAILED"}:
         return "STOP"
     if task["status"] == "RUNNING":
+        if run["status"] == "RUNNING":
+            request_json(f"{api}/runs/{run_id}/ppa-qualification-reconcile", {})
+            checkpoint = run.get("checkpoint") or {}
+            active = checkpoint.get("ppa_batch") or {}
+            cases = active.get("cases") or []
+            prefetch_path = output_dir / f"run-{run_id}-prefetch.json"
+            if (active.get("phase") == "discovery" and len(cases) >= 4
+                    and checkpoint.get("ppa_batch_cursor", 0) >= len(cases) // 2
+                    and not prefetch_path.exists()):
+                evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
+                if evidence.get("next_phase") == "discovery" and not evidence.get("unresolved_requests"):
+                    prospective = prepare_batch(evidence["base"], evidence, cockpit_script)
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    payload = {"epoch": evidence["epoch"], "phase": prospective["phase"],
+                               "cases": prospective["cases"],
+                               "candidate_generation": prospective["candidate_generation"]}
+                    temporary = prefetch_path.with_suffix(".tmp")
+                    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                    temporary.replace(prefetch_path)
         return "WAIT"
     if task["status"] != "PAUSED" or run["status"] != "PAUSED":
         raise ValueError("PPA_RUN_STATE_UNEXPECTED")
@@ -108,6 +127,9 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
     if reason == "PPA_REQUEST_RECONCILIATION_PENDING":
         recovered = request_json(f"{api}/runs/{run_id}/ppa-reconcile", {})
         return "WAIT_RECONCILE" if recovered["pending"] else "RECONCILED"
+    if reason == "PPA_QUALIFICATION_EVIDENCE_PENDING":
+        request_json(f"{api}/runs/{run_id}/ppa-qualification-reconcile", {})
+        return "QUALIFICATION_RECONCILED"
     if reason == "PPA_RATE_LIMIT":
         retry_at = run.get("next_retry_at")
         if not retry_at:
@@ -132,11 +154,27 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
         evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
         if evidence["next_phase"] is None:
             raise ValueError(f"PPA_NO_NEXT_PHASE:{evidence['stop_reason']}")
-    batch = prepare_batch(evidence["base"], evidence, cockpit_script)
+    prefetch_path = output_dir / f"run-{run_id}-prefetch.json"
+    batch = None
+    if prefetch_path.exists():
+        try:
+            prospective = json.loads(prefetch_path.read_text(encoding="utf-8"))
+            if (prospective.get("epoch") == evidence["epoch"]
+                    and prospective.get("phase") == evidence["next_phase"]):
+                batch = freeze_batch(evidence["base"], evidence, prospective)
+                batch["candidate_generation"].update({
+                    key: value for key, value in (prospective.get("candidate_generation") or {}).items()
+                    if key in {"generation_seconds", "validation_attempts", "top_up_calls"}})
+        except (ValueError, TypeError, KeyError):
+            batch = None
+    if batch is None:
+        batch = prepare_batch(evidence["base"], evidence, cockpit_script)
     output_dir.mkdir(parents=True, exist_ok=True)
     batch_path = output_dir / f"run-{run_id}-epoch-{evidence['epoch']}-{batch['phase']}-{batch['candidate_generation']['plan_sha256'][:12]}.json"
     batch_path.write_text(json.dumps(batch, indent=2, ensure_ascii=False), encoding="utf-8")
     request_json(f"{api}/runs/{run_id}/ppa-batch", batch)
+    if prefetch_path.exists():
+        prefetch_path.unlink()
     request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME"})
     return f"IMPORTED:{batch_path.name}"
 
