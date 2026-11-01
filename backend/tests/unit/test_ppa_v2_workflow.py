@@ -244,6 +244,13 @@ async def test_qualification_reconcile_reads_original_alpha_and_releases_pending
         run.checkpoint = {"ppa_batch": {"phase": "confirmation", "cases": [{"case_id": "pending1"}]},
                           "ppa_batch_cursor": 1, "ppa_max_in_flight": 8,
                           "ppa_transport": "paired_multi"}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="REFINEMENT",
+            family_id="theme_ppa_v3:nov", experiment_group="older-pending",
+            expression="rank(field_0_2)", expression_hash="older-pending", settings_hash="settings",
+            settings={}, validation_status="VALID", request_status="RESULT",
+            wq_alpha_id="alpha-older", gate_failures=[], metrics={},
+            result_snapshot={"platform_ppa_evaluation": {"status": "PPA_PENDING"},
+                             "ppa_evaluation": {"status": "PPA_PENDING"}}))
         row = ResearchCandidate(task_id=tid, run_id=rid, source="REFINEMENT",
             family_id="theme_ppa_v3:nov", experiment_group="pending1",
             expression="rank(field_0_1)", expression_hash="pending1", settings_hash="settings",
@@ -298,6 +305,44 @@ async def test_qualification_reconcile_reads_original_alpha_and_releases_pending
         assert {alpha for _, alpha in brain.calls} == {"alpha-957"}
         assert brain.peak >= 2
         assert confirmation_calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_qualification_429_sets_shared_cooldown_and_does_not_retry(async_engine, monkeypatch):
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3"}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="REFINEMENT",
+            family_id="theme_ppa_v3:nov", experiment_group="pending-429",
+            expression="rank(field_0_1)", expression_hash="pending-429",
+            settings_hash="settings", settings={}, validation_status="VALID",
+            request_status="RESULT", wq_alpha_id="alpha-429", gate_failures=[],
+            metrics={}, result_snapshot={"platform_ppa_evaluation": {"status": "PPA_PENDING"}}))
+        await db.commit()
+
+        class ThrottledBrain:
+            checks = 0
+            async def read_pre_submit_checks(self, alpha_id, max_wait=10):
+                self.checks += 1
+                return {"status": "THROTTLED", "checks": [], "http_status": 429,
+                        "retry_after": 90.0}
+            async def get_alpha_evidence(self, alpha_id):
+                return {}
+            async def check_power_pool_correlation(self, alpha_id):
+                return {}
+
+        brain = ThrottledBrain()
+        first = await workflow.reconcile_qualification(db, task, run, brain)
+        second = await workflow.reconcile_qualification(db, task, run, brain)
+        assert first["reviewed"] == 1
+        assert second["reviewed"] == 0
+        assert brain.checks == 1
+        assert run.checkpoint["ppa_qualification_retry_at"]
+        row = (await db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.experiment_group == "pending-429"))).scalar_one()
+        assert row.result_snapshot["qualification_check"]["http_status"] == 429
+        assert row.result_snapshot["platform_ppa_evaluation"]["status"] == "PPA_PENDING"
 
 
 @pytest.mark.asyncio
