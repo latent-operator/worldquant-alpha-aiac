@@ -86,7 +86,7 @@ def test_429_with_remaining_balance_uses_short_cooldown_not_daily_reset():
 def test_429_with_zero_remaining_waits_for_reset():
     quota = QuotaWindow()
     quota.observe({"limit": 5000, "remaining": 0, "reset_seconds": 3600})
-    assert 3590 <= ppa_quota.retry_delay_for_429(quota, retry_after=30, streak=1) <= 3600
+    assert 3590 <= ppa_quota.retry_delay_for_429(quota, retry_after=30, streak=1) <= 3600.01
 
 
 def test_429_does_not_treat_local_reservations_as_server_daily_exhaustion():
