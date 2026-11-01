@@ -282,3 +282,54 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
                 prompt += (f"\nPrevious response failed validation with {type(exc).__name__}:{exc}. "
                            f"The next JSON phase MUST be {phase}. "
                            "Return corrected bounded JSON satisfying the original constraints.")
+
+
+def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.run):
+    """Top up one frozen batch with distinct valid hypotheses, without filler."""
+    phase = evidence.get("next_phase")
+    if phase not in {"discovery", "refinement"}:
+        return prepare_batch(base, evidence, cockpit_script, runner=runner)
+    capacity = evidence.get("phase_limit", 12) - evidence.get("phase_counts", {}).get(phase, 0)
+    if evidence.get("max_batch_cases") is not None:
+        capacity = min(capacity, evidence["max_batch_cases"])
+    if evidence.get("budget_remaining") is not None:
+        capacity = min(capacity, evidence["budget_remaining"] - 2)
+    if phase == "discovery":
+        capacity -= capacity % 4
+    if capacity <= 0:
+        raise ValueError("PPA_BATCH_PHASE_LIMIT")
+    combined, attempts, proposed, truncated, seconds, calls = [], 0, 0, 0, 0.0, 0
+    last_error = None
+    for _ in range(4):
+        remaining = capacity - len(combined)
+        if remaining <= 0:
+            break
+        calls += 1
+        updated = {**evidence, "max_batch_cases": remaining,
+                   "history_signatures": [*(evidence.get("history_signatures") or []),
+                       *(signature(item["expression"], case_settings(base, item.get("settings") or {}))
+                         for item in combined)],
+                   "history_behavioral_signatures": [*(evidence.get("history_behavioral_signatures") or []),
+                       *(behavioral_signature(item["expression"], case_settings(base, item.get("settings") or {}))
+                         for item in combined)],
+                   "proposed_avoid_expressions": [item["expression"] for item in combined]}
+        try:
+            part = prepare_batch(base, updated, cockpit_script, runner=runner)
+            candidate = [*combined, *part["cases"]]
+            frozen = freeze_batch(base, evidence, {"phase": phase, "cases": candidate})
+        except (ValueError, KeyError, TypeError) as exc:
+            if not combined:
+                raise
+            last_error = f"{type(exc).__name__}:{exc}"
+            break
+        combined = frozen["cases"]
+        generation = part["candidate_generation"]
+        attempts += generation.get("validation_attempts", 1)
+        proposed += generation.get("proposed_cases", len(part["cases"]))
+        truncated += generation.get("truncated_cases", 0)
+        seconds += generation.get("generation_seconds", 0)
+    frozen["candidate_generation"].update(
+        proposed_cases=proposed, truncated_cases=truncated,
+        generation_seconds=round(seconds, 3), validation_attempts=attempts,
+        top_up_calls=calls, top_up_error=last_error)
+    return frozen

@@ -1231,6 +1231,38 @@ class BrainAdapter:
         """Read the dedicated Power Pool correlation endpoint, never PROD."""
         return await self.check_correlation(alpha_id, check_type="POWER-POOL")
 
+    async def read_pre_submit_checks(self, alpha_id: str, max_wait: float = 10.0) -> Dict:
+        """Read the original Alpha's checks without submitting or resimulating it."""
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", str(alpha_id)):
+            raise ValueError("PPA_ALPHA_ID_INVALID")
+        deadline = asyncio.get_running_loop().time() + max(0, max_wait)
+        for attempt in range(10):
+            response = await self._safe_api_call("GET", f"/alphas/{alpha_id}/check")
+            if response.status_code != 200:
+                return {"status": "ERROR", "checks": [], "http_status": response.status_code}
+            try:
+                payload = response.json()
+                checks = (payload.get("is") or {}).get("checks") or []
+            except (AttributeError, TypeError, ValueError):
+                return {"status": "ERROR", "checks": [], "http_status": 200}
+            if isinstance(checks, list) and checks:
+                return {"status": "COMPLETE", "checks": checks, "http_status": 200}
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0 or attempt == 9 or "Retry-After" not in response.headers:
+                break
+            try:
+                delay = max(0, float(response.headers["Retry-After"]))
+            except (TypeError, ValueError):
+                delay = 1.0
+            if delay:
+                await asyncio.sleep(min(delay, remaining))
+        return {"status": "PENDING", "checks": [], "http_status": 200}
+
+    async def get_alpha_evidence(self, alpha_id: str) -> Dict:
+        """Refresh details of an existing Alpha by ID, with a bounded wait."""
+        return await self._get_completed_alpha_details(alpha_id, max_wait=10)
+
     async def get_user_alphas(self, limit: int = 100, offset: int = 0, stage: str = None, search: str = None, start_date: str = None) -> Dict:
         """
         Get user's alphas with pagination.

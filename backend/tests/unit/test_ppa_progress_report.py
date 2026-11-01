@@ -72,11 +72,16 @@ def test_report_exposes_observed_quota_and_batch_throughput():
     rows = [dict(id=1, run_id=2, request_status="RESULT", source="DISCOVERY", metrics={},
                  result_snapshot={"request": {"rate_limit": {"limit": 500, "remaining": 17,
                                                                "reset_seconds": 3600},
-                                              "rate_limit_observed_at": "2026-10-31T12:00:00+00:00"}})]
+                                              "rate_limit_observed_at": "2026-10-31T12:00:00+00:00",
+                                              "finished_at": "2026-10-31T12:00:00+00:00"}})]
     checkpoint = {"ppa_max_in_flight": 4, "ppa_throughput_history": [
-        {"concurrency": 2, "completed": 12, "wall_seconds": 120, "unknown": 0,
+        {"concurrency": 2, "parent_peak": 2, "parent_groups": 2,
+         "completed": 12, "wall_seconds": 120, "unknown": 0,
          "rate_limited": False}]}
     report = progress.progress_report(rows, current_run_id=2, checkpoint=checkpoint)
     assert report["observed_quota"]["remaining"] == 17
+    assert report["observed_quota"]["account_spent"] == 483
     assert report["parallelism"] == 4
+    assert report["actual_parent_peak"] == 2
+    assert report["daily_window"]["successful_results"] == 1
     assert report["batch_throughput"][0]["completed"] == 12
