@@ -170,6 +170,33 @@ def test_cockpit_failure_does_not_fallback_or_retry(tmp_path):
     assert runner.call_count == 1
 
 
+def test_cockpit_prompt_bounds_large_campaign_history(tmp_path):
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    evidence = feedback.build_feedback([candidate()], None, {"discovery": 4}, continuous=True)
+    evidence["rows"] = [
+        {"id": index, "case_id": f"case_{index}", "expression": f"rank(returns)+{index}",
+         "mechanism_id": "reversal", "source": "REFINEMENT",
+         "metrics": {"amer_sharpe": 0.9}, "checks": ["x" * 1000]}
+        for index in range(100)
+    ]
+    evidence["history_signatures"] = ["signature" * 12 for _ in range(270)]
+    evidence["history_behavioral_signatures"] = ["behavior" * 12 for _ in range(270)]
+    captured = []
+
+    def runner(argv, **kwargs):
+        captured.append(__import__("pathlib").Path(argv[5]).read_text(encoding="utf-8"))
+        raise RuntimeError("captured")
+
+    with pytest.raises(RuntimeError, match="captured"):
+        feedback.prepare_batch(base(), evidence, script, runner=runner)
+    prompt = captured[0]
+    assert len(prompt) < 30_000
+    assert "case_99" in prompt and "case_0" not in prompt
+    assert '"history_behavioral_signatures": "checked by host"' in prompt
+    assert "exhausted_templates" in prompt
+
+
 def test_frozen_discovery_rejects_unknown_campaign_signature():
     from backend.services.research_audit import signature
     data = base()

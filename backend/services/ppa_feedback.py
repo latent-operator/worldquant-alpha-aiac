@@ -235,6 +235,28 @@ def freeze_batch(base, evidence, proposal):
     return batch
 
 
+def generation_context(evidence):
+    """Keep the LLM prompt bounded; host-side history checks retain the full ledger."""
+    def compact(row):
+        metrics = row.get("metrics") or {}
+        platform = row.get("platform_ppa_evaluation") or {}
+        return {key: row.get(key) for key in (
+            "id", "case_id", "dataset_id", "mechanism_id", "expression", "settings",
+            "source", "parent_candidate_id") if row.get(key) is not None} | {
+            "metrics": {key: metrics[key] for key in (
+                "amer_sharpe", "sharpe", "fitness", "test_sharpe", "turnover",
+                "margin", "long_count", "short_count", "two_year_sharpe") if key in metrics},
+            "platform_ppa_evaluation": {key: platform[key] for key in ("status", "reasons")
+                                        if key in platform},
+        }
+
+    return {**evidence,
+            "rows": [compact(row) for row in evidence.get("rows", [])[-16:]],
+            "seeds": [compact(row) for row in evidence.get("seeds", [])],
+            "history_signatures": "checked by host",
+            "history_behavioral_signatures": "checked by host"}
+
+
 def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
     script = Path(cockpit_script).resolve()
     if not script.is_file():
@@ -262,8 +284,7 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
               "Stalled families remain eligible for a different expression template. "
               "Do not repeat historical expression/settings or exhausted window-only templates. "
               "A ranked fixed-window mean of returns is treated as the same signal as its sum at that window.\n"
-              + json.dumps({"base": base, "evidence": {**evidence, "rows": evidence["rows"][-100:],
-                                                   "history_signatures": "checked by host"}},
+              + json.dumps({"base": base, "evidence": generation_context(evidence)},
                            ensure_ascii=False, allow_nan=False))
     with tempfile.TemporaryDirectory(prefix="ppa-feedback-") as directory:
         path = Path(directory) / "prompt.txt"
