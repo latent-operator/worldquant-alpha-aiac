@@ -114,9 +114,18 @@ def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, ph
                 all(metrics.get(key) is not None for key in ("sharpe", "fitness", "test_sharpe", "amer_sharpe"))):
             key = (row["mechanism_id"], expression_template(row["expression"]))
             templates.setdefault(key, []).append(row)
-    evidence["exhausted_templates"] = [list(key) for key, group in sorted(templates.items())
-        if len({row["expression"].strip() for row in group}) >= 4
-        and not any(seed_decision(row)["eligible"] for row in group)]
+    evidence["exhausted_templates"] = []
+    for key, group in sorted(templates.items()):
+        if len({row["expression"].strip() for row in group}) < 4:
+            continue
+        refinements = [row for row in group if row.get("source") == "REFINEMENT"
+                       and row.get("parent_candidate_id") in by_id
+                       and expression_template(by_id[row["parent_candidate_id"]]["expression"]) == key[1]]
+        failed_sweep = (len({row["expression"].strip() for row in refinements}) >= 4
+                        and not any(effective_improvement(by_id[row["parent_candidate_id"]], row)
+                                    for row in refinements))
+        if failed_sweep or not any(seed_decision(row)["eligible"] for row in group):
+            evidence["exhausted_templates"].append(list(key))
     evidence["evidence_hash"] = digest(evidence)
     return evidence
 

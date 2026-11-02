@@ -268,3 +268,21 @@ def test_failed_children_do_not_ban_stronger_parent_or_new_template():
     data = base()
     data["allowed_operators"].append("ts_std_dev")
     assert feedback.freeze_batch(data, evidence, proposal)["phase"] == "refinement"
+
+
+def test_four_nonimproving_windows_exhaust_template_even_with_strong_parent():
+    parent = candidate(amer=1.07, sharpe=1.24, fitness=0.46, test=1.52)
+    parent.update(id=10, source="DISCOVERY", request_status="RESULT",
+                  expression="rank(ts_sum(returns,126))")
+    children = []
+    for i, window in enumerate((100, 110, 140, 160)):
+        row = candidate(amer=1.06, sharpe=1.24, fitness=0.46, test=1.53,
+                        case=f"window{i}")
+        row.update(id=20 + i, source="REFINEMENT", request_status="RESULT",
+                   parent_candidate_id=10,
+                   expression=f"rank(ts_sum(returns,{window}))")
+        children.append(row)
+    evidence = feedback.build_feedback([parent, *children], None,
+                                       {"discovery": 4, "refinement": 4}, continuous=True)
+    assert ["reversal", "rank(ts_sum(returns,#))"] in evidence["exhausted_templates"]
+    assert evidence["seeds"][0]["id"] == 10
