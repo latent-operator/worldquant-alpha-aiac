@@ -121,9 +121,12 @@ def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, ph
         refinements = [row for row in group if row.get("source") == "REFINEMENT"
                        and row.get("parent_candidate_id") in by_id
                        and expression_template(by_id[row["parent_candidate_id"]]["expression"]) == key[1]]
-        failed_sweep = (len({row["expression"].strip() for row in refinements}) >= 4
+        latest_by_expression = {row["expression"].strip(): row for row in
+                                sorted(refinements, key=lambda row: row.get("id") or 0)}
+        recent = sorted(latest_by_expression.values(), key=lambda row: row.get("id") or 0)[-4:]
+        failed_sweep = (len(recent) == 4
                         and not any(effective_improvement(by_id[row["parent_candidate_id"]], row)
-                                    for row in refinements))
+                                    for row in recent))
         if failed_sweep or not any(seed_decision(row)["eligible"] for row in group):
             evidence["exhausted_templates"].append(list(key))
     evidence["evidence_hash"] = digest(evidence)
