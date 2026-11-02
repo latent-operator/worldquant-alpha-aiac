@@ -286,3 +286,30 @@ def test_four_nonimproving_windows_exhaust_template_even_with_strong_parent():
                                        {"discovery": 4, "refinement": 4}, continuous=True)
     assert ["reversal", "rank(ts_sum(returns,#))"] in evidence["exhausted_templates"]
     assert evidence["seeds"][0]["id"] == 10
+
+
+def test_recent_failed_windows_exhaust_template_after_older_improvement():
+    original = candidate(amer=1.01, sharpe=1.20, fitness=0.42, test=1.50)
+    original.update(id=10, source="DISCOVERY", request_status="RESULT",
+                    expression="rank(ts_sum(returns,126))")
+    improved = candidate(amer=1.07, sharpe=1.24, fitness=0.46, test=1.52)
+    improved.update(id=11, source="REFINEMENT", request_status="RESULT",
+                    parent_candidate_id=10, expression="rank(ts_sum(returns,125))")
+    failures = []
+    for i, window in enumerate((100, 110, 140, 160)):
+        row = candidate(amer=1.05, sharpe=1.23, fitness=0.46, test=1.52,
+                        case=f"later_window{i}")
+        row.update(id=20 + i, source="REFINEMENT", request_status="RESULT",
+                   parent_candidate_id=11,
+                   expression=f"rank(ts_sum(returns,{window}))")
+        failures.append(row)
+    evidence = feedback.build_feedback([original, improved, *failures], None,
+                                       {"discovery": 4, "refinement": 5}, continuous=True)
+    assert ["reversal", "rank(ts_sum(returns,#))"] in evidence["exhausted_templates"]
+
+    recovery = candidate(amer=1.14, sharpe=1.26, fitness=0.48, test=1.54)
+    recovery.update(id=30, source="REFINEMENT", request_status="RESULT",
+                    parent_candidate_id=11, expression="rank(ts_sum(returns,170))")
+    recovered = feedback.build_feedback([original, improved, *failures, recovery], None,
+                                        {"discovery": 4, "refinement": 6}, continuous=True)
+    assert ["reversal", "rank(ts_sum(returns,#))"] not in recovered["exhausted_templates"]
