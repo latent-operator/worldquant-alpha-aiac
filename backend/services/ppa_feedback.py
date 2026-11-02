@@ -300,8 +300,30 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
                     raise ValueError("COCKPIT_EMPTY_OUTPUT")
                 proposal = json.loads(output)
                 proposed = len(proposal.get("cases", [])) if isinstance(proposal, dict) and isinstance(proposal.get("cases"), list) else 0
-                if phase == "refinement" and isinstance(proposal, dict) and isinstance(proposal.get("cases"), list):
-                    proposal = {**proposal, "cases": proposal["cases"][:capacity]}
+                if (phase == "refinement" and isinstance(proposal, dict)
+                        and proposal.get("phase") == phase and isinstance(proposal.get("cases"), list)):
+                    exhausted = {tuple(item) for item in evidence.get("exhausted_templates", [])}
+                    historical = {tuple(item) for item in evidence.get("history_signatures", [])}
+                    historical_behavioral = {
+                        tuple(item) for item in evidence.get("history_behavioral_signatures", [])}
+                    kept, seen, seen_behavioral = [], set(), set()
+                    for case in proposal["cases"]:
+                        if not isinstance(case, dict) or not isinstance(case.get("expression"), str):
+                            kept.append(case)
+                            continue
+                        settings = case_settings(base, case.get("settings") or {})
+                        identity = signature(case["expression"], settings)
+                        behavior = behavioral_signature(case["expression"], settings)
+                        if ((case.get("mechanism_id"), expression_template(case["expression"])) in exhausted
+                                or identity in historical or behavior in historical_behavioral
+                                or identity in seen or behavior in seen_behavioral):
+                            continue
+                        kept.append(case)
+                        seen.add(identity)
+                        seen_behavioral.add(behavior)
+                    if not kept:
+                        raise ValueError("PPA_ALL_PROPOSALS_EXHAUSTED")
+                    proposal = {**proposal, "cases": kept[:capacity]}
                 batch = freeze_batch(base, evidence, proposal)
                 batch["candidate_generation"]["proposed_cases"] = proposed
                 batch["candidate_generation"]["truncated_cases"] = max(0, proposed - len(batch["cases"]))
@@ -338,7 +360,7 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
         if remaining <= 0:
             break
         calls += 1
-        updated = {**evidence, "max_batch_cases": remaining,
+        updated = {**evidence, "max_batch_cases": min(remaining, 4),
                    "history_signatures": [*(evidence.get("history_signatures") or []),
                        *(signature(item["expression"], case_settings(base, item.get("settings") or {}))
                          for item in combined)],
