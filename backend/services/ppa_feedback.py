@@ -40,6 +40,29 @@ def behavioral_signature(expression, settings):
     return signature(behavioral_expression(expression), settings)
 
 
+def select_active_seeds(rows, exhausted, *, limit):
+    active = [row for row in rows if (row.get("mechanism_id"),
+              expression_template(row.get("expression") or "")) not in exhausted]
+    ranked = select_seeds(active, limit=len(active))
+    selected, templates = [], set()
+    for row in ranked:
+        template = (row.get("mechanism_id"), expression_template(row.get("expression") or ""))
+        if template not in templates:
+            selected.append(row)
+            templates.add(template)
+        if len(selected) == limit:
+            break
+    if len(selected) < limit:
+        used = {row.get("id") for row in selected}
+        selected.extend(row for row in ranked if row.get("id") not in used)
+        selected = selected[:limit]
+    if len(selected) < limit:
+        used = {row.get("id") for row in selected}
+        selected.extend(select_seeds([row for row in rows if row.get("id") not in used],
+                                     limit=limit - len(selected)))
+    return selected
+
+
 def case_settings(base, overrides):
     settings = {**base["settings"], **overrides}
     settings.update({key: base[key] for key in ("region", "universe", "delay") if key in base})
@@ -129,6 +152,14 @@ def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, ph
                                     for row in recent))
         if failed_sweep or not any(seed_decision(row)["eligible"] for row in group):
             evidence["exhausted_templates"].append(list(key))
+    evidence["seeds"] = select_active_seeds(
+        available, {tuple(item) for item in evidence["exhausted_templates"]},
+        limit=4 if phase_limit == 16 else 3)
+    if evidence["next_phase"] == "refinement" and not evidence["seeds"]:
+        if phase_counts.get("discovery", 0) <= phase_limit - 4:
+            evidence["next_phase"], evidence["stop_reason"] = "discovery", None
+        else:
+            evidence["next_phase"], evidence["stop_reason"] = None, "PPA_NO_ACTIVE_SEEDS"
     evidence["evidence_hash"] = digest(evidence)
     return evidence
 

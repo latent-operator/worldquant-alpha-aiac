@@ -39,6 +39,27 @@ def test_feedback_prefers_ready_parent_over_new_worse_child():
     assert feedback.build_feedback([row, candidate()], 51, {})["next_phase"] == "confirmation"
 
 
+def test_seed_selection_skips_exhausted_expression_templates():
+    exhausted = candidate(amer=1.2, case="exhausted")
+    active = candidate(amer=1.1, case="active")
+    active["id"] = 2
+    active["expression"] = "rank(ts_sum(returns,2))"
+    seeds = feedback.select_active_seeds(
+        [exhausted, active], {("reversal", "rank(returns)")}, limit=1)
+    assert [row["case_id"] for row in seeds] == ["active"]
+
+
+def test_seed_selection_uses_distinct_templates_before_window_variants():
+    first = candidate(amer=1.2, case="first")
+    first["expression"] = "rank(ts_sum(returns,2))"
+    second = candidate(amer=1.19, case="second")
+    second.update(id=2, expression="rank(ts_sum(returns,3))")
+    distinct = candidate(amer=1.1, case="distinct")
+    distinct.update(id=3, expression="rank(returns)")
+    seeds = feedback.select_active_seeds([first, second, distinct], set(), limit=2)
+    assert [row["case_id"] for row in seeds] == ["first", "distinct"]
+
+
 def test_failed_confirmation_is_not_repeated_forever():
     parent = candidate(amer=1.2)
     parent["platform_ppa_evaluation"]["status"] = "PPA_READY"
