@@ -161,6 +161,51 @@ def test_discovery_top_up_combines_distinct_complete_groups(tmp_path):
     assert {case["pair_id"] for case in batch["cases"]} == {"g1", "g2"}
 
 
+def test_full_discovery_batch_uses_four_case_cockpit_subcalls(tmp_path):
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    proposals = []
+    for group_index in range(4):
+        prefix = f"g{group_index}"
+        proposals.append({"phase": "discovery", "cases": [
+            {"case_id": f"{prefix}_{arm_index}", "pair_id": prefix,
+             "arm": "CONTROL" if arm_index == 0 else "TREATMENT",
+             "dataset_id": "pv1", "mechanism_id": "reversal",
+             "expression": f"rank(ts_sum(returns,{2 + group_index * 4 + arm_index}))",
+             "changed_element": "window", "expected_effect": "AMER test",
+             "risk": "noise", "stop_condition": "no gain"}
+            for arm_index in range(4)]})
+    prompts = []
+
+    def runner(argv, **kwargs):
+        prompts.append(__import__("pathlib").Path(argv[5]).read_text(encoding="utf-8"))
+        return SimpleNamespace(stdout=json.dumps(proposals[len(prompts) - 1]))
+
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    batch = feedback.prepare_batch_filled(base(), evidence, script, runner=runner)
+    assert len(batch["cases"]) == 16
+    assert len(prompts) == 4
+    assert all("Generate at most 4 cases" in prompt for prompt in prompts)
+
+
+def test_refinement_salvages_novel_case_from_exhausted_template(tmp_path):
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    evidence = feedback.build_feedback([candidate()], None, {"discovery": 4}, continuous=True)
+    evidence["exhausted_templates"] = [["reversal", "rank(ts_sum(returns,#))"]]
+    proposal = plan()
+    novel = deepcopy(proposal["cases"][0])
+    novel["case_id"] = "novel"
+    novel["expression"] = "rank(ts_sum(rank(returns),2))"
+    proposal["cases"].append(novel)
+    runner = Mock(return_value=SimpleNamespace(stdout=json.dumps(proposal)))
+
+    batch = feedback.prepare_batch(base(), evidence, script, runner=runner)
+    assert [case["case_id"] for case in batch["cases"]] == ["novel"]
+    assert batch["candidate_generation"]["proposed_cases"] == 2
+    assert batch["candidate_generation"]["truncated_cases"] == 1
+
+
 def test_cockpit_failure_does_not_fallback_or_retry(tmp_path):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")
