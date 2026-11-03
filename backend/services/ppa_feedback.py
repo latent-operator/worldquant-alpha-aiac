@@ -481,10 +481,13 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
             part = prepare_batch(base, updated, cockpit_script, runner=runner)
             candidate = [*combined, *part["cases"]]
             frozen = freeze_batch(base, evidence, {"phase": phase, "cases": candidate})
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, OSError,
+                subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             if not combined:
                 raise
-            last_error = f"{type(exc).__name__}:{exc}"
+            last_error = (f"CalledProcessError:{exc.returncode}" if isinstance(exc, subprocess.CalledProcessError)
+                          else type(exc).__name__ if isinstance(exc, (OSError, subprocess.TimeoutExpired))
+                          else f"{type(exc).__name__}:{exc}")
             break
         combined = frozen["cases"]
         generation = part["candidate_generation"]
