@@ -164,7 +164,8 @@ async def import_batch(db, task, run, batch):
     if batch.get("evidence_hash") != evidence["evidence_hash"]:
         raise ValueError("PPA_STALE_FEEDBACK")
     generation = batch.get("candidate_generation") or {}
-    if (generation.get("model") != "gpt-6-luna" or generation.get("source") != "cockpit_local_responses"
+    allowed_models = {"gpt-6-luna", "gpt-6-astra"} if task.config.get("ppa_throughput_experiment") is True else {"gpt-6-luna"}
+    if (generation.get("model") not in allowed_models or generation.get("source") != "cockpit_local_responses"
             or generation.get("plan_sha256") != digest({k: v for k, v in batch.items() if k != "candidate_generation"})):
         raise ValueError("PPA_BATCH_HASH_INVALID")
     checked = freeze_batch(task.config["ppa_manifest"], evidence, batch)
