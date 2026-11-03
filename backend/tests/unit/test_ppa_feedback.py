@@ -339,6 +339,47 @@ def test_discovery_pair_error_identifies_the_two_expressions():
         feedback.freeze_batch(data, feedback.build_feedback([], None, {}, continuous=True), proposal)
 
 
+def test_experiment_discovery_builds_exact_single_token_controls(tmp_path):
+    data = base()
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    evidence.update(throughput_experiment=True, max_batch_cases=4)
+    proposal = {"phase": "discovery", "discovery_groups": [{
+        "dataset_id": "pv1", "mechanism_id": "reversal",
+        "control_expression": "rank(ts_sum(returns,5))",
+        "hypothesis": "Short horizon reversal may improve AMER performance",
+        "risk": "crowding", "stop_condition": "no paired AMER gain",
+        "treatments": [{"old_token": "5", "new_token": str(window),
+                        "changed_element": "window", "expected_effect": "reduce noise"}
+                       for window in (10, 20, 40)]}]}
+    script = tmp_path / "cockpit.ps1"
+    script.write_text("stub", encoding="utf-8")
+    from types import SimpleNamespace
+    seen = []
+    def runner(argv, **kwargs):
+        seen.append(argv)
+        return SimpleNamespace(stdout=json.dumps(proposal))
+    batch = feedback.prepare_batch(data, evidence, script, runner=runner)
+    assert seen[0][seen[0].index("-MaxOutputTokens") + 1] == "3000"
+    assert len(batch["cases"]) == 4
+    assert [case["expression"] for case in batch["cases"]] == [
+        "rank(ts_sum(returns,5))", "rank(ts_sum(returns,10))",
+        "rank(ts_sum(returns,20))", "rank(ts_sum(returns,40))"]
+    assert len({case["pair_id"] for case in batch["cases"]}) == 1
+    assert batch["candidate_generation"]["source"] == "cockpit_local_responses"
+
+
+def test_experiment_discovery_rejects_ambiguous_edit():
+    proposal = {"phase": "discovery", "discovery_groups": [{
+        "dataset_id": "pv1", "mechanism_id": "reversal",
+        "control_expression": "rank(ts_sum(returns,5)+ts_sum(returns,5))",
+        "hypothesis": "reversal", "risk": "noise", "stop_condition": "no gain",
+        "treatments": [{"old_token": "5", "new_token": str(window),
+                        "changed_element": "window", "expected_effect": "improve"}
+                       for window in (10, 20, 40)]}]}
+    with pytest.raises(ValueError, match="PPA_DISCOVERY_EDIT_INVALID"):
+        feedback.expand_experiment_discovery(proposal, 4)
+
+
 def test_lookback_mean_sum_alias_is_limited_to_direct_ranked_field():
     settings = base()["settings"]
     assert feedback.behavioral_signature("rank(ts_mean(returns,2))", settings) == (

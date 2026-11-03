@@ -92,6 +92,8 @@ async def feedback_context(db, task, run):
     context["campaign_requests"] = sum(row.request_status in CHARGED for row in rows)
     context["request_phase_counts"] = request_phase_counts
     context["continuous"] = continuous
+    if experiment:
+        context["throughput_experiment"] = True
     context["history_signatures"] = sorted({signature(row.expression, row.settings or {}) for row in rows
                                              if row.expression and row.validation_status == "VALID"})
     context["history_behavioral_signatures"] = sorted({behavioral_signature(row.expression, row.settings or {})
