@@ -235,7 +235,8 @@ def freeze_batch(base, evidence, proposal):
             raise ValueError("PPA_DUPLICATE_HISTORICAL")
         behavior = behavioral_signature(case["expression"], settings)
         if behavior in historical_behavioral or behavior in behavioral_signatures:
-            raise ValueError("PPA_DUPLICATE_BEHAVIORAL")
+            duplicate_expression = case["expression"].replace("\n", " ")[:160]
+            raise ValueError(f"PPA_DUPLICATE_BEHAVIORAL:{duplicate_expression}")
         if (case["mechanism_id"], expression_template(case["expression"])) in exhausted:
             raise ValueError("PPA_TEMPLATE_EXHAUSTED")
         signatures.add(identity)
@@ -281,9 +282,12 @@ def generation_context(evidence):
                                         if key in platform},
         }
 
+    templates = Counter(expression_template(row.get("expression") or "")
+                        for row in evidence.get("rows", []) if row.get("expression"))
     return {**evidence,
             "rows": [compact(row) for row in evidence.get("rows", [])[-16:]],
             "seeds": [compact(row) for row in evidence.get("seeds", [])],
+            "avoid_expression_templates": [item for item, _ in templates.most_common(64)],
             "history_signatures": "checked by host",
             "history_behavioral_signatures": "checked by host"}
 
