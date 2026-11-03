@@ -167,7 +167,7 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
                 batch = freeze_batch(evidence["base"], evidence, prospective)
                 batch["candidate_generation"].update({
                     key: value for key, value in (prospective.get("candidate_generation") or {}).items()
-                    if key in {"generation_seconds", "validation_attempts", "top_up_calls"}})
+                    if key in {"model", "generation_seconds", "validation_attempts", "top_up_calls"}})
         except (ValueError, TypeError, KeyError):
             batch = None
     if batch is None:

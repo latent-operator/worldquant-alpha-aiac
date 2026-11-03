@@ -393,7 +393,8 @@ def test_experiment_prefetches_refinement_before_worker_finishes(tmp_path, monke
 def test_watcher_revalidates_prefetch_against_current_feedback_before_import(tmp_path, monkeypatch):
     prefetched = tmp_path / "run-18-prefetch.json"
     prefetched.write_text(json.dumps({"epoch": 3, "phase": "discovery",
-                                      "cases": [{"case_id": "p1"}]}), encoding="utf-8")
+                                      "cases": [{"case_id": "p1"}],
+                                      "candidate_generation": {"model": "gpt-6-astra"}}), encoding="utf-8")
     calls = []
     def request(url, payload=None):
         calls.append((url, payload))
@@ -421,6 +422,28 @@ def test_watcher_revalidates_prefetch_against_current_feedback_before_import(tmp
     assert not prefetched.exists()
     imported = next(payload for url, payload in calls if url.endswith("/ppa-batch"))
     assert imported["candidate_generation"]["plan_sha256"] == "new-hash"
+    assert imported["candidate_generation"]["model"] == "gpt-6-astra"
+
+
+@pytest.mark.asyncio
+async def test_astra_batch_is_accepted_only_for_throughput_experiment(async_engine, monkeypatch):
+    maker, task_id, run_id, data = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
+        evidence = await workflow.feedback_context(db, task, run)
+        batch = freeze_batch(data, evidence, discovery())
+        batch["candidate_generation"]["model"] = "gpt-6-astra"
+        with pytest.raises(ValueError, match="PPA_BATCH_HASH_INVALID"):
+            await workflow.import_batch(db, task, run, batch)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "continuous_mode": True, "research_request_budget": None,
+                       "ppa_throughput_experiment": True}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        batch = freeze_batch(data, evidence, discovery())
+        batch["candidate_generation"]["model"] = "gpt-6-astra"
+        await workflow.import_batch(db, task, run, batch)
+        assert run.checkpoint["ppa_batch"]["candidate_generation"]["model"] == "gpt-6-astra"
 
 
 def test_watcher_retries_cockpit_failure_and_records_heartbeat(tmp_path):

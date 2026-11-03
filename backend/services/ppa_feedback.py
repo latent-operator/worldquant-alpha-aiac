@@ -360,6 +360,7 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
     if capacity <= 0:
         raise ValueError("PPA_BATCH_PHASE_LIMIT")
     structured_discovery = phase == "discovery" and evidence.get("throughput_experiment") is True
+    model = "gpt-6-astra" if evidence.get("throughput_experiment") is True else "gpt-6-luna"
     if structured_discovery:
         prompt = (f"Return ONLY JSON with phase='discovery' and discovery_groups (at most {capacity // 4}). "
                   "Each group needs dataset_id and mechanism_id from the supplied registry, "
@@ -394,7 +395,7 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
         for attempt in range(3):
             path.write_text(prompt, encoding="utf-8")
             completed = runner(["pwsh", "-NoProfile", "-File", str(script),
-                                "-PromptFile", str(path), "-Model", "gpt-6-luna", "-MaxOutputTokens",
+                                "-PromptFile", str(path), "-Model", model, "-MaxOutputTokens",
                                 "3000" if structured_discovery else "6000"],
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
                                check=True, timeout=180)
@@ -434,6 +435,7 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
                         raise ValueError("PPA_ALL_PROPOSALS_EXHAUSTED")
                     proposal = {**proposal, "cases": kept[:capacity]}
                 batch = freeze_batch(base, evidence, proposal)
+                batch["candidate_generation"]["model"] = model
                 batch["candidate_generation"]["proposed_cases"] = proposed
                 batch["candidate_generation"]["truncated_cases"] = max(0, proposed - len(batch["cases"]))
                 batch["candidate_generation"]["generation_seconds"] = round(
@@ -496,6 +498,7 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
         truncated += generation.get("truncated_cases", 0)
         seconds += generation.get("generation_seconds", 0)
     frozen["candidate_generation"].update(
+        model="gpt-6-astra" if evidence.get("throughput_experiment") is True else "gpt-6-luna",
         proposed_cases=proposed, truncated_cases=truncated,
         generation_seconds=round(seconds, 3), validation_attempts=attempts,
         top_up_calls=calls, top_up_error=last_error)

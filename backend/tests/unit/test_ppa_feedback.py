@@ -385,12 +385,17 @@ def test_experiment_discovery_builds_exact_single_token_controls(tmp_path):
         return SimpleNamespace(stdout=json.dumps(proposal))
     batch = feedback.prepare_batch(data, evidence, script, runner=runner)
     assert seen[0][seen[0].index("-MaxOutputTokens") + 1] == "3000"
+    assert seen[0][seen[0].index("-Model") + 1] == "gpt-6-astra"
+    assert batch["candidate_generation"]["model"] == "gpt-6-astra"
     assert len(batch["cases"]) == 4
     assert [case["expression"] for case in batch["cases"]] == [
         "rank(ts_sum(returns,5))", "rank(ts_sum(returns,10))",
         "rank(ts_sum(returns,20))", "rank(ts_sum(returns,40))"]
     assert len({case["pair_id"] for case in batch["cases"]}) == 1
     assert batch["candidate_generation"]["source"] == "cockpit_local_responses"
+    filled = feedback.prepare_batch_filled(data, evidence, script, runner=runner)
+    assert len(filled["cases"]) == 4
+    assert filled["candidate_generation"]["model"] == "gpt-6-astra"
 
 
 def test_experiment_discovery_rejects_ambiguous_edit():
