@@ -56,6 +56,16 @@ def test_parallelism_requires_both_twenty_four_results_and_thirty_active_minutes
                                    "wall_seconds": 1800}]) == 2
 
 
+def test_experiment_does_not_demote_or_switch_transport_for_underfilled_batch():
+    supply_limited = {"transport": "single", "concurrency": 4, "parent_peak": 2,
+                      "parent_groups": 2, "supply_limited": True, "completed": 2,
+                      "wall_seconds": 300, "unknown": 0, "rate_limited": False}
+    assert choose_parallelism(4, [supply_limited]) == 4
+    assert next_transport("single", 4, [supply_limited]) == ("single", 4)
+    platform_limited = {**supply_limited, "parent_groups": 8, "supply_limited": False}
+    assert choose_parallelism(4, [platform_limited]) == 2
+
+
 def test_quota_restores_only_unexpired_observation():
     now = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
     recent = {"request": {"rate_limit": {"remaining": 3, "reset_seconds": 3600},
