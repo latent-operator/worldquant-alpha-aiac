@@ -182,6 +182,31 @@ def test_discovery_top_up_combines_distinct_complete_groups(tmp_path):
     assert {case["pair_id"] for case in batch["cases"]} == {"g1", "g2"}
 
 
+def test_discovery_keeps_valid_group_when_later_cockpit_call_fails(tmp_path):
+    import subprocess
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    first = {"phase": "discovery", "cases": [
+        {"case_id": f"g1_{index}", "pair_id": "g1",
+         "arm": "CONTROL" if index == 0 else "TREATMENT",
+         "dataset_id": "pv1", "mechanism_id": "reversal",
+         "expression": f"rank(ts_sum(returns,{index + 2}))",
+         "changed_element": "window", "expected_effect": "AMER test",
+         "risk": "noise", "stop_condition": "no gain"} for index in range(4)]}
+    calls = []
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 2:
+            raise subprocess.CalledProcessError(1, argv, stderr="HTTP 503")
+        return SimpleNamespace(stdout=json.dumps(first))
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    evidence["max_batch_cases"] = 8
+    batch = feedback.prepare_batch_filled(base(), evidence, script, runner=runner)
+    assert len(batch["cases"]) == 4
+    assert batch["candidate_generation"]["top_up_calls"] == 2
+    assert "CalledProcessError" in batch["candidate_generation"]["top_up_error"]
+
+
 def test_full_discovery_batch_uses_four_case_cockpit_subcalls(tmp_path):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")
