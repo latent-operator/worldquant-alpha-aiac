@@ -93,11 +93,14 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
             active = checkpoint.get("ppa_batch") or {}
             cases = active.get("cases") or []
             prefetch_path = output_dir / f"run-{run_id}-prefetch.json"
-            if (active.get("phase") == "discovery" and len(cases) >= 4
-                    and checkpoint.get("ppa_batch_cursor", 0) >= len(cases) // 2
-                    and not prefetch_path.exists()):
+            experiment = (task.get("config") or {}).get("ppa_throughput_experiment") is True
+            prefetch_due = (experiment and len(cases) >= 2 or
+                            active.get("phase") == "discovery" and len(cases) >= 4
+                            and checkpoint.get("ppa_batch_cursor", 0) >= len(cases) // 2)
+            if prefetch_due and not prefetch_path.exists():
                 evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
-                if evidence.get("next_phase") == "discovery" and not evidence.get("unresolved_requests"):
+                if (evidence.get("next_phase") == active.get("phase")
+                        and not evidence.get("unresolved_requests")):
                     prospective = prepare_batch(evidence["base"], evidence, cockpit_script)
                     output_dir.mkdir(parents=True, exist_ok=True)
                     payload = {"epoch": evidence["epoch"], "phase": prospective["phase"],
