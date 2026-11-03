@@ -302,6 +302,43 @@ def test_generation_context_shows_bounded_history_templates():
     assert len(context["avoid_expression_templates"]) <= 64
 
 
+def test_discovery_prompt_omits_redundant_history_and_limits_output(tmp_path):
+    rows = [dict(case_id=f"old_{index}", expression=f"rank(field_{index})",
+                 settings={}, metrics={}, platform_ppa_evaluation={}) for index in range(100)]
+    evidence = {"rows": rows, "seeds": rows[:4], "next_phase": "discovery",
+        "phase_counts": {}, "phase_limit": 16, "budget_remaining": None,
+        "history_signatures": [], "history_behavioral_signatures": [],
+        "base": {"redundant": "x" * 2000}}
+    context = feedback.generation_context(evidence)
+    assert "base" not in context
+    assert context["seeds"] == []
+    assert len(context["rows"]) <= 4
+    assert len(context["avoid_expression_templates"]) <= 64
+
+    script = tmp_path / "cockpit.ps1"
+    script.write_text("stub", encoding="utf-8")
+    seen = []
+    def runner(argv, **kwargs):
+        seen.append(argv)
+        raise RuntimeError("captured")
+    with pytest.raises(RuntimeError, match="captured"):
+        feedback.prepare_batch(base(), evidence, script, runner=runner)
+    assert seen[0][seen[0].index("-MaxOutputTokens") + 1] == "6000"
+
+
+def test_discovery_pair_error_identifies_the_two_expressions():
+    data = base()
+    data["datasets"]["pv1"] = ["returns", "adv20", "close", "open"]
+    proposal = {"phase": "discovery", "cases": [dict(case_id=f"c{i}", pair_id="p1",
+        arm="CONTROL" if i == 0 else "TREATMENT", dataset_id="pv1",
+        mechanism_id="reversal", expression=expression, changed_element="field",
+        expected_effect="improve AMER", risk="noise", stop_condition="no gain")
+        for i, expression in enumerate(("rank(returns)", "rank(ts_sum(close,2))",
+                                        "rank(adv20)", "rank(open)"))]}
+    with pytest.raises(ValueError, match=r"PPA_DISCOVERY_NOT_SINGLE_FACTOR:rank\(returns\).*rank\(ts_sum"):
+        feedback.freeze_batch(data, feedback.build_feedback([], None, {}, continuous=True), proposal)
+
+
 def test_lookback_mean_sum_alias_is_limited_to_direct_ranked_field():
     settings = base()["settings"]
     assert feedback.behavioral_signature("rank(ts_mean(returns,2))", settings) == (

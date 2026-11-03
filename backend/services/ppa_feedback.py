@@ -258,7 +258,9 @@ def freeze_batch(base, evidence, proposal):
             changed = [op for op in SequenceMatcher(None, baseline,
                 re.findall(token_pattern, treatment["expression"])).get_opcodes() if op[0] != "equal"]
             if len(changed) != 1:
-                raise ValueError("PPA_DISCOVERY_NOT_SINGLE_FACTOR")
+                control_expression = control["expression"].replace("\n", " ")[:100]
+                treatment_expression = treatment["expression"].replace("\n", " ")[:100]
+                raise ValueError(f"PPA_DISCOVERY_NOT_SINGLE_FACTOR:{control_expression} -> {treatment_expression}")
     batch = {"phase": phase, "cases": normalized, "evidence_hash": evidence["evidence_hash"],
              "base_hash": digest(base), "parent_version": evidence.get("batch_version")}
     batch["candidate_generation"] = {"source": "cockpit_local_responses", "model": "gpt-6-luna",
@@ -284,9 +286,14 @@ def generation_context(evidence):
 
     templates = Counter(expression_template(row.get("expression") or "")
                         for row in evidence.get("rows", []) if row.get("expression"))
-    return {**evidence,
-            "rows": [compact(row) for row in evidence.get("rows", [])[-16:]],
-            "seeds": [compact(row) for row in evidence.get("seeds", [])],
+    phase = evidence.get("next_phase")
+    context = {key: evidence[key] for key in (
+        "next_phase", "phase_counts", "phase_limit", "max_batch_cases", "budget_remaining",
+        "stopped_families", "exhausted_templates", "proposed_avoid_expressions") if key in evidence}
+    return {**context,
+            "rows": [compact(row) for row in evidence.get("rows", [])[-(4 if phase == "discovery" else 8):]],
+            "seeds": [compact(row) for row in evidence.get("seeds", [])] if phase == "refinement" else [],
+            "finalists": [compact(row) for row in evidence.get("finalists", [])] if phase == "confirmation" else [],
             "avoid_expression_templates": [item for item, _ in templates.most_common(64)],
             "history_signatures": "checked by host",
             "history_behavioral_signatures": "checked by host"}
@@ -313,6 +320,9 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
               "with phase and cases. Each case needs unique case_id, dataset_id, expression, mechanism_id "
               "from registry, arm, changed_element (ONE conceptual change), expected_effect targeting AMER, "
               "risk and stop_condition. Discovery: complete groups of 1 CONTROL plus 3 TREATMENT with pair_id. "
+              "Each treatment must differ from its control in exactly one token span: replace one field, "
+              "operator, or window while keeping all other tokens identical. For example, "
+              "rank(ts_sum(x,5)) -> rank(ts_sum(x,10)); never change both field and operator. "
               "Refinement: parent_case_id from seeds, max 4 children per parent. No invented WQ results. "
               "Do not change settings. Confirmation will be generated deterministically from finalists. "
               "Respect max_batch_cases; use case IDs unique across all prior batches. "
@@ -326,7 +336,7 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
         for attempt in range(3):
             path.write_text(prompt, encoding="utf-8")
             completed = runner(["pwsh", "-NoProfile", "-File", str(script),
-                                "-PromptFile", str(path), "-Model", "gpt-6-luna", "-MaxOutputTokens", "12000"],
+                                "-PromptFile", str(path), "-Model", "gpt-6-luna", "-MaxOutputTokens", "6000"],
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
                                check=True, timeout=180)
             try:
