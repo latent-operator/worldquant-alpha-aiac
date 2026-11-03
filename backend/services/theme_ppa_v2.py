@@ -71,7 +71,8 @@ async def feedback_context(db, task, run):
             item["mechanism_id"] = (base.get("historical_mechanisms") or {}).get(case.get("pair_id"))
         converted.append(item)
     epoch = int((run.checkpoint or {}).get("ppa_epoch", 0))
-    epoch_rows = [row for row in rows if row.run_id != root.id and
+    experiment = task.config.get("ppa_throughput_experiment") is True
+    epoch_rows = [row for row in rows if (row.run_id == run.id if experiment else row.run_id != root.id) and
                   (not continuous or (row.result_snapshot or {}).get("research_case", {}).get("epoch", 0) == epoch)]
     request_phase_counts = dict(Counter(row.source.lower() for row in epoch_rows
                                         if row.request_status in CHARGED))
@@ -84,7 +85,7 @@ async def feedback_context(db, task, run):
     completed_old_batch = checkpoint.get("ppa_batch_cursor", 0) >= len(old_batch.get("cases") or [])
     legacy_auto_boundary = (continuous and "ppa_phase_limit" not in checkpoint and epoch > 0
                             and not epoch_rows and bool(old_batch.get("cases")) and completed_old_batch)
-    phase_limit = int(checkpoint.get("ppa_phase_limit", 16 if legacy_auto_boundary else 12)) if continuous else 12
+    phase_limit = int(checkpoint.get("ppa_phase_limit", 16 if experiment or legacy_auto_boundary else 12)) if continuous else 12
     context = build_feedback(converted, remaining, phase_counts, continuous=continuous,
                              phase_limit=phase_limit)
     context["epoch"] = epoch
@@ -109,6 +110,12 @@ async def feedback_context(db, task, run):
             context.update(next_phase=None, stop_reason="PPA_NO_QUALIFIED_SEEDS")
     if context["next_phase"] == "confirmation" and not context["finalists"]:
         context.update(next_phase=None, stop_reason="PPA_NO_FINALISTS")
+    if (experiment and context["next_phase"] != "confirmation"
+            and context["phase_counts"].get("refinement", 0) == 0
+            and context["phase_counts"].get("discovery", 0) <= phase_limit - 4):
+        # Historical campaign rows remain available for seeds and deduplication,
+        # but this run first fills its own complete control groups.
+        context.update(next_phase="discovery", stop_reason=None)
     context["evidence_hash"] = digest({key: value for key, value in context.items() if key != "evidence_hash"})
     context["base"] = base
     return context

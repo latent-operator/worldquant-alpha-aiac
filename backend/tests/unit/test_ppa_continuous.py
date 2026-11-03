@@ -155,6 +155,53 @@ async def test_continuous_phase_slots_include_cached_and_unknown(async_engine, m
 
 
 @pytest.mark.asyncio
+async def test_throughput_experiment_starts_with_own_discovery_slots(async_engine, monkeypatch):
+    from backend.models import ResearchCandidate
+
+    maker, task_id, run_id, _ = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
+        root = await db.get(ExperimentRun, task.config["budget_root_run_id"])
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "research_request_budget": None, "continuous_mode": True,
+                       "ppa_throughput_experiment": True}
+        old_run = ExperimentRun(task_id=task_id, status="PAUSED", config_snapshot=run.config_snapshot)
+        db.add(old_run)
+        await db.flush()
+        root.checkpoint = {"campaign_run_ids": [old_run.id]}
+        for index in range(16):
+            db.add(ResearchCandidate(task_id=task_id, run_id=old_run.id, source="REFINEMENT",
+                family_id="theme_ppa_v3:nov", experiment_group=f"old{index}",
+                expression=f"rank(field_0_{index})", expression_hash=f"old{index}",
+                settings_hash="settings", settings={}, validation_status="VALID",
+                request_status="RESULT", gate_failures=[], metrics={
+                    "amer_sharpe": 0.9, "sharpe": 1.2, "fitness": 0.6,
+                    "test_sharpe": 0.7, "turnover": 0.2, "margin": 0.001,
+                    "long_count": 100, "short_count": 100},
+                result_snapshot={"research_case": {"epoch": 1, "mechanism_id": "signal"},
+                                 "ppa_evaluation": {"status": "PPA_REJECTED"}}))
+        run.checkpoint = {"ppa_epoch": 1}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        assert evidence["phase_counts"] == {}
+        assert evidence["phase_limit"] == 16
+        assert evidence["next_phase"] == "discovery"
+        assert evidence["history_signatures"]
+        for index in range(4):
+            db.add(ResearchCandidate(task_id=task_id, run_id=run_id, source="DISCOVERY",
+                family_id="theme_ppa_v3:nov", experiment_group=f"new{index}",
+                expression=f"rank(fresh_{index})", expression_hash=f"fresh{index}",
+                settings_hash="settings", settings={}, validation_status="VALID",
+                request_status="RESULT", gate_failures=[], metrics={},
+                result_snapshot={"research_case": {"epoch": 1},
+                                 "ppa_evaluation": {"status": "PPA_REJECTED"}}))
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        assert evidence["phase_counts"] == {"discovery": 4}
+        assert evidence["next_phase"] == "discovery"
+
+
+@pytest.mark.asyncio
 async def test_epoch_advance_is_atomic_and_stale_retry_is_rejected(async_engine, monkeypatch):
     maker, task_id, run_id, data = await setup(async_engine, monkeypatch)
     async with maker() as db:
