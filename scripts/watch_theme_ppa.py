@@ -100,8 +100,20 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
             if prefetch_due and not prefetch_path.exists():
                 evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
                 if (evidence.get("next_phase") == active.get("phase")
-                        and not evidence.get("unresolved_requests")):
-                    prospective = prepare_batch(evidence["base"], evidence, cockpit_script)
+                        and (experiment or not evidence.get("unresolved_requests"))):
+                    projected = evidence
+                    if experiment and evidence.get("phase_limit") is not None:
+                        phase = active["phase"]
+                        persisted = {row.get("case_id") for row in evidence.get("rows", [])
+                                     if isinstance(row, dict)}
+                        remaining_active = sum(case.get("case_id") not in persisted
+                                               for case in cases if isinstance(case, dict))
+                        counts = dict(evidence.get("phase_counts") or {})
+                        counts[phase] = counts.get(phase, 0) + remaining_active
+                        if counts[phase] >= evidence["phase_limit"]:
+                            return "WAIT"
+                        projected = {**evidence, "phase_counts": counts}
+                    prospective = prepare_batch(evidence["base"], projected, cockpit_script)
                     output_dir.mkdir(parents=True, exist_ok=True)
                     payload = {"epoch": evidence["epoch"], "phase": prospective["phase"],
                                "cases": prospective["cases"],

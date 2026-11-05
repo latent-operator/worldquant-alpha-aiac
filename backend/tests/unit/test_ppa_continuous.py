@@ -420,6 +420,61 @@ def test_experiment_prefetches_refinement_before_worker_finishes(tmp_path, monke
     assert queued["cases"][0]["case_id"] == "next"
 
 
+def test_experiment_prefetches_with_requests_in_flight_using_projected_capacity(tmp_path, monkeypatch):
+    active = [{"case_id": f"active-{index}"} for index in range(8)]
+    evidence = {"epoch": 23, "next_phase": "refinement", "base": {},
+                "unresolved_requests": 2, "phase_limit": 16,
+                "phase_counts": {"refinement": 3},
+                "rows": [{"case_id": "prior-1"}, {"case_id": "prior-2"},
+                         {"case_id": "active-0"}]}
+    def request(url, payload=None):
+        if url.endswith("/tasks/14"):
+            return {"status": "RUNNING", "config": {"ppa_throughput_experiment": True}}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 21, "status": "RUNNING", "checkpoint": {
+                "ppa_batch": {"phase": "refinement", "cases": active},
+                "ppa_batch_cursor": 0}}]
+        if url.endswith("/ppa-qualification-reconcile"):
+            return {"reviewed": 0, "pending": 0}
+        if url.endswith("/ppa-feedback"):
+            return evidence
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    def prepare(base, projected, script):
+        assert projected["phase_counts"]["refinement"] == 10
+        assert projected["unresolved_requests"] == 2
+        return {"phase": "refinement", "cases": [{"case_id": "next"}],
+                "candidate_generation": {"plan_sha256": "abc"}}
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", prepare)
+    assert watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 21,
+                                tmp_path / "ask.ps1", tmp_path) == "WAIT"
+    assert (tmp_path / "run-21-prefetch.json").exists()
+
+
+def test_experiment_skips_prefetch_when_active_batch_fills_phase(tmp_path, monkeypatch):
+    active = [{"case_id": f"active-{index}"} for index in range(4)]
+    def request(url, payload=None):
+        if url.endswith("/tasks/14"):
+            return {"status": "RUNNING", "config": {"ppa_throughput_experiment": True}}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 21, "status": "RUNNING", "checkpoint": {
+                "ppa_batch": {"phase": "refinement", "cases": active},
+                "ppa_batch_cursor": 0}}]
+        if url.endswith("/ppa-qualification-reconcile"):
+            return {"reviewed": 0, "pending": 0}
+        if url.endswith("/ppa-feedback"):
+            return {"epoch": 23, "next_phase": "refinement", "base": {},
+                    "unresolved_requests": 1, "phase_limit": 16,
+                    "phase_counts": {"refinement": 14},
+                    "rows": [{"case_id": "active-0"}, {"case_id": "active-1"}]}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", lambda *args: pytest.fail("No phase capacity"))
+    assert watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 21,
+                                tmp_path / "ask.ps1", tmp_path) == "WAIT"
+    assert not (tmp_path / "run-21-prefetch.json").exists()
+
+
 def test_watcher_revalidates_prefetch_against_current_feedback_before_import(tmp_path, monkeypatch):
     prefetched = tmp_path / "run-18-prefetch.json"
     prefetched.write_text(json.dumps({"epoch": 3, "phase": "discovery",
