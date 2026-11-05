@@ -43,12 +43,13 @@ async def setup(async_engine, monkeypatch):
         return maker, task.id, run.id, m
 
 
-def discovery():
-    return {"phase": "discovery", "cases": [{"case_id": f"new{i}", "pair_id": "newpair",
-        "arm": "CONTROL" if i == 0 else "TREATMENT", "dataset_id": "dataset1",
-        "expression": f"rank(field_0_{i})", "mechanism_id": "signal",
-        "changed_element": "field", "expected_effect": "AMER improvement",
-        "risk": "noise", "stop_condition": "no gain"} for i in range(4)]}
+def discovery(groups=1):
+    return {"phase": "discovery", "cases": [{"case_id": f"new{group}_{i}",
+        "pair_id": f"newpair{group}", "arm": "CONTROL" if i == 0 else "TREATMENT",
+        "dataset_id": "dataset1", "expression": f"rank(field_{group}_{i})",
+        "mechanism_id": "signal", "changed_element": "field",
+        "expected_effect": "AMER improvement", "risk": "noise",
+        "stop_condition": "no gain"} for group in range(groups) for i in range(4)]}
 
 
 class Brain:
@@ -68,14 +69,16 @@ class Brain:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("transport,expected_pairs,history,expected_peak,concurrency,underfilled", [
-    ("single", 0, [], 2, 2, False), ("paired_multi", 2, [], 2, 2, False),
+@pytest.mark.parametrize("transport,expected_pairs,history,expected_peak,concurrency,underfilled,groups", [
+    ("single", 0, [], 2, 2, False, 1), ("paired_multi", 2, [], 2, 2, False, 1),
     ("single", 0, [{"transport": "single", "concurrency": 2, "completed": 12,
-                    "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False),
-    ("single", 0, [], 4, 8, True)])
+                    "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False, 1),
+    ("single", 0, [], 4, 8, True, 1),
+    ("single", 0, [], 8, 8, False, 2),
+    ("paired_multi", 8, [], 8, 8, False, 4)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
                                                                   transport, expected_pairs, history, expected_peak,
-                                                                  concurrency, underfilled):
+                                                                  concurrency, underfilled, groups):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -122,8 +125,9 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         run.config_snapshot = {"task": {"config": task.config}}
         await db.commit()
         evidence = await workflow.feedback_context(db, task, run)
-        await workflow.import_batch(db, task, run, freeze_batch(base, evidence, discovery()))
-        for case in discovery()["cases"]:
+        batch = discovery(groups)
+        await workflow.import_batch(db, task, run, freeze_batch(base, evidence, batch))
+        for case in batch["cases"]:
             db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
                 family_id="theme_ppa_v3:nov", experiment_group=case["case_id"],
                 expression=case["expression"], expression_hash=case["case_id"],
@@ -134,12 +138,14 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         await db.commit()
         fields = {"dataset1": [{"id": name, "type": "MATRIX"} for name in base["datasets"]["dataset1"]]}
         await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
-        assert brain.peak >= expected_peak
+        assert brain.peak == expected_peak
         assert brain.pairs == expected_pairs
-        assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] >= expected_peak
+        assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
         assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is underfilled
-        assert len((await db.execute(select(ResearchCandidate).where(
-            ResearchCandidate.run_id == rid))).scalars().all()) == 4
+        rows = (await db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.run_id == rid))).scalars().all()
+        assert len(rows) == 4 * groups
+        assert all((row.result_snapshot or {}).get("ppa_evaluation") for row in rows)
 
 
 @pytest.mark.asyncio
