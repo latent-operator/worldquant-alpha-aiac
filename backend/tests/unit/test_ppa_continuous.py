@@ -258,6 +258,36 @@ def test_watcher_advances_exhausted_epoch_before_generation(tmp_path, monkeypatc
         i for i, (url, _) in enumerate(calls) if url.endswith("/ppa-batch"))
 
 
+def test_watcher_skips_multiple_occupied_epochs_before_generation(tmp_path, monkeypatch):
+    calls = []
+    feedback = iter([
+        {"epoch": 20, "next_phase": None, "stop_reason": "PPA_NO_FINALISTS",
+         "continuous": True, "phase_counts": {"refinement": 16}},
+        {"epoch": 21, "next_phase": None, "stop_reason": "PPA_NO_FINALISTS",
+         "continuous": True, "phase_counts": {"refinement": 16}},
+        {"epoch": 22, "next_phase": "refinement", "base": {}},
+    ])
+
+    def request(url, payload=None):
+        calls.append((url, payload))
+        if url.endswith("/tasks/14"):
+            return {"status": "PAUSED"}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 21, "status": "PAUSED", "block_reason": "AWAITING_RESEARCH_BATCH"}]
+        if url.endswith("/ppa-feedback"):
+            return next(feedback)
+        return {"ok": True}
+
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", lambda *args: {
+        "phase": "refinement", "cases": [], "candidate_generation": {"plan_sha256": "abc"}})
+    result = watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 21,
+                                  tmp_path / "ask.ps1", tmp_path)
+    assert result.startswith("IMPORTED:")
+    assert [payload for url, payload in calls if url.endswith("/ppa-epoch")] == [
+        {"expected_epoch": 20}, {"expected_epoch": 21}]
+
+
 def test_watcher_reconciles_unknown_without_generating(tmp_path, monkeypatch):
     calls = []
     def request(url, payload=None):
