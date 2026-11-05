@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import json
+import subprocess
 from backend.services.theme_ppa import validate_theme_task
 from backend.services.ppa_feedback import build_feedback, freeze_batch
 from backend.tests.unit.test_theme_ppa import manifest
@@ -569,3 +570,52 @@ def test_watcher_alerts_after_bounded_retry_cycle(tmp_path):
     alert = json.loads((tmp_path / "coordinator-alert.json").read_text(encoding="utf-8"))
     assert alert["attention_required"] is True
     assert alert["consecutive_failures"] == 4
+
+
+def test_watcher_waits_for_model_account_capacity_without_early_alert(tmp_path):
+    attempts = []
+    waits = []
+    def operation():
+        attempts.append(1)
+        if len(attempts) <= 5:
+            raise subprocess.CalledProcessError(
+                1, ["pwsh"], stderr="Cockpit API request failed (HTTP 503): "
+                "No compatible account is available for this model")
+        return "IMPORTED:after-reset.json"
+    assert watch_theme_ppa.run_step_with_retry(operation, tmp_path, sleep=waits.append) == (
+        "IMPORTED:after-reset.json")
+    assert waits == [300] * 5
+    assert not (tmp_path / "coordinator-alert.json").exists()
+    heartbeat = json.loads((tmp_path / "coordinator-heartbeat.json").read_text(encoding="utf-8"))
+    assert heartbeat["action"] == "IMPORTED:after-reset.json"
+
+
+def test_watcher_alerts_after_six_hours_of_model_account_unavailability(tmp_path):
+    attempts = []
+    waits = []
+    def unavailable():
+        attempts.append(1)
+        raise subprocess.CalledProcessError(
+            1, ["pwsh"], stderr="No compatible account is available for this model")
+    with pytest.raises(watch_theme_ppa.CoordinatorRetryExhausted):
+        watch_theme_ppa.run_step_with_retry(unavailable, tmp_path, sleep=waits.append)
+    assert len(attempts) == 72
+    assert waits == [300] * 71
+    alert = json.loads((tmp_path / "coordinator-alert.json").read_text(encoding="utf-8"))
+    assert alert["action"] == "WAIT_MODEL_ACCOUNT"
+    assert alert["error"] == "MODEL_UNAVAILABLE"
+    assert "compatible account" not in json.dumps(alert)
+
+
+def test_watcher_keeps_bounded_retry_for_other_cockpit_errors(tmp_path):
+    attempts = []
+    waits = []
+    def unavailable():
+        attempts.append(1)
+        raise subprocess.CalledProcessError(1, ["pwsh"], stderr="HTTP 503: upstream failure")
+    with pytest.raises(watch_theme_ppa.CoordinatorRetryExhausted):
+        watch_theme_ppa.run_step_with_retry(unavailable, tmp_path, sleep=waits.append)
+    assert len(attempts) == 4
+    assert waits == [10, 30, 60]
+    alert = json.loads((tmp_path / "coordinator-alert.json").read_text(encoding="utf-8"))
+    assert alert["error"] == "CalledProcessError"
