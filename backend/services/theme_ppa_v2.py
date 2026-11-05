@@ -16,6 +16,7 @@ from backend.services.research_audit import ResearchLedger, ResearchBudgetBrain,
 CHARGED = {"RESERVED", "REQUESTED", "UNKNOWN", "FAILED", "RESULT"}
 ACCEPTED = CHARGED | {"CACHED"}
 PPA_RECONCILE_TIMEOUT_SECONDS = 1200
+PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS = 1500
 
 
 def needs_reconciliation(row):
@@ -166,8 +167,9 @@ async def advance_epoch(db, task, run, *, expected_epoch):
     history = list(checkpoint.get("ppa_epoch_history") or [])
     history.append({"from": current, "to": current + 1, "reason": evidence["stop_reason"],
                     "at": datetime.now(timezone.utc).isoformat(), "phase_counts": evidence["phase_counts"]})
+    next_limit = 32 if task.config.get("ppa_throughput_experiment") is True else 16
     run.checkpoint = {**checkpoint, "ppa_epoch": current + 1, "ppa_epoch_history": history,
-                      "ppa_phase_limit": 16}
+                      "ppa_phase_limit": next_limit}
     await db.commit()
     return {"run_id": run.id, "epoch": current + 1, "previous_reason": evidence["stop_reason"]}
 
@@ -291,7 +293,8 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
         try:
             if (row.result_snapshot or {}).get("request", {}).get("transport") == "paired_multi":
                 result = await asyncio.wait_for(
-                    brain.poll_existing_multisim(location, row.expression), timeout=20)
+                    brain.poll_existing_multisim(location, row.expression),
+                    timeout=PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS)
             else:
                 result = await asyncio.wait_for(
                     brain.poll_existing_simulation(location),
@@ -532,15 +535,29 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                           "ppa_max_in_flight": concurrency,
                           "ppa_parallel_scheduler": "v1"}
         await db.commit()
+    checkpoint = run.checkpoint or {}
+    transport = checkpoint.get("ppa_transport", "single")
+    multi_group_size = (4 if task.config.get("ppa_throughput_experiment") is True
+                        and checkpoint.get("ppa_phase_limit") == 32
+                        and hasattr(brain, "simulate_audited_multi") else 2)
     if not checkpoint.get("ppa_batch_completed") and not checkpoint.get("ppa_batch_cursor"):
         from backend.services.ppa_quota import choose_parallelism
         measured_history = checkpoint.get("ppa_throughput_history") or []
         if checkpoint.get("ppa_calibration_id"):
             measured_history = [row for row in measured_history
                                 if row.get("calibration_id") == checkpoint["ppa_calibration_id"]]
+        if transport == "paired_multi":
+            measured_history = [row for row in measured_history
+                                if row.get("transport") != "paired_multi"
+                                or row.get("group_size", 2) == multi_group_size]
+            if multi_group_size == 4 and not any(
+                    row.get("transport") == "paired_multi" for row in measured_history):
+                concurrency = 2
+                run.checkpoint = {**(run.checkpoint or {}), "ppa_max_in_flight": 2}
+                await db.commit()
         measured_level = choose_parallelism(concurrency,
                                             measured_history,
-                                            checkpoint.get("ppa_transport", "single"))
+                                            transport)
         if measured_level != concurrency:
             concurrency = measured_level
             run.checkpoint = {**(run.checkpoint or {}), "ppa_max_in_flight": concurrency}
@@ -609,7 +626,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         if any(cached):
             return [await simulate_one(index, original) for index, original in group]
         quota = getattr(ledger, "quota_window", None)
-        if quota is not None and not quota.claim_many(2):
+        if quota is not None and not quota.claim_many(len(group)):
             quota_exhausted.set()
             stop_dispatch.set()
             return []
@@ -619,8 +636,11 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                              pair_id=case.get("pair_id"), parent_candidate_id=case.get("parent_candidate_id"),
                              research_case=case)
         with wrapped.source(batch["phase"].upper()):
-            results = await wrapped.simulate_audited_pair(
-                [case["expression"] for _, case, _ in prepared], **prepared[0][2])
+            expressions = [case["expression"] for _, case, _ in prepared]
+            if len(expressions) == 2:
+                results = await wrapped.simulate_audited_pair(expressions, **prepared[0][2])
+            else:
+                results = await wrapped.simulate_audited_multi(expressions, **prepared[0][2])
         output = []
         for (index, case, settings), result in zip(prepared, results):
             review_result(result)
@@ -639,17 +659,20 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
             finally:
                 active_parents -= 1
 
-    transport = checkpoint.get("ppa_transport", "single")
     groups = []
+    group_size = 1
     if transport == "paired_multi" and hasattr(brain, "simulate_audited_pair"):
+        group_size = multi_group_size
         index = 0
         while index < len(pending):
-            pair = pending[index:index + 2]
-            if len(pair) == 2 and pair[0][1].get("settings", {}) == pair[1][1].get("settings", {}):
-                groups.append(pair)
-                index += 2
+            group = pending[index:index + group_size]
+            if len(group) >= 2 and all(
+                    item[1].get("settings", {}) == group[0][1].get("settings", {})
+                    for item in group):
+                groups.append(group)
+                index += len(group)
             else:
-                groups.append(pair[:1])
+                groups.append(group[:1])
                 index += 1
     else:
         groups = [[item] for item in pending]
@@ -732,12 +755,15 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         history.append({"transport": transport, "concurrency": concurrency, "completed": completed_count,
                         "wall_seconds": round(wall_seconds, 3), "unknown": unknown_count,
                         "rate_limited": False, "parent_peak": parent_peak,
-                        "parent_groups": len(groups),
+                        "parent_groups": len(groups), "group_size": group_size,
                         "supply_limited": len(groups) < concurrency,
                         "calibration_id": (run.checkpoint or {}).get("ppa_calibration_id")})
         calibration_id = (run.checkpoint or {}).get("ppa_calibration_id")
         comparable = ([row for row in history if row.get("calibration_id") == calibration_id]
                       if calibration_id else history)
+        if transport == "paired_multi":
+            comparable = [row for row in comparable if row.get("transport") != "paired_multi"
+                          or row.get("group_size", 2) == group_size]
         next_mode, next_level = next_transport(transport, concurrency, comparable)
         run.checkpoint = {**(run.checkpoint or {}), "ppa_throughput_history": history,
                           "ppa_max_in_flight": next_level, "ppa_transport": next_mode,

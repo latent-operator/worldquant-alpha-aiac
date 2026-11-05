@@ -197,13 +197,16 @@ async def test_throughput_experiment_starts_with_own_discovery_slots(async_engin
 
 
 @pytest.mark.asyncio
-async def test_epoch_advance_is_atomic_and_stale_retry_is_rejected(async_engine, monkeypatch):
+@pytest.mark.parametrize("experiment,expected_limit", [(False, 16), (True, 32)])
+async def test_epoch_advance_is_atomic_and_stale_retry_is_rejected(
+        async_engine, monkeypatch, experiment, expected_limit):
     maker, task_id, run_id, data = await setup(async_engine, monkeypatch)
     async with maker() as db:
         task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
         task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True,
-                       "research_request_budget": None}
-        run.checkpoint = {"ppa_epoch": 1, "ppa_batch": {"cases": []}, "ppa_batch_cursor": 0}
+                       "research_request_budget": None, "ppa_throughput_experiment": experiment}
+        run.checkpoint = {"ppa_epoch": 1, "ppa_phase_limit": 16,
+                          "ppa_batch": {"cases": []}, "ppa_batch_cursor": 0}
         from backend.models import ResearchCandidate
         for index in range(16):
             db.add(ResearchCandidate(task_id=task_id, run_id=run_id, source="DISCOVERY",
@@ -216,10 +219,10 @@ async def test_epoch_advance_is_atomic_and_stale_retry_is_rejected(async_engine,
         await db.commit()
         result = await workflow.advance_epoch(db, task, run, expected_epoch=1)
         assert result["epoch"] == 2
-        assert run.checkpoint["ppa_phase_limit"] == 16
+        assert run.checkpoint["ppa_phase_limit"] == expected_limit
         next_evidence = await workflow.feedback_context(db, task, run)
-        assert next_evidence["max_batch_cases"] == 16
-        assert next_evidence["phase_limit"] == 16
+        assert next_evidence["max_batch_cases"] == expected_limit
+        assert next_evidence["phase_limit"] == expected_limit
         with pytest.raises(ValueError, match="STALE_EPOCH"):
             await workflow.advance_epoch(db, task, run, expected_epoch=1)
 

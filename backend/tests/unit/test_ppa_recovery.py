@@ -156,6 +156,31 @@ async def test_audited_pair_records_parent_location_for_each_case(async_engine, 
 
 
 @pytest.mark.asyncio
+async def test_audited_multi_records_one_parent_for_four_cases(async_engine, monkeypatch):
+    maker, tasks, runs = await campaign(async_engine, monkeypatch)
+    class MultiBrain:
+        supports_request_tracking = True
+        async def simulate_audited_multi(self, expressions, **settings):
+            assert len(expressions) == 4
+            await settings["on_location"]("/simulations/four-child-parent")
+            return [{"success": True, "alpha_id": f"a{index}", "expression": expression}
+                    for index, expression in enumerate(expressions)]
+    expressions = [f"rank(field_{index})" for index in range(4)]
+    ledger = audit.ResearchLedger(tasks[0], runs[0], 80)
+    wrapped = audit.ResearchBudgetBrain(MultiBrain(), ledger)
+    results = await wrapped.simulate_audited_multi(expressions)
+    assert [row["alpha_id"] for row in results] == ["a0", "a1", "a2", "a3"]
+    async with maker() as db:
+        rows = (await db.execute(__import__("sqlalchemy").select(ResearchCandidate).where(
+            ResearchCandidate.run_id == runs[0]))).scalars().all()
+        assert len(rows) == 4
+        assert all((row.result_snapshot or {})["request"]["location"] ==
+                   "/simulations/four-child-parent" for row in rows)
+        assert all((row.result_snapshot or {})["request"]["transport"] == "paired_multi"
+                   for row in rows)
+
+
+@pytest.mark.asyncio
 async def test_reconcile_polls_existing_request_and_never_posts(async_engine, monkeypatch):
     maker, tasks, runs = await campaign(async_engine, monkeypatch)
     ledger = audit.ResearchLedger(tasks[0], runs[0], 80)

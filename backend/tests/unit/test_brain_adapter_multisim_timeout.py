@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.adapters.brain_adapter import match_audited_children
@@ -108,32 +109,38 @@ def test_multisim_timeout_boundary_fetches_completed_children():
     assert all(item["location"].endswith("/simulations/parent") for item in result["results"])
 
 
-def test_audited_multisim_maps_children_by_expression_not_position():
-    results = [{"alpha_id": "b", "expression": "rank(b)"},
-               {"alpha_id": "a", "expression": "rank(a)"}]
-    matched = match_audited_children(["rank(a)", "rank(b)"], results)
-    assert [item["alpha_id"] for item in matched] == ["a", "b"]
-    assert match_audited_children(["rank(a)", "rank(b)"], [{"alpha_id": "a"}, results[0]]) is None
+@pytest.mark.parametrize("size", [2, 4])
+def test_audited_multisim_maps_children_by_expression_not_position(size):
+    expressions = [f"rank({index})" for index in range(size)]
+    results = [{"alpha_id": f"a{index}", "expression": expressions[index]}
+               for index in reversed(range(size))]
+    matched = match_audited_children(expressions, results)
+    assert [item["alpha_id"] for item in matched] == [f"a{index}" for index in range(size)]
+    assert match_audited_children(expressions, [{"alpha_id": "missing"}, *results[1:]]) is None
 
 
-def test_audited_pair_persists_parent_location_before_polling():
+@pytest.mark.parametrize("size", [2, 4])
+def test_audited_multi_persists_parent_location_before_polling(size):
+    expressions = [f"rank({index})" for index in range(size)]
     class PairAdapter(BrainAdapter):
         async def _safe_api_call(self, method, endpoint, **kwargs):
+            assert len(kwargs["json"]) == size
             return _Response({}, status_code=201, headers={"Location": "/simulations/parent"})
         async def _wait_for_multisim(self, location, **kwargs):
             assert events == [("location", "/simulations/parent")]
             return {"success": True, "results": [
-                {"alpha_id": "b", "expression": "rank(b)"},
-                {"alpha_id": "a", "expression": "rank(a)"}]}
+                {"alpha_id": f"a{index}", "expression": expressions[index]}
+                for index in reversed(range(size))]}
     events = []
     async def saved(location):
         events.append(("location", location))
     results = asyncio.run(PairAdapter().simulate_batch(
-        ["rank(a)", "rank(b)"], retry_post=False, audit_match=True, on_location=saved))
-    assert [row["alpha_id"] for row in results] == ["a", "b"]
+        expressions, retry_post=False, audit_match=True, on_location=saved))
+    assert [row["alpha_id"] for row in results] == [f"a{index}" for index in range(size)]
 
 
-def test_audited_pair_429_is_reported_for_both_without_retry():
+@pytest.mark.parametrize("size", [2, 4])
+def test_audited_multi_429_is_reported_for_every_child_without_retry(size):
     class Limited(BrainAdapter):
         calls = 0
         async def _safe_api_call(self, method, endpoint, **kwargs):
@@ -141,10 +148,10 @@ def test_audited_pair_429_is_reported_for_both_without_retry():
             return _Response({}, status_code=429, headers={"Retry-After": "30",
                                                            "X-Ratelimit-Remaining": "0"})
     brain = Limited()
-    results = asyncio.run(brain.simulate_batch(["rank(a)", "rank(b)"],
+    results = asyncio.run(brain.simulate_batch([f"rank({index})" for index in range(size)],
                                                retry_post=False, audit_match=True))
     assert brain.calls == 1
-    assert len(results) == 2
+    assert len(results) == size
     assert all(row["http_status"] == 429 and row["retry_after"] == 30 for row in results)
 
 

@@ -49,6 +49,16 @@ def test_four_case_batches_accumulate_evidence_for_each_ramp():
     assert choose_parallelism(4, [two] * 6 + [four] * 6) == 8
 
 
+def test_new_concurrency_level_is_not_judged_by_previous_level_peak():
+    two = {"transport": "paired_multi", "group_size": 4, "concurrency": 2,
+           "completed": 24, "wall_seconds": 2400, "parent_peak": 2,
+           "parent_groups": 8, "unknown": 0, "rate_limited": False}
+    four = {**two, "concurrency": 4, "wall_seconds": 1800, "parent_peak": 4}
+    assert choose_parallelism(4, [two], "paired_multi") == 4
+    assert choose_parallelism(8, [two, four], "paired_multi") == 8
+    assert next_transport("paired_multi", 8, [two, four]) == ("paired_multi", 8)
+
+
 def test_parallelism_requires_both_twenty_four_results_and_thirty_active_minutes():
     assert choose_parallelism(2, [{"concurrency": 2, "completed": 24,
                                    "wall_seconds": 600}]) == 2

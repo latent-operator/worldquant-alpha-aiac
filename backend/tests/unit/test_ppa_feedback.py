@@ -362,11 +362,12 @@ def test_discovery_keeps_valid_group_when_later_cockpit_call_fails(tmp_path):
     assert "CalledProcessError" in batch["candidate_generation"]["top_up_error"]
 
 
-def test_full_discovery_batch_uses_four_case_cockpit_subcalls(tmp_path):
+@pytest.mark.parametrize("phase_limit,group_count", [(16, 4), (32, 8)])
+def test_full_discovery_batch_uses_four_case_cockpit_subcalls(tmp_path, phase_limit, group_count):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")
     proposals = []
-    for group_index in range(4):
+    for group_index in range(group_count):
         prefix = f"g{group_index}"
         proposals.append({"phase": "discovery", "cases": [
             {"case_id": f"{prefix}_{arm_index}", "pair_id": prefix,
@@ -382,10 +383,10 @@ def test_full_discovery_batch_uses_four_case_cockpit_subcalls(tmp_path):
         prompts.append(__import__("pathlib").Path(argv[5]).read_text(encoding="utf-8"))
         return SimpleNamespace(stdout=json.dumps(proposals[len(prompts) - 1]))
 
-    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=phase_limit)
     batch = feedback.prepare_batch_filled(base(), evidence, script, runner=runner)
-    assert len(batch["cases"]) == 16
-    assert len(prompts) == 4
+    assert len(batch["cases"]) == phase_limit
+    assert len(prompts) == group_count
     assert all("Generate at most 4 cases" in prompt for prompt in prompts)
 
 

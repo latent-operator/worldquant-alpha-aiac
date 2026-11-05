@@ -509,6 +509,11 @@ class ResearchBudgetBrain:
             raise ValueError("PPA_AUDITED_PAIR_REQUIRES_TWO")
         return await self.simulate_batch(expressions, audit_pair=True, **settings)
 
+    async def simulate_audited_multi(self, expressions: list[str], **settings) -> list[dict]:
+        if not 2 <= len(expressions) <= 10:
+            raise ValueError("PPA_AUDITED_MULTI_SIZE_INVALID")
+        return await self.simulate_batch(expressions, audit_pair=True, **settings)
+
     async def simulate_batch(self, expressions: list[str], audit_pair: bool = False, **settings) -> list[dict]:
         results: list[dict | None] = [None] * len(expressions)
         allowed: list[str] = []
@@ -544,7 +549,9 @@ class ResearchBudgetBrain:
                                 await self.ledger.record_rate_limit(reservations[0][1], values)
                             send_settings["on_rate_limit"] = on_rate_limit
                     network_results = [await self.brain.simulate_single(allowed[0], **send_settings)]
-                elif len(allowed) == 2 and audit_pair and hasattr(self.brain, "simulate_audited_pair"):
+                elif (len(allowed) >= 2 and audit_pair and
+                      (hasattr(self.brain, "simulate_audited_multi") or
+                       len(allowed) == 2 and hasattr(self.brain, "simulate_audited_pair"))):
                     send_settings = dict(settings)
                     if getattr(self.brain, "supports_request_tracking", False) is True:
                         async def on_location(location):
@@ -557,7 +564,10 @@ class ResearchBudgetBrain:
                                 for _, candidate_id in reservations:
                                     await self.ledger.record_rate_limit(candidate_id, values)
                             send_settings["on_rate_limit"] = on_rate_limit
-                    network_results = await self.brain.simulate_audited_pair(allowed, **send_settings)
+                    if len(allowed) == 2 and hasattr(self.brain, "simulate_audited_pair"):
+                        network_results = await self.brain.simulate_audited_pair(allowed, **send_settings)
+                    else:
+                        network_results = await self.brain.simulate_audited_multi(allowed, **send_settings)
                 else:
                     network_results = await self.brain.simulate_batch(allowed, **settings)
             except Exception:
