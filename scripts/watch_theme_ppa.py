@@ -150,13 +150,19 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
     if evidence.get("unresolved_requests"):
         recovered = request_json(f"{api}/runs/{run_id}/ppa-reconcile", {})
         return "WAIT_RECONCILE" if recovered["pending"] else "RECONCILED"
-    if evidence["next_phase"] is None:
+    advances = 0
+    while evidence["next_phase"] is None:
         if not evidence.get("continuous"):
             raise ValueError(f"PPA_NO_NEXT_PHASE:{evidence['stop_reason']}")
-        request_json(f"{api}/runs/{run_id}/ppa-epoch", {"expected_epoch": evidence["epoch"]})
-        evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
-        if evidence["next_phase"] is None:
+        if evidence.get("phase_counts") == {}:
             raise ValueError(f"PPA_NO_NEXT_PHASE:{evidence['stop_reason']}")
+        if advances >= 32:
+            return "ADVANCED_EPOCH"
+        request_json(f"{api}/runs/{run_id}/ppa-epoch", {"expected_epoch": evidence["epoch"]})
+        advances += 1
+        evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
+        if evidence.get("unresolved_requests"):
+            return "WAIT_RECONCILE"
     prefetch_path = output_dir / f"run-{run_id}-prefetch.json"
     batch = None
     if prefetch_path.exists():
