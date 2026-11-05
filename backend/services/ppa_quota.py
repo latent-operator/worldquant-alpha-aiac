@@ -58,6 +58,12 @@ def retry_delay_for_429(quota, retry_after=None, streak=1):
     return max(server_wait, min(600, 30 * (2 ** min(max(0, streak - 1), 5))))
 
 
+def _supply_limited(row, concurrency):
+    groups = row.get("parent_groups")
+    return bool(row.get("supply_limited") or
+                (type(groups) is int and groups < concurrency))
+
+
 def choose_parallelism(current, history, transport="single"):
     """Use real completed batches, never the theoretical eight-job ceiling."""
     current = current if current in (2, 4, 8) else 2
@@ -65,7 +71,7 @@ def choose_parallelism(current, history, transport="single"):
     if any("parent_peak" in row for row in history):
         history = [row for row in history if "parent_peak" in row]
     if (history and "parent_peak" in history[-1] and history[-1]["parent_peak"] < current
-            and not history[-1].get("supply_limited")):
+            and not _supply_limited(history[-1], current)):
         return 2
     if history and history[-1].get("concurrency") == current and (
             history[-1].get("unknown", 0) or history[-1].get("rate_limited")):
@@ -95,11 +101,11 @@ def next_transport(transport, current, history):
     level = choose_parallelism(current, history, transport)
     latest = history[-1] if history else {}
     if (transport == "paired_multi" and latest.get("parent_peak", current) < current
-            and not latest.get("supply_limited")):
+            and not _supply_limited(latest, current)):
         return "single", 2
     if (transport == "single" and current >= 4 and level < current
             and not latest.get("unknown") and not latest.get("rate_limited")
-            and not latest.get("supply_limited")):
+            and not _supply_limited(latest, current)):
         return "paired_multi", 2
     return transport, level
 

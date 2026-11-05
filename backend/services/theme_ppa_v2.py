@@ -695,8 +695,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                         "wall_seconds": round(wall_seconds, 3), "unknown": unknown_count,
                         "rate_limited": False, "parent_peak": parent_peak,
                         "parent_groups": len(groups),
-                        "supply_limited": bool(task.config.get("ppa_throughput_experiment")
-                                               and len(groups) < concurrency),
+                        "supply_limited": len(groups) < concurrency,
                         "calibration_id": (run.checkpoint or {}).get("ppa_calibration_id")})
         calibration_id = (run.checkpoint or {}).get("ppa_calibration_id")
         comparable = ([row for row in history if row.get("calibration_id") == calibration_id]

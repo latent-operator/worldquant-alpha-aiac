@@ -68,12 +68,14 @@ class Brain:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("transport,expected_pairs,history,expected_peak", [
-    ("single", 0, [], 2), ("paired_multi", 2, [], 2),
+@pytest.mark.parametrize("transport,expected_pairs,history,expected_peak,concurrency,underfilled", [
+    ("single", 0, [], 2, 2, False), ("paired_multi", 2, [], 2, 2, False),
     ("single", 0, [{"transport": "single", "concurrency": 2, "completed": 12,
-                    "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4)])
+                    "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False),
+    ("single", 0, [], 4, 8, True)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
-                                                                  transport, expected_pairs, history, expected_peak):
+                                                                  transport, expected_pairs, history, expected_peak,
+                                                                  concurrency, underfilled):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -115,7 +117,7 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
                        "research_request_budget": None, "continuous_mode": True}
         run.checkpoint = {"ppa_phase_limit": 16, "ppa_transport": transport,
-                          "ppa_max_in_flight": 2, "ppa_throughput_history": history,
+                          "ppa_max_in_flight": concurrency, "ppa_throughput_history": history,
                           "ppa_first_batch_reviewed": True}
         run.config_snapshot = {"task": {"config": task.config}}
         await db.commit()
@@ -135,6 +137,7 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         assert brain.peak >= expected_peak
         assert brain.pairs == expected_pairs
         assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] >= expected_peak
+        assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is underfilled
         assert len((await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == rid))).scalars().all()) == 4
 
