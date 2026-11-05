@@ -66,6 +66,17 @@ def test_experiment_does_not_demote_or_switch_transport_for_underfilled_batch():
     assert choose_parallelism(4, [platform_limited]) == 2
 
 
+def test_underfilled_batch_without_experiment_flag_is_not_platform_failure():
+    row = {"transport": "single", "concurrency": 8, "parent_peak": 4,
+           "parent_groups": 4, "supply_limited": False, "completed": 4,
+           "wall_seconds": 300, "unknown": 0, "rate_limited": False}
+    assert choose_parallelism(8, [row]) == 8
+    assert next_transport("single", 8, [row]) == ("single", 8)
+    pair_row = {**row, "transport": "paired_multi", "parent_peak": 2,
+                "parent_groups": 2}
+    assert next_transport("paired_multi", 8, [pair_row]) == ("paired_multi", 8)
+
+
 def test_quota_restores_only_unexpired_observation():
     now = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
     recent = {"request": {"rate_limit": {"remaining": 3, "reset_seconds": 3600},
