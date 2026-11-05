@@ -18,6 +18,16 @@ class CoordinatorRetryExhausted(Exception):
     """A bounded retry cycle failed; keep the coordinator alive and alert."""
 
 
+def model_account_unavailable(exc):
+    """Identify Cockpit's quota or account routing failure without logging stderr."""
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return False
+    stderr = exc.stderr
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    return "no compatible account is available for this model" in str(stderr or "").lower()
+
+
 def request_json(url, payload=None):
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = Request(url, data=data, method="POST" if data is not None else "GET",
@@ -53,6 +63,7 @@ def acquire_lease(run_id, *, port=None):
 def run_step_with_retry(operation, output_dir, *, sleep=time.sleep):
     output_dir.mkdir(parents=True, exist_ok=True)
     failures = 0
+    model_waits = 0
     while True:
         try:
             action = operation()
@@ -65,6 +76,22 @@ def run_step_with_retry(operation, output_dir, *, sleep=time.sleep):
                            or str(exc).startswith(("COCKPIT_BATCH_INVALID", "PPA_BATCH_PHASE_LIMIT")))
             if not recoverable:
                 raise
+            if model_account_unavailable(exc):
+                model_waits += 1
+                state = {"at": datetime.now(timezone.utc).isoformat(),
+                         "action": "WAIT_MODEL_ACCOUNT", "consecutive_failures": model_waits,
+                         "error": "MODEL_UNAVAILABLE", "retry_seconds": 300,
+                         "attention_required": model_waits >= 72}
+                (output_dir / "coordinator-heartbeat.json").write_text(
+                    json.dumps(state), encoding="utf-8")
+                print(json.dumps(state), flush=True)
+                if model_waits >= 72:
+                    (output_dir / "coordinator-alert.json").write_text(
+                        json.dumps(state), encoding="utf-8")
+                    raise CoordinatorRetryExhausted from exc
+                sleep(300)
+                continue
+            model_waits = 0
             failures += 1
             wait = (10, 30, 60, 300)[min(failures - 1, 3)]
             state = {"at": datetime.now(timezone.utc).isoformat(), "action": "RETRY",
