@@ -630,6 +630,36 @@ async def test_pending_original_poll_stays_unknown(async_engine, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_timeout_allows_full_original_poll_window(async_engine, monkeypatch):
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    observed = []
+
+    class PendingBrain(Brain):
+        async def poll_existing_simulation(self, location):
+            assert location == "/simulations/long-running"
+            return {"status": "PENDING"}
+
+    async def capture_timeout(awaitable, *, timeout):
+        observed.append(timeout)
+        return await awaitable
+
+    monkeypatch.setattr(workflow.asyncio, "wait_for", capture_timeout)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+            family_id="theme_ppa_v3:nov", experiment_group="long-running", expression="rank(field_0_0)",
+            expression_hash="expr", settings_hash="settings", settings={}, validation_status="VALID",
+            request_status="UNKNOWN", gate_failures=[], metrics={}, result_snapshot={
+                "request": {"location": "/simulations/long-running"}}))
+        await db.commit()
+        result = await workflow.reconcile_paused(db, task, run, PendingBrain(), {})
+        assert result == {"resolved": 0, "pending": 1}
+    assert observed == [workflow.PPA_RECONCILE_TIMEOUT_SECONDS]
+    assert observed[0] >= 900
+
+
+@pytest.mark.asyncio
 async def test_definitive_original_poll_error_is_failed(async_engine, monkeypatch):
     maker, tid, rid, _ = await setup(async_engine, monkeypatch)
     class FailedBrain(Brain):
