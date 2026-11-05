@@ -14,6 +14,7 @@ from backend.services.research_audit import ResearchLedger, ResearchBudgetBrain,
 
 CHARGED = {"RESERVED", "REQUESTED", "UNKNOWN", "FAILED", "RESULT"}
 ACCEPTED = CHARGED | {"CACHED"}
+PPA_RECONCILE_TIMEOUT_SECONDS = 1200
 
 
 def needs_reconciliation(row):
@@ -268,7 +269,10 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
                 result = await asyncio.wait_for(
                     brain.poll_existing_multisim(location, row.expression), timeout=20)
             else:
-                result = await asyncio.wait_for(brain.poll_existing_simulation(location), timeout=20)
+                result = await asyncio.wait_for(
+                    brain.poll_existing_simulation(location),
+                    timeout=PPA_RECONCILE_TIMEOUT_SECONDS,
+                )
         except asyncio.TimeoutError:
             return {"resolved": 0, "pending": len(candidates)}
     definitive_failure = str(result.get("status") or "").upper() in {"ERROR", "FAILED"}
