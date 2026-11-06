@@ -108,7 +108,7 @@ def research_row(row):
 
 
 def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, phase_limit=12):
-    if phase_limit not in (12, 16):
+    if phase_limit not in (12, 16, 32):
         raise ValueError("PPA_PHASE_LIMIT_INVALID")
     measured = [research_row(row) for row in rows]
     measured = [row for row in measured if row["request_status"] in {"RESULT", "CACHED"}]
@@ -119,7 +119,7 @@ def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, ph
     stopped = sorted(stopped_families(outcomes))
     # A failed window sweep does not invalidate a parent with a different expression.
     available = measured
-    seeds = select_seeds(available, limit=4 if phase_limit == 16 else 3)
+    seeds = select_seeds(available, limit=8 if phase_limit == 32 else 4 if phase_limit == 16 else 3)
     confirmed_counts = Counter(row.get("parent_candidate_id") for row in measured
                                if row.get("source") == "CONFIRMATION")
     finalists = [row for row in select_seeds(available, limit=len(available))
@@ -167,7 +167,7 @@ def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, ph
             evidence["exhausted_templates"].append(list(key))
     evidence["seeds"] = select_active_seeds(
         available, {tuple(item) for item in evidence["exhausted_templates"]},
-        limit=4 if phase_limit == 16 else 3)
+        limit=8 if phase_limit == 32 else 4 if phase_limit == 16 else 3)
     if evidence["next_phase"] == "refinement" and not evidence["seeds"]:
         if phase_counts.get("discovery", 0) <= phase_limit - 4:
             evidence["next_phase"], evidence["stop_reason"] = "discovery", None
@@ -690,7 +690,7 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
         return _prepare_batch_filled_local(base, evidence, cockpit_script, capacity, runner)
     combined, attempts, proposed, truncated, seconds, calls = [], 0, 0, 0, 0.0, 0
     last_error = None
-    for _ in range(4):
+    for _ in range((capacity + 3) // 4):
         remaining = capacity - len(combined)
         if remaining <= 0:
             break

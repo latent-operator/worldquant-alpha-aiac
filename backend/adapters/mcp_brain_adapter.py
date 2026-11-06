@@ -292,6 +292,11 @@ class MCPBrainAdapter:
     async def simulate_audited_pair(self, expressions: List[str], **kwargs) -> List[Dict[str, Any]]:
         if len(expressions) != 2:
             raise ValueError("PPA_AUDITED_PAIR_REQUIRES_TWO")
+        return await self.simulate_audited_multi(expressions, **kwargs)
+
+    async def simulate_audited_multi(self, expressions: List[str], **kwargs) -> List[Dict[str, Any]]:
+        if not 2 <= len(expressions) <= 10:
+            raise ValueError("PPA_AUDITED_MULTI_SIZE_INVALID")
         fallback = await self._ensure_fallback()
         return await fallback.simulate_batch(expressions, retry_post=False,
                                              audit_match=True, **kwargs)

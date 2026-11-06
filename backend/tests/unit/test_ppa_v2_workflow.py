@@ -69,17 +69,26 @@ class Brain:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("phase_limit,transport,expected_pairs,history,expected_peak,concurrency,underfilled,groups", [
-    (16, "single", 0, [], 4, 2, False, 1), (16, "paired_multi", 2, [], 2, 2, True, 1),
+@pytest.mark.parametrize("phase_limit,transport,expected_pairs,history,expected_peak,concurrency,underfilled,groups,group_size", [
+    (16, "single", 0, [], 4, 2, False, 1, 2), (16, "paired_multi", 2, [], 2, 2, True, 1, 2),
     (16, "single", 0, [{"transport": "single", "concurrency": 2, "completed": 12,
-                       "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False, 1),
-    (16, "single", 0, [], 4, 8, True, 1),
-    (16, "single", 0, [], 8, 8, False, 2),
-    (16, "paired_multi", 8, [], 8, 8, False, 4),
-])
+                        "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False, 1, 2),
+    (16, "single", 0, [], 4, 8, True, 1, 2),
+    (16, "single", 0, [], 8, 8, False, 2, 2),
+    (16, "paired_multi", 8, [], 8, 8, False, 4, 2),
+    (32, "paired_multi", 8, [
+        {"transport": "paired_multi", "group_size": 4, "concurrency": 2,
+         "completed": 24, "wall_seconds": 2400, "parent_peak": 2, "parent_groups": 8},
+        {"transport": "paired_multi", "group_size": 4, "concurrency": 4,
+         "completed": 24, "wall_seconds": 1800, "parent_peak": 4, "parent_groups": 8}],
+     8, 8, False, 8, 4),
+    (32, "paired_multi", 8, [{"transport": "paired_multi", "group_size": 2,
+                           "concurrency": 8, "completed": 32, "wall_seconds": 1800,
+                           "parent_peak": 8, "parent_groups": 16}], 2, 8, False, 8, 4)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
                                                                   phase_limit, transport, expected_pairs, history,
-                                                                  expected_peak, concurrency, underfilled, groups):
+                                                                  expected_peak, concurrency, underfilled, groups,
+                                                                  group_size):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -92,6 +101,8 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
             self.active -= 1
             return await super().simulate_single(expression, **settings)
         async def simulate_audited_pair(self, expressions, **settings):
+            return await self.simulate_audited_multi(expressions, **settings)
+        async def simulate_audited_multi(self, expressions, **settings):
             self.pairs += 1
             self.active += 1
             self.peak = max(self.peak, self.active)
@@ -118,8 +129,12 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
     brain = ConcurrentBrain()
     async with maker() as db:
         task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        if groups > 6:
+            base["datasets"]["dataset1"].extend(
+                f"field_{group}_{arm}" for group in range(6, groups) for arm in range(4))
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
-                       "research_request_budget": None, "continuous_mode": True}
+                       "research_request_budget": None, "continuous_mode": True,
+                       "ppa_manifest": base, "ppa_throughput_experiment": group_size == 4}
         run.checkpoint = {"ppa_phase_limit": phase_limit, "ppa_transport": transport,
                           "ppa_max_in_flight": concurrency, "ppa_throughput_history": history,
                           "ppa_first_batch_reviewed": True}
@@ -142,6 +157,8 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         assert brain.peak == expected_peak
         assert brain.pairs == expected_pairs
         assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
+        assert run.checkpoint["ppa_throughput_history"][-1]["group_size"] == (
+            group_size if transport == "paired_multi" else 1)
         assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is underfilled
         rows = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == rid))).scalars().all()
@@ -686,6 +703,37 @@ async def test_reconcile_timeout_allows_full_original_poll_window(async_engine, 
         assert result == {"resolved": 0, "pending": 1}
     assert observed == [workflow.PPA_RECONCILE_TIMEOUT_SECONDS]
     assert observed[0] >= 900
+
+
+@pytest.mark.asyncio
+async def test_multisim_reconcile_allows_parent_poll_and_grace_window(async_engine, monkeypatch):
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    observed = []
+    class PendingBrain(Brain):
+        async def poll_existing_multisim(self, location, expression):
+            assert location == "/simulations/four-child-parent"
+            assert expression == "rank(field_0_0)"
+            return {"status": "PENDING"}
+        async def simulate_single(self, *args, **kwargs):
+            pytest.fail("Never resubmit an uncertain multi request")
+    async def capture_timeout(awaitable, *, timeout):
+        observed.append(timeout)
+        return await awaitable
+    monkeypatch.setattr(workflow.asyncio, "wait_for", capture_timeout)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True}
+        db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+            family_id="theme_ppa_v3:nov", experiment_group="multi-pending",
+            expression="rank(field_0_0)", expression_hash="expr", settings={},
+            settings_hash="settings", validation_status="VALID", request_status="UNKNOWN",
+            gate_failures=[], metrics={}, result_snapshot={"request": {
+                "location": "/simulations/four-child-parent", "transport": "paired_multi"}}))
+        await db.commit()
+        assert await workflow.reconcile_paused(db, task, run, PendingBrain(), {}) == {
+            "resolved": 0, "pending": 1}
+    assert observed == [workflow.PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS]
+    assert observed[0] > 1380
 
 
 @pytest.mark.asyncio

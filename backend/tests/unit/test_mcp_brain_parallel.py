@@ -38,3 +38,22 @@ async def test_audited_pair_uses_direct_tracked_adapter():
     async with adapter:
         result = await adapter.simulate_audited_pair(["rank(a)", "rank(b)"])
     assert [item["alpha_id"] for item in result] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_audited_four_uses_direct_tracked_adapter():
+    class Fallback:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def simulate_batch(self, expressions, **kwargs):
+            assert len(expressions) == 4
+            assert kwargs["retry_post"] is False
+            assert kwargs["audit_match"] is True
+            return [{"alpha_id": f"a{index}", "expression": expression}
+                    for index, expression in enumerate(expressions)]
+    adapter = MCPBrainAdapter(fallback=Fallback())
+    async with adapter:
+        result = await adapter.simulate_audited_multi([f"rank({index})" for index in range(4)])
+    assert [item["alpha_id"] for item in result] == ["a0", "a1", "a2", "a3"]
