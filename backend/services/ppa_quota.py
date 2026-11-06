@@ -70,7 +70,8 @@ def choose_parallelism(current, history, transport="single"):
     history = [row for row in history if row.get("transport", "single") == transport]
     if any("parent_peak" in row for row in history):
         history = [row for row in history if "parent_peak" in row]
-    if (history and "parent_peak" in history[-1] and history[-1]["parent_peak"] < current
+    if (history and history[-1].get("concurrency") == current
+            and "parent_peak" in history[-1] and history[-1]["parent_peak"] < current
             and not _supply_limited(history[-1], current)):
         return 2
     if history and history[-1].get("concurrency") == current and (
@@ -100,7 +101,8 @@ def choose_parallelism(current, history, transport="single"):
 def next_transport(transport, current, history):
     level = choose_parallelism(current, history, transport)
     latest = history[-1] if history else {}
-    if (transport == "paired_multi" and latest.get("parent_peak", current) < current
+    if (transport == "paired_multi" and latest.get("concurrency") == current
+            and latest.get("parent_peak", current) < current
             and not _supply_limited(latest, current)):
         return "single", 2
     if (transport == "single" and current >= 4 and level < current
