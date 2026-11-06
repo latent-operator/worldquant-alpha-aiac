@@ -276,6 +276,48 @@ def test_measured_seed_can_fill_refinement_without_new_model_call():
         feedback.verify_batch_generation(data, evidence, metadata_tampered)
 
 
+def test_local_seed_selection_excludes_hard_gate_failures_and_used_parents():
+    data = base()
+    complex_parent = candidate(amer=1.2, case="complex")
+    complex_parent["expression"] = "rank(ts_sum(ts_sum(ts_sum(ts_sum(ts_sum(returns,2),3),4),5),7))"
+    simple_parent = candidate(amer=0.9, case="simple")
+    simple_parent.update(id=2, expression="rank(ts_sum(returns,126))")
+    exhausted_parent = candidate(amer=1.1, case="used")
+    exhausted_parent.update(id=3, expression="rank(ts_sum(returns,20))")
+    selected = feedback.select_local_seeds(
+        [complex_parent, simple_parent, exhausted_parent], data,
+        max_operators=5, parent_total_counts={3: 4}, exhausted=set(), limit=4)
+    assert [row["case_id"] for row in selected] == ["simple"]
+
+
+def test_refinement_parent_budget_counts_historical_children():
+    data = base()
+    evidence = feedback.build_feedback([candidate()], None, {"discovery": 4},
+                                       continuous=True)
+    evidence["parent_total_counts"] = {"1": 4}
+    with pytest.raises(ValueError, match="PPA_PARENT_BUDGET"):
+        feedback.freeze_batch(data, evidence, plan())
+
+
+def test_frozen_batch_rejects_expression_above_strict_quality_operator_limit():
+    data = base()
+    evidence = feedback.build_feedback([candidate()], None, {"discovery": 4}, continuous=True)
+    evidence["strict_max_operator_count"] = 2
+    proposal = plan()
+    proposal["cases"][0]["expression"] = "rank(ts_sum(ts_sum(returns,2),3))"
+    with pytest.raises(ValueError, match="PPA_STRICT_OPERATOR_LIMIT"):
+        feedback.freeze_batch(data, evidence, proposal)
+
+
+def test_model_context_uses_quality_eligible_local_parents():
+    evidence = {"next_phase": "refinement", "rows": [], "seeds": [candidate(case="complex")],
+                "local_seeds": [candidate(case="simple")],
+                "strict_max_operator_count": 5}
+    context = feedback.generation_context(evidence)
+    assert [row["case_id"] for row in context["seeds"]] == ["simple"]
+    assert context["strict_max_operator_count"] == 5
+
+
 def test_filled_batch_uses_one_model_seed_call_when_local_expansion_fills_capacity(tmp_path):
     data = base()
     data["datasets"]["pv1"] = ["returns", "close", "open", "adv20"]
