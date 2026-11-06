@@ -9,3 +9,9 @@ Every resulting case goes through the existing manifest, semantic, hypothesis, p
 Local parent selection also applies the strict quality operator-count limit (default 5) before spending WQ quota. A parent may have at most four refinement children across the campaign, including previous batches and requests still in progress. The same strict operator limit is enforced for newly imported continuous batches, even when the research manifest allows more operators.
 
 `candidate_generation.source` distinguishes `cockpit_local_responses`, `cockpit_seed_local_expansion`, and `measured_seed_local_expansion`. The latter records `model: none` because that batch makes no new model call; its parents are saved campaign measurements. The rule version and seed digest identify the deterministic expansion rule and input. This is a candidate-supply optimization, not evidence of higher WQ throughput or Alpha quality. Measure saved distinct WQ results over a full quota window before claiming a daily rate.
+
+Continuous audited tasks that omit `ppa_throughput_experiment` now inherit the
+audited throughput mode when `audit_candidates: true` and
+`research_request_budget` is unset. This prevents an older task from silently
+falling back to serial transport after an upgrade. Set the key to `false` for
+an explicit opt-out.

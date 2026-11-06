@@ -17,6 +17,23 @@ from backend.services import theme_ppa_v2 as workflow
 from backend.services.research_report import research_report
 
 
+def test_audited_continuous_tasks_default_to_throughput_mode():
+    audited = SimpleNamespace(config={
+        "research_protocol": "theme_ppa_v3",
+        "audit_candidates": True,
+        "research_request_budget": None,
+    })
+    opted_out = SimpleNamespace(config={**audited.config, "ppa_throughput_experiment": False})
+    ordinary = SimpleNamespace(config={
+        "research_protocol": "theme_ppa_v3",
+        "audit_candidates": False,
+        "research_request_budget": None,
+    })
+    assert workflow.throughput_experiment_enabled(audited)
+    assert not workflow.throughput_experiment_enabled(opted_out)
+    assert not workflow.throughput_experiment_enabled(ordinary)
+
+
 def test_continuous_theme_allows_no_total_request_cap():
     data = manifest()
     data.update(mechanisms={"m": {"dataset_id": "dataset1", "hypothesis": "signal", "direction": "positive"}})
@@ -197,14 +214,18 @@ async def test_throughput_experiment_starts_with_own_discovery_slots(async_engin
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("experiment,expected_limit", [(False, 16), (True, 32)])
+@pytest.mark.parametrize("experiment,expected_limit", [(False, 16), (True, 32), (None, 32)])
 async def test_epoch_advance_is_atomic_and_stale_retry_is_rejected(
         async_engine, monkeypatch, experiment, expected_limit):
     maker, task_id, run_id, data = await setup(async_engine, monkeypatch)
     async with maker() as db:
         task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
         task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True,
-                       "research_request_budget": None, "ppa_throughput_experiment": experiment}
+                       "research_request_budget": None}
+        if experiment is None:
+            task.config["audit_candidates"] = True
+        else:
+            task.config["ppa_throughput_experiment"] = experiment
         run.checkpoint = {"ppa_epoch": 1, "ppa_phase_limit": 16,
                           "ppa_batch": {"cases": []}, "ppa_batch_cursor": 0}
         from backend.models import ResearchCandidate
@@ -412,7 +433,11 @@ def test_watcher_uses_saved_seed_when_model_is_unavailable(tmp_path, monkeypatch
 def test_experiment_prefetches_refinement_before_worker_finishes(tmp_path, monkeypatch):
     def request(url, payload=None):
         if url.endswith("/tasks/14"):
-            return {"status": "RUNNING", "config": {"ppa_throughput_experiment": True}}
+            return {"status": "RUNNING", "config": {
+                "research_protocol": "theme_ppa_v3",
+                "audit_candidates": True,
+                "research_request_budget": None,
+            }}
         if url.endswith("/tasks/14/runs"):
             return [{"id": 18, "status": "RUNNING", "checkpoint": {
                 "ppa_batch": {"phase": "refinement", "cases": [{}] * 8},
