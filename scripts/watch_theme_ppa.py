@@ -13,12 +13,19 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from backend.services.ppa_feedback import (prepare_batch_filled as prepare_batch, freeze_batch,
-                                           freeze_seed_expansion, freeze_measured_seed_expansion)
+                                           freeze_seed_expansion, freeze_measured_seed_expansion,
+                                           freeze_measured_discovery_expansion)
 from backend.services.theme_ppa_v2 import throughput_experiment_enabled
 
 
 def prepare_with_policy(base, evidence, cockpit_script):
     if evidence.get("local_expansion"):
+        if evidence.get("next_phase") == "discovery":
+            try:
+                return freeze_measured_discovery_expansion(base, evidence)
+            except ValueError as exc:
+                if str(exc) != "PPA_NO_LOCAL_VARIANTS":
+                    raise
         if evidence.get("next_phase") == "refinement":
             try:
                 return freeze_measured_seed_expansion(base, evidence)
@@ -225,11 +232,14 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
             if (prospective.get("epoch") == evidence["epoch"]
                     and prospective.get("phase") == evidence["next_phase"]):
                 generation = prospective.get("candidate_generation") or {}
-                if generation.get("source") in {"cockpit_seed_local_expansion", "measured_seed_local_expansion"}:
+                if generation.get("source") in {"cockpit_seed_local_expansion", "measured_seed_local_expansion",
+                                                "measured_discovery_local_expansion"}:
                     if not evidence.get("local_expansion"):
                         raise ValueError("PPA_LOCAL_EXPANSION_DISABLED")
                     if generation["source"] == "measured_seed_local_expansion":
                         batch = freeze_measured_seed_expansion(evidence["base"], evidence)
+                    elif generation["source"] == "measured_discovery_local_expansion":
+                        batch = freeze_measured_discovery_expansion(evidence["base"], evidence)
                     else:
                         batch = freeze_seed_expansion(
                             evidence["base"], evidence, generation["seed_cases"],

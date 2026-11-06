@@ -415,6 +415,28 @@ def test_watcher_prefetches_next_discovery_batch_while_worker_is_busy(tmp_path, 
     assert len(generated) == 1
 
 
+def test_watcher_bootstraps_discovery_from_measured_seed_without_model(tmp_path, monkeypatch):
+    from backend.services import ppa_feedback
+    from backend.tests.unit.test_ppa_research_policy import candidate
+
+    parent = candidate()
+    parent["expression"] = "rank(ts_sum(returns,126))"
+    evidence = ppa_feedback.build_feedback([], None, {"discovery": 0},
+                                           continuous=True, phase_limit=16)
+    evidence.update(local_expansion=True, local_seeds=[parent])
+    evidence["rows"] = [{"case_id": f"measured_{window}",
+                         "expression": f"rank(ts_sum(returns,{window}))",
+                         "request_status": "RESULT"} for window in (3, 4, 5, 7, 9)]
+
+    def fail_model(*args, **kwargs):
+        raise AssertionError("Model must not be called when measured seed is available")
+
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", fail_model)
+    batch = watch_theme_ppa.prepare_with_policy(base(), evidence, tmp_path / "ask.ps1")
+    assert batch["candidate_generation"]["source"] == "measured_discovery_local_expansion"
+    assert len(batch["cases"]) == 4
+
+
 def test_watcher_uses_saved_seed_when_model_is_unavailable(tmp_path, monkeypatch):
     from backend.tests.unit.test_ppa_research_policy import candidate
     parent = candidate()
