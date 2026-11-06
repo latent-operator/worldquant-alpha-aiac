@@ -90,7 +90,7 @@ async def test_continuous_successor_can_reserve_after_historical_eighty(async_en
 
 
 @pytest.mark.asyncio
-async def test_continuous_run_saves_first_batch_without_eighty_cap(async_engine, monkeypatch):
+async def test_continuous_feedback_allows_full_phase_batch(async_engine, monkeypatch):
     maker, task_id, run_id, data = await setup(async_engine, monkeypatch)
     async def quality(**kwargs):
         return "OPTIMIZE"
@@ -98,20 +98,12 @@ async def test_continuous_run_saves_first_batch_without_eighty_cap(async_engine,
         task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
                        "research_request_budget": None, "continuous_mode": True}
+        run.checkpoint = {"ppa_phase_limit": 16}
         run.config_snapshot = {"task": {"config": task.config}}
         await db.commit()
         evidence = await workflow.feedback_context(db, task, run)
         assert evidence["budget_remaining"] is None
-        assert evidence["max_batch_cases"] == 4
-        batch = freeze_batch(data, evidence, discovery())
-        await workflow.import_batch(db, task, run, batch)
-        task.status = run.status = "RUNNING"
-        await db.commit()
-        fields = {"dataset1": [{"id": name, "type": "MATRIX"} for name in data["datasets"]["dataset1"]]}
-        result = await workflow.run_theme_v2(db, Brain(), task, run, fields, quality_evaluator=quality)
-        assert result["reason"] == "PPA_FIRST_BATCH_REVIEW"
-        report = await research_report(db, run_id)
-        assert report["budget"] == {"limit": None, "remaining": None, "reserved": 4}
+        assert evidence["max_batch_cases"] == 16
 
 
 @pytest.mark.asyncio

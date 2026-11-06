@@ -69,16 +69,17 @@ class Brain:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("transport,expected_pairs,history,expected_peak,concurrency,underfilled,groups", [
-    ("single", 0, [], 2, 2, False, 1), ("paired_multi", 2, [], 2, 2, False, 1),
-    ("single", 0, [{"transport": "single", "concurrency": 2, "completed": 12,
-                    "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False, 1),
-    ("single", 0, [], 4, 8, True, 1),
-    ("single", 0, [], 8, 8, False, 2),
-    ("paired_multi", 8, [], 8, 8, False, 4)])
+@pytest.mark.parametrize("phase_limit,transport,expected_pairs,history,expected_peak,concurrency,underfilled,groups", [
+    (16, "single", 0, [], 2, 2, False, 1), (16, "paired_multi", 2, [], 2, 2, False, 1),
+    (16, "single", 0, [{"transport": "single", "concurrency": 2, "completed": 12,
+                       "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False, 1),
+    (16, "single", 0, [], 4, 8, True, 1),
+    (16, "single", 0, [], 8, 8, False, 2),
+    (16, "paired_multi", 8, [], 8, 8, False, 4),
+])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
-                                                                  transport, expected_pairs, history, expected_peak,
-                                                                  concurrency, underfilled, groups):
+                                                                  phase_limit, transport, expected_pairs, history,
+                                                                  expected_peak, concurrency, underfilled, groups):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -119,7 +120,7 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
                        "research_request_budget": None, "continuous_mode": True}
-        run.checkpoint = {"ppa_phase_limit": 16, "ppa_transport": transport,
+        run.checkpoint = {"ppa_phase_limit": phase_limit, "ppa_transport": transport,
                           "ppa_max_in_flight": concurrency, "ppa_throughput_history": history,
                           "ppa_first_batch_reviewed": True}
         run.config_snapshot = {"task": {"config": task.config}}
@@ -146,6 +147,34 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
             ResearchCandidate.run_id == rid))).scalars().all()
         assert len(rows) == 4 * groups
         assert all((row.result_snapshot or {}).get("ppa_evaluation") for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_default_continuous_phase_uses_parallel_scheduler(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "research_request_budget": None, "continuous_mode": True}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        assert evidence["phase_limit"] == 12
+        await workflow.import_batch(db, task, run, freeze_batch(base, evidence, discovery()))
+        task.status = run.status = "RUNNING"
+        await db.commit()
+        called = {}
+
+        async def fake_parallel(*args):
+            called["batch"] = args[4]
+            return {"done": True, "reason": "PARALLEL_DEFAULT"}
+
+        monkeypatch.setattr(workflow, "run_parallel_batch", fake_parallel)
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"}
+                                for name in base["datasets"]["dataset1"]]}
+        result = await workflow.run_theme_v2(db, Brain(), task, run, fields,
+                                             quality_evaluator=lambda **kwargs: "OPTIMIZE")
+        assert result["reason"] == "PARALLEL_DEFAULT"
+        assert called["batch"]["phase"] == "discovery"
 
 
 @pytest.mark.asyncio
@@ -309,7 +338,7 @@ async def test_qualification_reconcile_reads_original_alpha_and_releases_pending
         assert row.result_snapshot["platform_ppa_evaluation"]["status"] == "PPA_REJECTED"
         assert row.result_snapshot["qualification_check"]["source"] == "WQ_ALPHA_CHECK"
         assert run.block_reason == "AWAITING_RESEARCH_BATCH"
-        assert run.checkpoint["ppa_max_in_flight"] == 2
+        assert run.checkpoint["ppa_max_in_flight"] == 4
         assert run.checkpoint["ppa_transport"] == "single"
         assert {alpha for _, alpha in brain.calls} == {"alpha-957"}
         assert brain.peak >= 2
