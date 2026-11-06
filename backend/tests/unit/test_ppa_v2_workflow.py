@@ -70,7 +70,7 @@ class Brain:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase_limit,transport,expected_pairs,history,expected_peak,concurrency,underfilled,groups", [
-    (16, "single", 0, [], 2, 2, False, 1), (16, "paired_multi", 2, [], 2, 2, False, 1),
+    (16, "single", 0, [], 4, 2, False, 1), (16, "paired_multi", 2, [], 2, 2, True, 1),
     (16, "single", 0, [{"transport": "single", "concurrency": 2, "completed": 12,
                        "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False, 1),
     (16, "single", 0, [], 4, 8, True, 1),
