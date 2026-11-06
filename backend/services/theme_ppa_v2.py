@@ -101,7 +101,10 @@ async def feedback_context(db, task, run):
         for row in rows if row.expression and row.validation_status == "VALID"})
     context["unresolved_requests"] = sum(row.run_id == run.id and needs_reconciliation(row) for row in rows)
     if continuous:
-        context["max_batch_cases"] = 16 if phase_limit == 16 else 4
+        # Continuous PPA batches are independently audited before dispatch.
+        # Keep the phase gate, but let the scheduler overlap the whole phase
+        # instead of making the default phase a four-case serial batch.
+        context["max_batch_cases"] = phase_limit
     # Unknown historical mechanism assignments are visible but not proposed as parents.
     context["seeds"] = [row for row in context["seeds"] if row["mechanism_id"] in base["mechanisms"]]
     context["finalists"] = [row for row in context["finalists"] if row["mechanism_id"] in base["mechanisms"]]
@@ -420,7 +423,7 @@ async def reconcile_qualification(db, task, run, brain, limit=1):
         calibrated = dict(run.checkpoint or {})
         if "ppa_calibration_id" not in calibrated:
             calibrated["ppa_calibration_id"] = now.isoformat()
-            calibrated["ppa_max_in_flight"] = 2
+            calibrated["ppa_max_in_flight"] = 4
             calibrated["ppa_transport"] = "single"
         run.checkpoint = begin_pause(calibrated, reason)
         await db.commit()
@@ -752,7 +755,7 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
         from backend.agents.mining_agent import MiningAgent
         quality_evaluator = MiningAgent(db, wrapped)._quality_status_for_optimization_result
     start = int((run.checkpoint or {}).get("ppa_batch_cursor", 0))
-    if continuous and (run.checkpoint or {}).get("ppa_phase_limit") == 16:
+    if continuous:
         return await run_parallel_batch(db, brain, task, run, batch, base, fields_by_dataset,
                                         quality_evaluator, ledger)
     for index in range(start, min(start + 4, len(batch["cases"]))):
