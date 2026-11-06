@@ -8,7 +8,7 @@ from sqlalchemy import select
 from backend.models import MiningTask, ExperimentRun, ResearchCandidate, Alpha, TraceStep
 from backend.alpha_semantic_validator import compute_expression_hash
 from backend.services.ppa_feedback import (behavioral_signature, build_feedback, digest, freeze_batch,
-                                           research_row, verify_batch_generation)
+                                           research_row, select_local_seeds, verify_batch_generation)
 from backend.services.ppa_eligibility import evaluate_ppa_candidate
 from backend.services.ppa_research_policy import evidence_metrics, seed_decision
 from backend.services.research_audit import ResearchLedger, ResearchBudgetBrain, safe_result, signature
@@ -95,6 +95,12 @@ async def feedback_context(db, task, run):
     context["request_phase_counts"] = request_phase_counts
     context["continuous"] = continuous
     context["local_expansion"] = continuous and task.config.get("ppa_local_expansion") is not False
+    if continuous:
+        context["strict_max_operator_count"] = int(task.config.get("max_operator_count", 5) or 5)
+        parent_counts = Counter(row.parent_candidate_id for row in rows
+                                if row.source == "REFINEMENT" and row.validation_status == "VALID"
+                                and row.request_status in ACCEPTED and row.parent_candidate_id is not None)
+        context["parent_total_counts"] = {str(key): count for key, count in parent_counts.items()}
     if experiment:
         context["throughput_experiment"] = True
     context["history_signatures"] = sorted({signature(row.expression, row.settings or {}) for row in rows
@@ -110,7 +116,15 @@ async def feedback_context(db, task, run):
     # Unknown historical mechanism assignments are visible but not proposed as parents.
     context["seeds"] = [row for row in context["seeds"] if row["mechanism_id"] in base["mechanisms"]]
     context["finalists"] = [row for row in context["finalists"] if row["mechanism_id"] in base["mechanisms"]]
-    if context["next_phase"] == "refinement" and not context["seeds"]:
+    if context["local_expansion"]:
+        context["local_seeds"] = select_local_seeds(
+            context["rows"], base,
+            max_operators=context["strict_max_operator_count"],
+            parent_total_counts=parent_counts,
+            exhausted={tuple(item) for item in context.get("exhausted_templates", [])},
+            limit=8 if phase_limit == 32 else 4 if phase_limit == 16 else 3)
+    if (context["next_phase"] == "refinement" and not context["seeds"]
+            and not context.get("local_seeds")):
         available_families = set(base["mechanisms"])
         if continuous and available_families and context["phase_counts"].get("discovery", 0) <= phase_limit - 4:
             context.update(next_phase="discovery", stop_reason=None)
