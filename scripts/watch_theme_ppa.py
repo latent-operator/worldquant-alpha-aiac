@@ -8,11 +8,13 @@ from pathlib import Path
 import socket
 import subprocess
 import time
+from types import SimpleNamespace
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from backend.services.ppa_feedback import (prepare_batch_filled as prepare_batch, freeze_batch,
                                            freeze_seed_expansion, freeze_measured_seed_expansion)
+from backend.services.theme_ppa_v2 import throughput_experiment_enabled
 
 
 def prepare_with_policy(base, evidence, cockpit_script):
@@ -133,7 +135,7 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
             active = checkpoint.get("ppa_batch") or {}
             cases = active.get("cases") or []
             prefetch_path = output_dir / f"run-{run_id}-prefetch.json"
-            experiment = (task.get("config") or {}).get("ppa_throughput_experiment") is True
+            experiment = throughput_experiment_enabled(SimpleNamespace(config=task.get("config") or {}))
             prefetch_due = (experiment and len(cases) >= 2 or
                             active.get("phase") == "discovery" and len(cases) >= 4
                             and checkpoint.get("ppa_batch_cursor", 0) >= len(cases) // 2)

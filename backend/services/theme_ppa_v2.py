@@ -19,6 +19,27 @@ PPA_RECONCILE_TIMEOUT_SECONDS = 1200
 PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS = 1500
 
 
+def throughput_experiment_enabled(task):
+    """Enable audited throughput for continuous tasks unless explicitly disabled.
+
+    Older tasks predate the opt-in flag.  An audited, uncapped continuous task
+    already has the lineage and accounting needed for grouped submissions, so
+    treating that shape as enabled keeps upgrades from silently reverting to
+    serial transport.  An explicit boolean remains authoritative.
+    """
+    config = task.config or {}
+    if "ppa_throughput_experiment" in config:
+        return config.get("ppa_throughput_experiment") is True
+    return (config.get("research_protocol") == "theme_ppa_v3"
+            and config.get("audit_candidates") is True
+            and config.get("research_request_budget") is None)
+
+
+def implicit_throughput_experiment(task):
+    config = task.config or {}
+    return throughput_experiment_enabled(task) and "ppa_throughput_experiment" not in config
+
+
 def needs_reconciliation(row):
     return (row.request_status in {"RESERVED", "REQUESTED", "UNKNOWN"}
             or row.request_status == "RESULT" and not (row.result_snapshot or {}).get("ppa_evaluation"))
@@ -74,7 +95,7 @@ async def feedback_context(db, task, run):
             item["mechanism_id"] = (base.get("historical_mechanisms") or {}).get(case.get("pair_id"))
         converted.append(item)
     epoch = int((run.checkpoint or {}).get("ppa_epoch", 0))
-    experiment = task.config.get("ppa_throughput_experiment") is True
+    experiment = throughput_experiment_enabled(task)
     epoch_rows = [row for row in rows if (row.run_id == run.id if experiment else row.run_id != root.id) and
                   (not continuous or (row.result_snapshot or {}).get("research_case", {}).get("epoch", 0) == epoch)]
     request_phase_counts = dict(Counter(row.source.lower() for row in epoch_rows
@@ -167,7 +188,7 @@ async def advance_epoch(db, task, run, *, expected_epoch):
     history = list(checkpoint.get("ppa_epoch_history") or [])
     history.append({"from": current, "to": current + 1, "reason": evidence["stop_reason"],
                     "at": datetime.now(timezone.utc).isoformat(), "phase_counts": evidence["phase_counts"]})
-    next_limit = 32 if task.config.get("ppa_throughput_experiment") is True else 16
+    next_limit = 32 if throughput_experiment_enabled(task) else 16
     run.checkpoint = {**checkpoint, "ppa_epoch": current + 1, "ppa_epoch_history": history,
                       "ppa_phase_limit": next_limit}
     await db.commit()
@@ -186,7 +207,7 @@ async def import_batch(db, task, run, batch):
     if batch.get("evidence_hash") != evidence["evidence_hash"]:
         raise ValueError("PPA_STALE_FEEDBACK")
     generation = batch.get("candidate_generation") or {}
-    allowed_models = {"gpt-6-luna", "gpt-6-astra"} if task.config.get("ppa_throughput_experiment") is True else {"gpt-6-luna"}
+    allowed_models = {"gpt-6-luna", "gpt-6-astra"} if throughput_experiment_enabled(task) else {"gpt-6-luna"}
     allowed_sources = {"cockpit_local_responses"}
     if evidence.get("local_expansion"):
         allowed_sources.update({"cockpit_seed_local_expansion", "measured_seed_local_expansion"})
@@ -537,10 +558,22 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         await db.commit()
     checkpoint = run.checkpoint or {}
     transport = checkpoint.get("ppa_transport", "single")
-    multi_group_size = (4 if task.config.get("ppa_throughput_experiment") is True
+    experiment = throughput_experiment_enabled(task)
+    implicit_experiment = implicit_throughput_experiment(task)
+    multi_group_size = (4 if experiment
                         and checkpoint.get("ppa_phase_limit") == 32
                         and hasattr(brain, "simulate_audited_multi") else 2)
-    if not checkpoint.get("ppa_batch_completed") and not checkpoint.get("ppa_batch_cursor"):
+    at_batch_start = not checkpoint.get("ppa_batch_completed") and not checkpoint.get("ppa_batch_cursor")
+    if (at_batch_start and implicit_experiment and multi_group_size == 4
+            and transport == "single"):
+        transport = "paired_multi"
+        concurrency = max(4, concurrency)
+        run.checkpoint = {**(run.checkpoint or {}),
+                          "ppa_transport": transport,
+                          "ppa_max_in_flight": concurrency}
+        await db.commit()
+        checkpoint = run.checkpoint or {}
+    if at_batch_start:
         from backend.services.ppa_quota import choose_parallelism
         measured_history = checkpoint.get("ppa_throughput_history") or []
         if checkpoint.get("ppa_calibration_id"):
@@ -552,8 +585,8 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                                 or row.get("group_size", 2) == multi_group_size]
             if multi_group_size == 4 and not any(
                     row.get("transport") == "paired_multi" for row in measured_history):
-                concurrency = 2
-                run.checkpoint = {**(run.checkpoint or {}), "ppa_max_in_flight": 2}
+                concurrency = 4 if implicit_experiment else 2
+                run.checkpoint = {**(run.checkpoint or {}), "ppa_max_in_flight": concurrency}
                 await db.commit()
         measured_level = choose_parallelism(concurrency,
                                             measured_history,
