@@ -500,7 +500,17 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
     if pending and not checkpoint.get("ppa_execution_started_at"):
         run.checkpoint = {**checkpoint, "ppa_execution_started_at": datetime.now(timezone.utc).isoformat()}
         await db.commit()
-    concurrency = min(8, max(1, int(checkpoint.get("ppa_max_in_flight", 2))))
+    scheduler_initialized = checkpoint.get("ppa_parallel_scheduler") == "v1"
+    concurrency = min(8, max(1, int(checkpoint.get("ppa_max_in_flight", 4))))
+    if not scheduler_initialized:
+        # Existing continuous runs were calibrated by the old serial path and
+        # commonly carry ppa_max_in_flight=2. Migrate once to the new default;
+        # later adaptive reductions (429/UNKNOWN) remain authoritative.
+        concurrency = max(4, concurrency)
+        run.checkpoint = {**(run.checkpoint or {}),
+                          "ppa_max_in_flight": concurrency,
+                          "ppa_parallel_scheduler": "v1"}
+        await db.commit()
     if not checkpoint.get("ppa_batch_completed") and not checkpoint.get("ppa_batch_cursor"):
         from backend.services.ppa_quota import choose_parallelism
         measured_history = checkpoint.get("ppa_throughput_history") or []
