@@ -7,7 +7,8 @@ from sqlalchemy import select
 
 from backend.models import MiningTask, ExperimentRun, ResearchCandidate, Alpha, TraceStep
 from backend.alpha_semantic_validator import compute_expression_hash
-from backend.services.ppa_feedback import behavioral_signature, build_feedback, digest, freeze_batch, research_row
+from backend.services.ppa_feedback import (behavioral_signature, build_feedback, digest, freeze_batch,
+                                           research_row, verify_batch_generation)
 from backend.services.ppa_eligibility import evaluate_ppa_candidate
 from backend.services.ppa_research_policy import evidence_metrics, seed_decision
 from backend.services.research_audit import ResearchLedger, ResearchBudgetBrain, safe_result, signature
@@ -93,6 +94,7 @@ async def feedback_context(db, task, run):
     context["campaign_requests"] = sum(row.request_status in CHARGED for row in rows)
     context["request_phase_counts"] = request_phase_counts
     context["continuous"] = continuous
+    context["local_expansion"] = continuous and task.config.get("ppa_local_expansion") is not False
     if experiment:
         context["throughput_experiment"] = True
     context["history_signatures"] = sorted({signature(row.expression, row.settings or {}) for row in rows
@@ -169,10 +171,15 @@ async def import_batch(db, task, run, batch):
         raise ValueError("PPA_STALE_FEEDBACK")
     generation = batch.get("candidate_generation") or {}
     allowed_models = {"gpt-6-luna", "gpt-6-astra"} if task.config.get("ppa_throughput_experiment") is True else {"gpt-6-luna"}
-    if (generation.get("model") not in allowed_models or generation.get("source") != "cockpit_local_responses"
+    allowed_sources = {"cockpit_local_responses"}
+    if evidence.get("local_expansion"):
+        allowed_sources.update({"cockpit_seed_local_expansion", "measured_seed_local_expansion"})
+    model_valid = (generation.get("model") == "none" if generation.get("source") == "measured_seed_local_expansion"
+                   else generation.get("model") in allowed_models)
+    if (not model_valid or generation.get("source") not in allowed_sources
             or generation.get("plan_sha256") != digest({k: v for k, v in batch.items() if k != "candidate_generation"})):
         raise ValueError("PPA_BATCH_HASH_INVALID")
-    checked = freeze_batch(task.config["ppa_manifest"], evidence, batch)
+    checked = verify_batch_generation(task.config["ppa_manifest"], evidence, batch)
     if checked["cases"] != batch["cases"] or batch.get("base_hash") != digest(task.config["ppa_manifest"]):
         raise ValueError("PPA_BATCH_CONSTRAINT_MISMATCH")
     history = list(checkpoint.get("ppa_batch_history") or [])

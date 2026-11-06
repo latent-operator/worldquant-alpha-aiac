@@ -2,7 +2,8 @@ from types import SimpleNamespace
 import json
 import subprocess
 from backend.services.theme_ppa import validate_theme_task
-from backend.services.ppa_feedback import build_feedback, freeze_batch
+from backend.services.ppa_feedback import (build_feedback, freeze_batch, freeze_seed_expansion,
+                                           freeze_measured_seed_expansion)
 from backend.tests.unit.test_theme_ppa import manifest
 from backend.tests.unit.test_ppa_feedback import base
 from scripts.watch_theme_ppa import first_batch_reviewable
@@ -104,6 +105,7 @@ async def test_continuous_feedback_allows_full_phase_batch(async_engine, monkeyp
         evidence = await workflow.feedback_context(db, task, run)
         assert evidence["budget_remaining"] is None
         assert evidence["max_batch_cases"] == 16
+        assert evidence["local_expansion"] is True
 
 
 @pytest.mark.asyncio
@@ -389,6 +391,21 @@ def test_watcher_prefetches_next_discovery_batch_while_worker_is_busy(tmp_path, 
     assert len(generated) == 1
 
 
+def test_watcher_uses_saved_seed_when_model_is_unavailable(tmp_path, monkeypatch):
+    from backend.tests.unit.test_ppa_research_policy import candidate
+    parent = candidate()
+    parent["expression"] = "rank(ts_sum(returns,126))"
+    evidence = build_feedback([parent], None, {"discovery": 4}, continuous=True)
+    evidence["rows"].extend({"expression": f"rank(ts_sum(ts_sum(returns,{window}),20))",
+                             "request_status": "RESULT"} for window in (3, 4, 5, 7))
+    evidence["local_expansion"] = True
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", lambda *args, **kwargs:
+                        pytest.fail("Saved measured seeds should avoid a model call"))
+    batch = watch_theme_ppa.prepare_with_policy(base(), evidence, tmp_path / "ask.ps1")
+    assert len(batch["cases"]) == 4
+    assert batch["candidate_generation"]["source"] == "measured_seed_local_expansion"
+
+
 def test_experiment_prefetches_refinement_before_worker_finishes(tmp_path, monkeypatch):
     def request(url, payload=None):
         if url.endswith("/tasks/14"):
@@ -522,6 +539,63 @@ async def test_astra_batch_is_accepted_only_for_throughput_experiment(async_engi
         batch["candidate_generation"]["model"] = "gpt-6-astra"
         await workflow.import_batch(db, task, run, batch)
         assert run.checkpoint["ppa_batch"]["candidate_generation"]["model"] == "gpt-6-astra"
+
+
+@pytest.mark.asyncio
+async def test_import_accepts_only_replayable_local_expansion_when_enabled(async_engine, monkeypatch):
+    maker, task_id, run_id, data = await setup(async_engine, monkeypatch)
+    data["allowed_operators"].append("ts_sum")
+    seed = [{"case_id": f"seed_{i}", "pair_id": "seed", "arm": "CONTROL" if i == 0 else "TREATMENT",
+             "dataset_id": "dataset1", "mechanism_id": "signal",
+             "expression": f"rank(ts_sum(field_0_0,{i + 2}))",
+             "changed_element": "window", "expected_effect": "AMER test",
+             "risk": "noise", "stop_condition": "no gain"} for i in range(4)]
+    async with maker() as db:
+        task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "continuous_mode": True, "research_request_budget": None,
+                       "ppa_local_expansion": True, "ppa_manifest": data}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        batch = freeze_seed_expansion(data, evidence, seed, model="gpt-6-luna")
+        assert len(batch["cases"]) == 12
+        tampered = json.loads(json.dumps(batch))
+        tampered["cases"][4]["expression"] = "rank(field_0_0)"
+        tampered["candidate_generation"]["plan_sha256"] = workflow.digest(
+            {key: value for key, value in tampered.items() if key != "candidate_generation"})
+        with pytest.raises(ValueError, match="PPA_LOCAL_EXPANSION_MISMATCH"):
+            await workflow.import_batch(db, task, run, tampered)
+        await workflow.import_batch(db, task, run, batch)
+        assert run.checkpoint["ppa_batch"]["candidate_generation"]["expanded_cases"] == 8
+
+
+@pytest.mark.asyncio
+async def test_import_accepts_replayed_measured_seed_batch(async_engine, monkeypatch):
+    from backend.tests.unit.test_ppa_research_policy import candidate
+    maker, task_id, run_id, _ = await setup(async_engine, monkeypatch)
+    data = base()
+    parent = candidate()
+    parent["expression"] = "rank(ts_sum(returns,126))"
+    evidence = build_feedback([parent], None, {"discovery": 4}, continuous=True)
+    evidence["rows"].extend({"expression": f"rank(ts_sum(ts_sum(returns,{window}),20))",
+                             "request_status": "RESULT"} for window in (3, 4, 5, 7))
+    evidence["local_expansion"] = True
+    batch = freeze_measured_seed_expansion(data, evidence)
+    async def current_feedback(db, task, run):
+        return evidence
+    monkeypatch.setattr(workflow, "feedback_context", current_feedback)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
+        task.config = {**task.config, "ppa_manifest": data, "ppa_local_expansion": True}
+        await db.commit()
+        bad = json.loads(json.dumps(batch))
+        bad["cases"][0]["expression"] = "rank(ts_sum(returns,200))"
+        bad["candidate_generation"]["plan_sha256"] = workflow.digest(
+            {key: value for key, value in bad.items() if key != "candidate_generation"})
+        with pytest.raises(ValueError, match="PPA_LOCAL_EXPANSION_MISMATCH"):
+            await workflow.import_batch(db, task, run, bad)
+        await workflow.import_batch(db, task, run, batch)
+        assert run.checkpoint["ppa_batch"]["candidate_generation"]["model"] == "none"
 
 
 def test_watcher_retries_cockpit_failure_and_records_heartbeat(tmp_path):

@@ -344,6 +344,203 @@ def expand_experiment_discovery(proposal, capacity):
     return {"phase": "discovery", "cases": cases}
 
 
+def _lookback_slots(expression):
+    slots = []
+    for match in re.finditer(r",\s*(\d+)\s*\)", expression):
+        stack = []
+        for index, character in enumerate(expression[:match.start()]):
+            if character == "(":
+                stack.append(index)
+            elif character == ")" and stack:
+                stack.pop()
+        if not stack:
+            continue
+        operator = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", expression[:stack[-1]])
+        if operator and operator.group(1).lower().startswith("ts_"):
+            slots.append((match.start(1), match.end(1), int(match.group(1)),
+                          operator.group(1).lower()))
+    return slots
+
+
+def _measured_lookbacks(evidence):
+    by_operator = {}
+    for row in evidence.get("rows", []):
+        if row.get("request_status") not in {"RESULT", "CACHED"}:
+            continue
+        for _, _, window, operator in _lookback_slots(row.get("expression") or ""):
+            if 2 <= window <= 252:
+                by_operator.setdefault(operator, set()).add(window)
+    return {operator: sorted(values) for operator, values in by_operator.items()}
+
+
+def freeze_seed_expansion(base, evidence, seed_cases, *, model):
+    """Replay same-dataset field and measured-lookback edits from model seeds."""
+    phase = evidence["next_phase"]
+    seed = freeze_batch(base, evidence, {"phase": phase, "cases": seed_cases})
+    combined = list(seed["cases"])
+    groups = ({pair: [case for case in combined if case["pair_id"] == pair]
+               for pair in dict.fromkeys(case["pair_id"] for case in combined)}
+              if phase == "discovery" else {case["case_id"]: [case] for case in combined})
+    limit = evidence.get("phase_limit", 12) - evidence["phase_counts"].get(phase, 0)
+    if evidence.get("max_batch_cases") is not None:
+        limit = min(limit, evidence["max_batch_cases"])
+    lookbacks = _measured_lookbacks(evidence)
+    for group in groups.values():
+        if len(combined) >= limit:
+            break
+        dataset = group[0]["dataset_id"]
+        used = set()
+        for case in group:
+            used.update(AlphaSemanticValidator(
+                fields=[{"id": name, "type": "MATRIX"} for name in base["datasets"][dataset]],
+                strict_field_check=True).validate(case["expression"]).used_fields)
+        if len(used) == 1:
+            old_field = next(iter(used))
+        for new_field in sorted(set(base["datasets"][dataset]) - used) if len(used) == 1 else []:
+            if len(combined) + len(group) > limit:
+                break
+            identity = digest([phase, [case["case_id"] for case in group], new_field])[:16]
+            pair_id = f"L_{identity}"
+            variants = [{**case, "case_id": f"{pair_id}_{index}",
+                         "pair_id": pair_id if phase == "discovery" else case.get("pair_id"),
+                         "expression": re.sub(rf"\b{re.escape(old_field)}\b", new_field,
+                                              case["expression"]),
+                         "changed_element": f"field {old_field} -> {new_field}",
+                         "expected_effect": (f"Test the model seed hypothesis on {new_field}; "
+                                             "retain AMER and risk gates")}
+                        for index, case in enumerate(group)]
+            try:
+                candidate = freeze_batch(base, evidence,
+                                         {"phase": phase, "cases": [*combined, *variants]})
+            except ValueError:
+                continue
+            combined = candidate["cases"]
+        slots_by_case = [_lookback_slots(case["expression"]) for case in group]
+        for slot_index, (_, _, original, operator) in enumerate(slots_by_case[0]):
+            if any(len(slots) <= slot_index or slots[slot_index][2:] != (original, operator)
+                   for slots in slots_by_case[1:]):
+                continue
+            for replacement in lookbacks.get(operator, []):
+                if len(combined) + len(group) > limit:
+                    break
+                if replacement == original:
+                    continue
+                identity = digest([phase, [case["case_id"] for case in group],
+                                   slot_index, replacement])[:16]
+                pair_id = f"L_{identity}"
+                variants = []
+                for index, (case, slots) in enumerate(zip(group, slots_by_case)):
+                    start, end, _, _ = slots[slot_index]
+                    variants.append({**case, "case_id": f"{pair_id}_{index}",
+                                     "pair_id": pair_id if phase == "discovery" else case.get("pair_id"),
+                                     "expression": (case["expression"][:start] + str(replacement)
+                                                    + case["expression"][end:]),
+                                     "changed_element": f"measured {operator} lookback {original} -> {replacement}",
+                                     "expected_effect": "Test model seed hypothesis at a measured lookback; retain AMER and risk gates"})
+                try:
+                    candidate = freeze_batch(base, evidence,
+                                             {"phase": phase, "cases": [*combined, *variants]})
+                except ValueError:
+                    continue
+                combined = candidate["cases"]
+    frozen = freeze_batch(base, evidence, {"phase": phase, "cases": combined})
+    generation = frozen["candidate_generation"]
+    generation["model"] = model
+    if len(combined) > len(seed_cases):
+        generation.update(source="cockpit_seed_local_expansion",
+                          rule_version="field_window_v1", seed_cases=seed["cases"],
+                          seed_sha256=digest(seed["cases"]),
+                          expanded_cases=len(combined) - len(seed_cases))
+    return frozen
+
+
+def freeze_measured_seed_expansion(base, evidence):
+    """Refine saved model-origin parents using only lookbacks seen in saved results."""
+    if evidence.get("next_phase") != "refinement":
+        raise ValueError("PPA_NO_LOCAL_VARIANTS")
+    lookbacks = _measured_lookbacks(evidence)
+    combined = []
+    limit = evidence.get("phase_limit", 12) - evidence["phase_counts"].get("refinement", 0)
+    if evidence.get("max_batch_cases") is not None:
+        limit = min(limit, evidence["max_batch_cases"])
+    for parent in evidence.get("seeds", []):
+        if len(combined) >= limit:
+            break
+        if parent.get("dataset_id") not in base["datasets"]:
+            continue
+        expression = parent.get("expression") or ""
+        for slot_index, (start, end, original, operator) in enumerate(_lookback_slots(expression)):
+            if len(combined) >= limit:
+                break
+            for replacement in lookbacks.get(operator, []):
+                if len(combined) >= limit:
+                    break
+                if replacement == original:
+                    continue
+                identity = digest([parent["id"], parent["case_id"], slot_index, replacement])[:16]
+                case = {"case_id": f"M_{identity}", "parent_case_id": parent["case_id"],
+                        "arm": "TREATMENT", "dataset_id": parent["dataset_id"],
+                        "mechanism_id": parent["mechanism_id"],
+                        "expression": expression[:start] + str(replacement) + expression[end:],
+                        "changed_element": f"measured {operator} lookback {original} -> {replacement}",
+                        "expected_effect": "Test saved parent hypothesis at a measured lookback for AMER gain",
+                        "risk": "Lookback sensitivity may reduce signal quality",
+                        "stop_condition": "No measured AMER gain or failed PPA checks"}
+                try:
+                    frozen = freeze_batch(base, evidence,
+                                          {"phase": "refinement", "cases": [*combined, case]})
+                except ValueError:
+                    continue
+                combined = frozen["cases"]
+    if not combined:
+        raise ValueError("PPA_NO_LOCAL_VARIANTS")
+    frozen = freeze_batch(base, evidence, {"phase": "refinement", "cases": combined})
+    frozen["candidate_generation"].update(
+        source="measured_seed_local_expansion", model="none",
+        rule_version="measured_lookback_v1",
+        seed_sha256=digest([{key: parent.get(key) for key in
+                             ("id", "case_id", "expression", "dataset_id", "mechanism_id")}
+                            for parent in evidence.get("seeds", [])]),
+        expanded_cases=len(combined), generation_seconds=0.0,
+        validation_attempts=0, top_up_calls=0)
+    return frozen
+
+
+def verify_batch_generation(base, evidence, batch):
+    """Fail closed when a locally expanded batch is not the exact replay."""
+    generation = batch.get("candidate_generation") or {}
+    if generation.get("source") == "measured_seed_local_expansion":
+        if generation.get("rule_version") != "measured_lookback_v1":
+            raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH")
+        try:
+            checked = freeze_measured_seed_expansion(base, evidence)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH") from exc
+        if (checked["cases"] != batch.get("cases") or
+                checked["candidate_generation"]["seed_sha256"] != generation.get("seed_sha256") or
+                checked["candidate_generation"]["expanded_cases"] != generation.get("expanded_cases") or
+                any(checked.get(key) != batch.get(key) for key in
+                    ("phase", "evidence_hash", "base_hash", "parent_version"))):
+            raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH")
+        return checked
+    if generation.get("source") != "cockpit_seed_local_expansion":
+        return freeze_batch(base, evidence, batch)
+    seed = generation.get("seed_cases")
+    if (generation.get("rule_version") != "field_window_v1" or not isinstance(seed, list)
+            or generation.get("seed_sha256") != digest(seed)):
+        raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH")
+    try:
+        checked = freeze_seed_expansion(base, evidence, seed, model=generation.get("model"))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH") from exc
+    if (checked["cases"] != batch.get("cases") or
+            checked["candidate_generation"].get("expanded_cases") != generation.get("expanded_cases") or
+            any(checked.get(key) != batch.get(key) for key in
+                ("phase", "evidence_hash", "base_hash", "parent_version"))):
+        raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH")
+    return checked
+
+
 def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
     script = Path(cockpit_script).resolve()
     if not script.is_file():
@@ -450,7 +647,8 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
                            "Return corrected bounded JSON satisfying the original constraints.")
 
 
-def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.run):
+def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.run,
+                         local_expansion=False):
     """Top up one frozen batch with distinct valid hypotheses, without filler."""
     phase = evidence.get("next_phase")
     if phase not in {"discovery", "refinement"}:
@@ -464,6 +662,8 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
         capacity -= capacity % 4
     if capacity <= 0:
         raise ValueError("PPA_BATCH_PHASE_LIMIT")
+    if local_expansion:
+        return _prepare_batch_filled_local(base, evidence, cockpit_script, capacity, runner)
     combined, attempts, proposed, truncated, seconds, calls = [], 0, 0, 0, 0.0, 0
     last_error = None
     for _ in range(4):
@@ -500,6 +700,50 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
     frozen["candidate_generation"].update(
         model="gpt-6-astra" if evidence.get("throughput_experiment") is True else "gpt-6-luna",
         proposed_cases=proposed, truncated_cases=truncated,
+        generation_seconds=round(seconds, 3), validation_attempts=attempts,
+        top_up_calls=calls, top_up_error=last_error)
+    return frozen
+
+
+def _prepare_batch_filled_local(base, evidence, cockpit_script, capacity, runner):
+    """Ask for bounded research seeds, then deterministically fill legal slots."""
+    phase = evidence["next_phase"]
+    seeds, frozen, attempts, proposed, seconds, calls = [], None, 0, 0, 0.0, 0
+    last_error = None
+    for _ in range(4):
+        remaining = capacity - len(frozen["cases"] if frozen else [])
+        if remaining <= 0:
+            break
+        calls += 1
+        updated = {**evidence, "max_batch_cases": min(remaining, 4),
+                   "history_signatures": [*(evidence.get("history_signatures") or []),
+                       *(signature(item["expression"], case_settings(base, {}))
+                         for item in (frozen or {}).get("cases", []))],
+                   "history_behavioral_signatures": [*(evidence.get("history_behavioral_signatures") or []),
+                       *(behavioral_signature(item["expression"], case_settings(base, {}))
+                         for item in (frozen or {}).get("cases", []))],
+                   "proposed_avoid_expressions": [item["expression"]
+                                                  for item in (frozen or {}).get("cases", [])]}
+        try:
+            part = prepare_batch(base, updated, cockpit_script, runner=runner)
+            candidate = freeze_seed_expansion(base, evidence, [*seeds, *part["cases"]],
+                                              model=part["candidate_generation"]["model"])
+        except (ValueError, KeyError, TypeError, OSError,
+                subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            if frozen is None:
+                raise
+            last_error = (f"CalledProcessError:{exc.returncode}" if isinstance(exc, subprocess.CalledProcessError)
+                          else type(exc).__name__ if isinstance(exc, (OSError, subprocess.TimeoutExpired))
+                          else f"{type(exc).__name__}:{exc}")
+            break
+        seeds.extend(part["cases"])
+        frozen = candidate
+        metadata = part["candidate_generation"]
+        attempts += metadata.get("validation_attempts", 1)
+        proposed += metadata.get("proposed_cases", len(part["cases"]))
+        seconds += metadata.get("generation_seconds", 0)
+    frozen["candidate_generation"].update(
+        proposed_cases=proposed, truncated_cases=max(0, proposed - len(seeds)),
         generation_seconds=round(seconds, 3), validation_attempts=attempts,
         top_up_calls=calls, top_up_error=last_error)
     return frozen
