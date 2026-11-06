@@ -446,6 +446,39 @@ async def test_legacy_auto_epoch_boundary_upgrades_capacity_before_import(async_
 
 
 @pytest.mark.asyncio
+async def test_import_accepts_replayable_measured_discovery_without_model(async_engine, monkeypatch):
+    from backend.services import ppa_feedback
+    from backend.tests.unit.test_ppa_feedback import base as feedback_base
+    from backend.tests.unit.test_ppa_research_policy import candidate
+
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    data = feedback_base()
+    parent = candidate()
+    parent["expression"] = "rank(ts_sum(returns,126))"
+    evidence = ppa_feedback.build_feedback([], None, {"discovery": 0},
+                                           continuous=True, phase_limit=16)
+    evidence.update(local_expansion=True, local_seeds=[parent])
+    evidence["rows"] = [{"case_id": f"measured_{window}",
+                         "expression": f"rank(ts_sum(returns,{window}))",
+                         "request_status": "RESULT"} for window in (3, 4, 5, 7, 9)]
+    batch = ppa_feedback.freeze_measured_discovery_expansion(data, evidence)
+
+    async def feedback_context(*args):
+        return evidence
+
+    monkeypatch.setattr(workflow, "feedback_context", feedback_context)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "research_request_budget": None, "audit_candidates": True,
+                       "ppa_manifest": data}
+        await db.commit()
+        imported = await workflow.import_batch(db, task, run, batch)
+        assert imported["cases"] == 4
+        assert run.checkpoint["ppa_batch"]["cases"] == batch["cases"]
+
+
+@pytest.mark.asyncio
 async def test_existing_alpha_id_in_historical_run_does_not_fail_new_run(async_engine, monkeypatch):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     async def quality(**kwargs): return "OPTIMIZE"

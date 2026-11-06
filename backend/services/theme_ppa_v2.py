@@ -210,8 +210,10 @@ async def import_batch(db, task, run, batch):
     allowed_models = {"gpt-6-luna", "gpt-6-astra"} if throughput_experiment_enabled(task) else {"gpt-6-luna"}
     allowed_sources = {"cockpit_local_responses"}
     if evidence.get("local_expansion"):
-        allowed_sources.update({"cockpit_seed_local_expansion", "measured_seed_local_expansion"})
-    model_valid = (generation.get("model") == "none" if generation.get("source") == "measured_seed_local_expansion"
+        allowed_sources.update({"cockpit_seed_local_expansion", "measured_seed_local_expansion",
+                                "measured_discovery_local_expansion"})
+    model_valid = (generation.get("model") == "none" if generation.get("source") in {
+        "measured_seed_local_expansion", "measured_discovery_local_expansion"}
                    else generation.get("model") in allowed_models)
     if (not model_valid or generation.get("source") not in allowed_sources
             or generation.get("plan_sha256") != digest({k: v for k, v in batch.items() if k != "candidate_generation"})):
