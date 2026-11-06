@@ -182,6 +182,119 @@ def test_discovery_top_up_combines_distinct_complete_groups(tmp_path):
     assert {case["pair_id"] for case in batch["cases"]} == {"g1", "g2"}
 
 
+def test_local_expansion_replays_audited_discovery_groups():
+    data = base()
+    data["datasets"]["pv1"] = ["returns", "close", "open", "adv20"]
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    seed = [{"case_id": f"g1_{i}", "pair_id": "g1",
+             "arm": "CONTROL" if i == 0 else "TREATMENT",
+             "dataset_id": "pv1", "mechanism_id": "reversal",
+             "expression": f"rank(ts_sum(returns,{i + 2}))",
+             "changed_element": "window", "expected_effect": "AMER test",
+             "risk": "noise", "stop_condition": "no gain"} for i in range(4)]
+    batch = feedback.freeze_seed_expansion(data, evidence, seed, model="gpt-6-luna")
+    assert len(batch["cases"]) == 16
+    assert batch["candidate_generation"]["source"] == "cockpit_seed_local_expansion"
+    assert batch["candidate_generation"]["expanded_cases"] == 12
+    assert feedback.verify_batch_generation(data, evidence, batch)["cases"] == batch["cases"]
+    tampered = deepcopy(batch)
+    tampered["cases"][4]["expression"] = "rank(ts_sum(returns,100))"
+    with pytest.raises(ValueError, match="PPA_LOCAL_EXPANSION_MISMATCH"):
+        feedback.verify_batch_generation(data, evidence, tampered)
+    metadata_tampered = deepcopy(batch)
+    metadata_tampered["candidate_generation"]["expanded_cases"] = 1
+    with pytest.raises(ValueError, match="PPA_LOCAL_EXPANSION_MISMATCH"):
+        feedback.verify_batch_generation(data, evidence, metadata_tampered)
+
+
+def test_local_expansion_respects_refinement_parent_budget_and_history():
+    data = base()
+    data["datasets"]["pv1"] = ["returns", "close", "open", "adv20", "volume"]
+    evidence = feedback.build_feedback([candidate()], None, {"discovery": 4},
+                                       continuous=True, phase_limit=16)
+    evidence["history_signatures"] = [list(feedback.signature(
+        "rank(ts_sum(close,2))", feedback.case_settings(data, {})))]
+    batch = feedback.freeze_seed_expansion(data, evidence, plan()["cases"], model="gpt-6-luna")
+    assert len(batch["cases"]) == 4
+    assert "rank(ts_sum(close,2))" not in [case["expression"] for case in batch["cases"]]
+    assert feedback.verify_batch_generation(data, evidence, batch)["cases"] == batch["cases"]
+    metadata_tampered = deepcopy(batch)
+    metadata_tampered["candidate_generation"]["expanded_cases"] = 1
+    with pytest.raises(ValueError, match="PPA_LOCAL_EXPANSION_MISMATCH"):
+        feedback.verify_batch_generation(data, evidence, metadata_tampered)
+
+
+def test_local_expansion_uses_only_measured_lookback_values():
+    data = base()
+    evidence = feedback.build_feedback([candidate()], None, {"discovery": 4},
+                                       continuous=True, phase_limit=16)
+    evidence["rows"] = [{"expression": f"rank(ts_sum(ts_sum(returns,{window}),20))",
+                          "request_status": "RESULT"} for window in (3, 4, 5, 7)]
+    seed = plan()["cases"]
+    seed[0]["expression"] = "rank(ts_sum(returns,126))"
+    batch = feedback.freeze_seed_expansion(data, evidence, seed, model="gpt-6-luna")
+    assert len(batch["cases"]) == 4
+    assert {case["expression"] for case in batch["cases"]}.issubset({
+        "rank(ts_sum(returns,126))", "rank(ts_sum(returns,3))",
+        "rank(ts_sum(returns,4))", "rank(ts_sum(returns,5))",
+        "rank(ts_sum(returns,7))", "rank(ts_sum(returns,20))"})
+    assert feedback.verify_batch_generation(data, evidence, batch)["cases"] == batch["cases"]
+
+
+def test_local_expansion_does_not_transfer_lookbacks_between_operators():
+    data = base()
+    data["allowed_operators"].append("ts_delta")
+    evidence = feedback.build_feedback([candidate()], None, {"discovery": 4},
+                                       continuous=True, phase_limit=16)
+    evidence["rows"] = [{"expression": "rank(ts_delta(returns,7))",
+                         "request_status": "RESULT"}]
+    seed = plan()["cases"]
+    seed[0]["expression"] = "rank(ts_sum(returns,126))"
+    batch = feedback.freeze_seed_expansion(data, evidence, seed, model="gpt-6-luna")
+    assert len(batch["cases"]) == 1
+
+
+def test_measured_seed_can_fill_refinement_without_new_model_call():
+    data = base()
+    parent = candidate()
+    parent["expression"] = "rank(ts_sum(returns,126))"
+    evidence = feedback.build_feedback([parent], None, {"discovery": 4},
+                                       continuous=True, phase_limit=16)
+    evidence["rows"].extend({"expression": f"rank(ts_sum(ts_sum(returns,{window}),20))",
+                             "request_status": "RESULT"} for window in (3, 4, 5, 7))
+    evidence["history_signatures"] = [list(feedback.signature(
+        parent["expression"], feedback.case_settings(data, {})))]
+    batch = feedback.freeze_measured_seed_expansion(data, evidence)
+    assert len(batch["cases"]) == 4
+    assert batch["candidate_generation"]["source"] == "measured_seed_local_expansion"
+    assert batch["candidate_generation"]["model"] == "none"
+    assert batch["candidate_generation"]["top_up_calls"] == 0
+    assert feedback.verify_batch_generation(data, evidence, batch)["cases"] == batch["cases"]
+    metadata_tampered = deepcopy(batch)
+    metadata_tampered["candidate_generation"]["expanded_cases"] = 1
+    with pytest.raises(ValueError, match="PPA_LOCAL_EXPANSION_MISMATCH"):
+        feedback.verify_batch_generation(data, evidence, metadata_tampered)
+
+
+def test_filled_batch_uses_one_model_seed_call_when_local_expansion_fills_capacity(tmp_path):
+    data = base()
+    data["datasets"]["pv1"] = ["returns", "close", "open", "adv20"]
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    seed = [{"case_id": f"g1_{i}", "pair_id": "g1",
+             "arm": "CONTROL" if i == 0 else "TREATMENT",
+             "dataset_id": "pv1", "mechanism_id": "reversal",
+             "expression": f"rank(ts_sum(returns,{i + 2}))",
+             "changed_element": "window", "expected_effect": "AMER test",
+             "risk": "noise", "stop_condition": "no gain"} for i in range(4)]
+    runner = Mock(return_value=SimpleNamespace(stdout=json.dumps({"phase": "discovery", "cases": seed})))
+    batch = feedback.prepare_batch_filled(data, evidence, script, runner=runner, local_expansion=True)
+    assert len(batch["cases"]) == 16
+    assert runner.call_count == 1
+    assert batch["candidate_generation"]["top_up_calls"] == 1
+
+
 def test_discovery_keeps_valid_group_when_later_cockpit_call_fails(tmp_path):
     import subprocess
     script = tmp_path / "ask.ps1"

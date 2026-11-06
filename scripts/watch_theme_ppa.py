@@ -11,7 +11,20 @@ import time
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from backend.services.ppa_feedback import prepare_batch_filled as prepare_batch, freeze_batch
+from backend.services.ppa_feedback import (prepare_batch_filled as prepare_batch, freeze_batch,
+                                           freeze_seed_expansion, freeze_measured_seed_expansion)
+
+
+def prepare_with_policy(base, evidence, cockpit_script):
+    if evidence.get("local_expansion"):
+        if evidence.get("next_phase") == "refinement":
+            try:
+                return freeze_measured_seed_expansion(base, evidence)
+            except ValueError as exc:
+                if str(exc) != "PPA_NO_LOCAL_VARIANTS":
+                    raise
+        return prepare_batch(base, evidence, cockpit_script, local_expansion=True)
+    return prepare_batch(base, evidence, cockpit_script)
 
 
 class CoordinatorRetryExhausted(Exception):
@@ -140,7 +153,7 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
                         if counts[phase] >= evidence["phase_limit"]:
                             return "WAIT"
                         projected = {**evidence, "phase_counts": counts}
-                    prospective = prepare_batch(evidence["base"], projected, cockpit_script)
+                    prospective = prepare_with_policy(evidence["base"], projected, cockpit_script)
                     output_dir.mkdir(parents=True, exist_ok=True)
                     payload = {"epoch": evidence["epoch"], "phase": prospective["phase"],
                                "cases": prospective["cases"],
@@ -209,14 +222,25 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
             prospective = json.loads(prefetch_path.read_text(encoding="utf-8"))
             if (prospective.get("epoch") == evidence["epoch"]
                     and prospective.get("phase") == evidence["next_phase"]):
-                batch = freeze_batch(evidence["base"], evidence, prospective)
+                generation = prospective.get("candidate_generation") or {}
+                if generation.get("source") in {"cockpit_seed_local_expansion", "measured_seed_local_expansion"}:
+                    if not evidence.get("local_expansion"):
+                        raise ValueError("PPA_LOCAL_EXPANSION_DISABLED")
+                    if generation["source"] == "measured_seed_local_expansion":
+                        batch = freeze_measured_seed_expansion(evidence["base"], evidence)
+                    else:
+                        batch = freeze_seed_expansion(
+                            evidence["base"], evidence, generation["seed_cases"],
+                            model=generation["model"])
+                else:
+                    batch = freeze_batch(evidence["base"], evidence, prospective)
                 batch["candidate_generation"].update({
-                    key: value for key, value in (prospective.get("candidate_generation") or {}).items()
+                    key: value for key, value in generation.items()
                     if key in {"model", "generation_seconds", "validation_attempts", "top_up_calls"}})
         except (ValueError, TypeError, KeyError):
             batch = None
     if batch is None:
-        batch = prepare_batch(evidence["base"], evidence, cockpit_script)
+        batch = prepare_with_policy(evidence["base"], evidence, cockpit_script)
     output_dir.mkdir(parents=True, exist_ok=True)
     batch_path = output_dir / f"run-{run_id}-epoch-{evidence['epoch']}-{batch['phase']}-{batch['candidate_generation']['plan_sha256'][:12]}.json"
     batch_path.write_text(json.dumps(batch, indent=2, ensure_ascii=False), encoding="utf-8")
