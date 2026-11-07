@@ -502,9 +502,9 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         ResearchCandidate.run_id == run.id,
         ResearchCandidate.experiment_group.in_([case["case_id"] for case in cases]),
     ))).scalars().all()
-    finished = {row.experiment_group for row in existing if row.request_status == "FAILED"
-                or (row.request_status in {"RESULT", "CACHED"}
-                    and (row.result_snapshot or {}).get("ppa_evaluation"))}
+    finished = {row.experiment_group for row in existing if
+                row.request_status == "FAILED" and (row.result_snapshot or {}).get("http_status") != 429 or
+                row.request_status in {"RESULT", "CACHED"} and (row.result_snapshot or {}).get("ppa_evaluation")}
     first_review = (batch["phase"] == "discovery" and not checkpoint.get("ppa_first_batch_reviewed"))
     pending = []
     for index, case in enumerate(cases):
@@ -519,9 +519,8 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
     if pending and not checkpoint.get("ppa_execution_started_at"):
         run.checkpoint = {**checkpoint, "ppa_execution_started_at": datetime.now(timezone.utc).isoformat()}
         await db.commit()
-    scheduler_initialized = checkpoint.get("ppa_parallel_scheduler") == "v1"
     concurrency = min(8, max(2, int(checkpoint.get("ppa_max_in_flight", 8))))
-    if not scheduler_initialized:
+    if checkpoint.get("ppa_parallel_scheduler") != "v1":
         # Existing continuous runs were calibrated by the old serial path and
         # commonly carry ppa_max_in_flight=2. Migrate once to the new default;
         # later adaptive reductions (429/UNKNOWN) remain authoritative.
@@ -599,8 +598,6 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
             finally:
                 active_parents -= 1
 
-    groups = [[item] for item in pending]
-    group_size = 1
     running = [asyncio.create_task(simulate_pending(*item)) for item in pending]
     block_reason = None
     try:
@@ -617,7 +614,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                     continue
                 row = await persist_result(db, wrapped, task, run, case, settings, result, batch["phase"],
                                            quality_evaluator, fields_by_dataset[case["dataset_id"]])
-                finished.add(case["case_id"])
+                if result.get("http_status") != 429: finished.add(case["case_id"])
                 done_indices = {i for i, item in enumerate(cases) if item["case_id"] in finished}
                 cursor = next((i for i in range(len(cases)) if i not in done_indices), len(cases))
                 run.checkpoint = {**(run.checkpoint or {}), "ppa_batch_cursor": cursor,
@@ -682,7 +679,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         history.append({"concurrency": concurrency, "completed": completed_count,
                         "wall_seconds": round(wall_seconds, 3), "unknown": unknown_count,
                         "rate_limited": False, "parent_peak": parent_peak,
-                        "parent_groups": len(groups), "supply_limited": len(groups) < concurrency})
+                        "parent_groups": len(pending), "supply_limited": len(pending) < concurrency})
         run.checkpoint = {**(run.checkpoint or {}), "ppa_throughput_history": history,
                           "ppa_max_in_flight": concurrency, "ppa_429_streak": 0}
         await db.commit()

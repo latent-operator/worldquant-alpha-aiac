@@ -232,6 +232,8 @@ async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch, remain
         result = await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
         assert result["reason"] == "PPA_RATE_LIMIT"
         assert brain.calls <= 2
+        assert run.checkpoint["ppa_batch_cursor"] == 0
+        assert run.checkpoint["ppa_batch_completed"] == []
         assert run.next_retry_at is not None
         from datetime import datetime, timezone
         wait = (run.next_retry_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds()

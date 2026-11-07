@@ -58,6 +58,29 @@ async def test_429_reports_quota_without_retrying_post():
     assert result["http_status"] == 429
 
 
+@pytest.mark.asyncio
+async def test_continuous_ledger_preserves_429_and_allows_later_retry(async_engine, monkeypatch):
+    maker, tasks, runs = await campaign(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tasks[0]), await db.get(ExperimentRun, runs[0])
+        task.config = {"research_protocol": "theme_ppa_v3", "continuous_mode": True}
+        run.config_snapshot = {"task": {"config": task.config}}
+        await db.commit()
+    ledger = audit.ResearchLedger(tasks[0], runs[0], None)
+    first, reason = await ledger.reserve("rank(a)", {}, "DISCOVERY")
+    assert first and reason is None
+    await ledger.mark_requested(first)
+    await ledger.finish(first, {"success": False, "http_status": 429, "error": "rate limited"})
+    retry, reason = await ledger.reserve("rank(a)", {}, "DISCOVERY")
+    assert retry and retry != first and reason is None
+    async with maker() as db:
+        assert (await db.get(ResearchCandidate, first)).request_status == "FAILED"
+        assert (await db.get(ResearchCandidate, first)).result_snapshot["http_status"] == 429
+    other, _ = await ledger.reserve("rank(b)", {}, "DISCOVERY")
+    await ledger.finish(other, {"success": False, "http_status": 400, "error": "bad request"})
+    assert (await ledger.reserve("rank(b)", {}, "DISCOVERY"))[1] == "DUPLICATE"
+
+
 async def campaign(async_engine, monkeypatch):
     maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(audit, "AsyncSessionLocal", maker)

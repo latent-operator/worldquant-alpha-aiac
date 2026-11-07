@@ -269,12 +269,15 @@ class ResearchLedger:
                         scope.append(run.id)
                         root.checkpoint = {**(root.checkpoint or {}), "campaign_run_ids": sorted(scope)}
                 task = await db.get(MiningTask, self.task_id)
+                dedup_status = ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN"))
+                if self.max_requests is None and (getattr(task, "config", None) or {}).get("research_protocol") == "theme_ppa_v3":
+                    dedup_status &= (ResearchCandidate.request_status != "FAILED") | ResearchCandidate.result_snapshot["http_status"].as_integer().is_distinct_from(429)
                 existing = (await db.execute(
                     select(ResearchCandidate.id).where(
                         ResearchCandidate.run_id.in_(scope),
                         ResearchCandidate.expression_hash == expr_hash,
                         ResearchCandidate.settings_hash == settings_hash,
-                        ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
+                        dedup_status,
                     ).limit(1)
                 )).scalar_one_or_none()
                 prior_duplicate = False
@@ -284,7 +287,7 @@ class ResearchLedger:
                         select(ResearchCandidate.settings).where(
                             ResearchCandidate.task_id.in_(self.dedup_task_ids),
                             ResearchCandidate.expression_hash == expr_hash,
-                            ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
+                            dedup_status,
                         )
                     )).scalars().all()
                     prior_duplicate = any(
