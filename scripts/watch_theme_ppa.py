@@ -57,14 +57,14 @@ def request_json(url, payload=None):
         return json.load(response)
 
 
-def first_batch_reviewable(evidence, run_id):
-    rows = [row for row in evidence["rows"] if row["run_id"] == run_id and row["source"] == "DISCOVERY"]
-    first = rows[:4]
-    return len(first) == 4 and all(
-        row["request_status"] in {"RESULT", "CACHED"}
-        and row["metrics"].get("amer_sharpe") is not None
-        and row["platform_ppa_evaluation"].get("status") in {"PPA_REJECTED", "PPA_READY"}
-        for row in first)
+def first_batch_reviewable(evidence, run_id, case_ids):
+    rows = {row["case_id"]: row for row in evidence["rows"]
+            if row["run_id"] == run_id and row["source"] == "DISCOVERY"}
+    return bool(case_ids) and all(
+        case_id in rows and rows[case_id]["request_status"] in {"RESULT", "CACHED"}
+        and rows[case_id]["metrics"].get("amer_sharpe") is not None
+        and rows[case_id]["platform_ppa_evaluation"].get("status") in {"PPA_REJECTED", "PPA_READY"}
+        for case_id in case_ids)
 
 
 def acquire_lease(run_id, *, port=None):
@@ -136,21 +136,15 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
         return "STOP"
     if task["status"] == "RUNNING":
         if run["status"] == "RUNNING":
-            request_json(f"{api}/runs/{run_id}/ppa-qualification-reconcile", {})
             checkpoint = run.get("checkpoint") or {}
             active = checkpoint.get("ppa_batch") or {}
             cases = active.get("cases") or []
             prefetch_path = output_dir / f"run-{run_id}-prefetch.json"
-            experiment = (task.get("config") or {}).get("research_protocol") == "theme_ppa_v3"
-            prefetch_due = (experiment and len(cases) >= 2 or
-                            active.get("phase") == "discovery" and len(cases) >= 4
-                            and checkpoint.get("ppa_batch_cursor", 0) >= len(cases) // 2)
-            if prefetch_due and not prefetch_path.exists():
+            if len(cases) >= 2 and not prefetch_path.exists():
                 evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
-                if (evidence.get("next_phase") == active.get("phase")
-                        and (experiment or not evidence.get("unresolved_requests"))):
+                if evidence.get("next_phase") == active.get("phase"):
                     projected = evidence
-                    if experiment and evidence.get("phase_limit") is not None:
+                    if evidence.get("phase_limit") is not None:
                         phase = active["phase"]
                         persisted = {row.get("case_id") for row in evidence.get("rows", [])
                                      if isinstance(row, dict)}
@@ -169,6 +163,12 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
                     temporary = prefetch_path.with_suffix(".tmp")
                     temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
                     temporary.replace(prefetch_path)
+            try:
+                request_json(f"{api}/runs/{run_id}/ppa-qualification-reconcile", {})
+            except (TimeoutError, URLError) as exc:
+                if isinstance(exc, URLError) and not isinstance(exc.reason, TimeoutError):
+                    raise
+                return "WAIT_QUALIFICATION_TIMEOUT"
         return "WAIT"
     if task["status"] != "PAUSED" or run["status"] != "PAUSED":
         raise ValueError("PPA_RUN_STATE_UNEXPECTED")
@@ -180,7 +180,8 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
             if recovered["pending"]:
                 return "WAIT_RECONCILE"
             evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
-        if not first_batch_reviewable(evidence, run_id):
+        cases = ((run.get("checkpoint") or {}).get("ppa_batch") or {}).get("cases") or []
+        if not first_batch_reviewable(evidence, run_id, [case["case_id"] for case in cases]):
             raise ValueError("PPA_FIRST_BATCH_EVIDENCE_INCOMPLETE")
         request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME"})
         return "RESUMED_REVIEWED"

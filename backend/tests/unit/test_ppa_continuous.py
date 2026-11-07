@@ -66,15 +66,46 @@ def test_no_budget_limit_does_not_skip_two_probe_rule():
 
 
 def test_first_batch_review_requires_complete_platform_evidence():
-    rows = [{"run_id": 17, "source": "DISCOVERY", "request_status": "RESULT",
+    rows = [{"case_id": f"case-{i}", "run_id": 17, "source": "DISCOVERY", "request_status": "RESULT",
              "metrics": {"amer_sharpe": 0.8}, "platform_ppa_evaluation": {"status": "PPA_REJECTED"}}
-            for _ in range(4)]
-    assert first_batch_reviewable({"rows": rows}, 17)
+            for i in range(16)]
+    cases = [row["case_id"] for row in rows]
+    assert first_batch_reviewable({"rows": rows}, 17, cases)
     rows[2]["platform_ppa_evaluation"]["status"] = "PPA_PENDING"
-    assert not first_batch_reviewable({"rows": rows}, 17)
+    assert not first_batch_reviewable({"rows": rows}, 17, cases)
     rows[2]["platform_ppa_evaluation"]["status"] = "PPA_REJECTED"
-    rows[3]["metrics"] = {}
-    assert not first_batch_reviewable({"rows": rows}, 17)
+    rows[15]["metrics"] = {}
+    assert not first_batch_reviewable({"rows": rows}, 17, cases)
+    rows[15]["metrics"] = {"amer_sharpe": 0.8}
+    assert not first_batch_reviewable({"rows": rows[:-1]}, 17, cases)
+
+
+def test_watcher_holds_first_batch_until_all_cases_are_reviewable(tmp_path, monkeypatch):
+    cases = [{"case_id": f"case-{i}"} for i in range(16)]
+    rows = [{"case_id": case["case_id"], "run_id": 18, "source": "DISCOVERY",
+             "request_status": "RESULT", "metrics": {"amer_sharpe": 0.8},
+             "platform_ppa_evaluation": {"status": "PPA_REJECTED"}} for case in cases]
+    calls = []
+    def request(url, payload=None):
+        calls.append(url)
+        if url.endswith("/tasks/14"):
+            return {"status": "PAUSED"}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 18, "status": "PAUSED", "block_reason": "PPA_FIRST_BATCH_REVIEW",
+                     "checkpoint": {"ppa_batch": {"cases": cases}}}]
+        if url.endswith("/ppa-feedback"):
+            return {"rows": rows, "unresolved_requests": 0}
+        if url.endswith("/intervene"):
+            return {"action": "RESUME"}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    args = ("http://127.0.0.1:8003/api/v1", 14, 18, tmp_path / "ask.ps1", tmp_path)
+    rows[15]["platform_ppa_evaluation"]["status"] = "PPA_PENDING"
+    with pytest.raises(ValueError, match="PPA_FIRST_BATCH_EVIDENCE_INCOMPLETE"):
+        watch_theme_ppa.step(*args)
+    assert not any(url.endswith("/intervene") for url in calls)
+    rows[15]["platform_ppa_evaluation"]["status"] = "PPA_REJECTED"
+    assert watch_theme_ppa.step(*args) == "RESUMED_REVIEWED"
 
 
 @pytest.mark.asyncio
@@ -466,6 +497,68 @@ def test_experiment_prefetches_refinement_before_worker_finishes(tmp_path, monke
                                 tmp_path / "ask.ps1", tmp_path) == "WAIT"
     queued = json.loads((tmp_path / "run-18-prefetch.json").read_text(encoding="utf-8"))
     assert queued["cases"][0]["case_id"] == "next"
+
+
+def test_running_prefetch_survives_qualification_timeout(tmp_path, monkeypatch):
+    calls = []
+    qualifications = []
+    def request(url, payload=None):
+        calls.append(url.rsplit("/", 1)[-1])
+        if url.endswith("/tasks/14"):
+            return {"status": "RUNNING", "config": {"research_protocol": "theme_ppa_v3"}}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 18, "status": "RUNNING", "checkpoint": {
+                "ppa_batch": {"phase": "refinement", "cases": [{"case_id": f"a{i}"} for i in range(8)]},
+                "ppa_batch_cursor": 0}}]
+        if url.endswith("/ppa-feedback"):
+            return {"epoch": 3, "next_phase": "refinement", "base": {}, "phase_limit": 16,
+                    "phase_counts": {"refinement": 0}, "rows": [], "unresolved_requests": 2}
+        if url.endswith("/ppa-qualification-reconcile"):
+            qualifications.append(1)
+            if len(qualifications) == 1:
+                raise TimeoutError("private upstream detail")
+            return {"reviewed": 0, "pending": 0}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    generated = []
+    def prepare(*args):
+        generated.append(1)
+        return {"phase": "refinement", "cases": [{"case_id": "next"}],
+                "candidate_generation": {"plan_sha256": "abc"}}
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", prepare)
+    args = ("http://127.0.0.1:8003/api/v1", 14, 18, tmp_path / "ask.ps1", tmp_path)
+    assert watch_theme_ppa.run_step_with_retry(lambda: watch_theme_ppa.step(*args), tmp_path,
+                                                 sleep=lambda _: pytest.fail("No backoff")) == "WAIT_QUALIFICATION_TIMEOUT"
+    assert calls.index("ppa-feedback") < calls.index("ppa-qualification-reconcile")
+    assert (tmp_path / "run-18-prefetch.json").exists()
+    assert watch_theme_ppa.step(*args) == "WAIT"
+    assert generated == [1]
+    heartbeat = json.loads((tmp_path / "coordinator-heartbeat.json").read_text(encoding="utf-8"))
+    assert heartbeat["consecutive_failures"] == 0
+    assert "private upstream detail" not in json.dumps(heartbeat)
+
+
+def test_running_refinement_prefetch_does_not_require_experiment_flag(tmp_path, monkeypatch):
+    def request(url, payload=None):
+        if url.endswith("/tasks/14"):
+            return {"status": "RUNNING", "config": {"continuous_mode": True}}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 18, "status": "RUNNING", "checkpoint": {
+                "ppa_batch": {"phase": "refinement", "cases": [{"case_id": "a"}, {"case_id": "b"}]},
+                "ppa_batch_cursor": 0}}]
+        if url.endswith("/ppa-feedback"):
+            return {"epoch": 3, "next_phase": "refinement", "base": {}, "phase_limit": 16,
+                    "phase_counts": {"refinement": 0}, "rows": [], "unresolved_requests": 1}
+        if url.endswith("/ppa-qualification-reconcile"):
+            return {"reviewed": 0, "pending": 0}
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    monkeypatch.setattr(watch_theme_ppa, "prepare_batch", lambda *args: {
+        "phase": "refinement", "cases": [{"case_id": "next"}],
+        "candidate_generation": {"plan_sha256": "abc"}})
+    assert watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 18,
+                                tmp_path / "ask.ps1", tmp_path) == "WAIT"
+    assert (tmp_path / "run-18-prefetch.json").exists()
 
 
 def test_experiment_prefetches_with_requests_in_flight_using_projected_capacity(tmp_path, monkeypatch):
