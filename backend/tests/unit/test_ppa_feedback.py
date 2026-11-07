@@ -290,6 +290,34 @@ def test_local_seed_selection_excludes_hard_gate_failures_and_used_parents():
     assert [row["case_id"] for row in selected] == ["simple"]
 
 
+def test_measured_discovery_bootstraps_from_historical_seed_without_model():
+    data = base()
+    parent = candidate()
+    parent["expression"] = "rank(ts_sum(returns,126))"
+    evidence = feedback.build_feedback([], None, {"discovery": 0},
+                                       continuous=True, phase_limit=16)
+    evidence.update(local_expansion=True, local_seeds=[parent])
+    evidence["rows"] = [{"case_id": f"measured_{window}",
+                         "expression": f"rank(ts_sum(returns,{window}))",
+                         "request_status": "RESULT"} for window in (3, 4, 5, 7, 9, 11)]
+    evidence["history_signatures"] = [list(feedback.signature(
+        "rank(ts_sum(returns,3))", feedback.case_settings(data, {})))]
+
+    batch = feedback.freeze_measured_discovery_expansion(data, evidence)
+
+    assert batch["phase"] == "discovery"
+    assert len(batch["cases"]) == 4
+    assert {case["arm"] for case in batch["cases"]} == {"CONTROL", "TREATMENT"}
+    assert batch["candidate_generation"]["source"] == "measured_discovery_local_expansion"
+    assert batch["candidate_generation"]["model"] == "none"
+    assert feedback.verify_batch_generation(data, evidence, batch)["cases"] == batch["cases"]
+
+    tampered = deepcopy(batch)
+    tampered["cases"][0]["expression"] = "rank(ts_sum(returns,99))"
+    with pytest.raises(ValueError, match="PPA_LOCAL_EXPANSION_MISMATCH"):
+        feedback.verify_batch_generation(data, evidence, tampered)
+
+
 def test_refinement_parent_budget_counts_historical_children():
     data = base()
     evidence = feedback.build_feedback([candidate()], None, {"discovery": 4},

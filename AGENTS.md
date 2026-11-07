@@ -5,7 +5,7 @@ Codex is the operator for this repository. For every code change requested in na
 - Preserve the existing AIAC PostgreSQL volume, task IDs, run IDs, checkpoints, and encrypted credentials. Never use `docker compose down -v` on the live project.
 - Keep the old `F:\wq-capability-loop` paused and untouched. AIAC is the only active mining runtime.
 - No CI or smoke check may call a live LLM, WQ simulation, or WQ submission endpoint. Use mocks and isolated databases.
-- Do not start a new mining task as part of a software release. Resume only tasks that were active before the release, using their existing run IDs. Respect prior PAUSED and STOPPED states.
+- For task 14, the user's standing CD policy is to end the current run at a completed PPA batch boundary with no `RESERVED`, `REQUESTED`, or `UNKNOWN` requests, deploy the exact CI-passing commit, then start a new run on the same task ID. Preserve every old run and its results. Do not rotate other tasks; respect their prior PAUSED and STOPPED states. If the safe boundary or release gate fails, do not start a new run.
 - Never print, commit, copy into images, or put in release records the contents of `.env`, `keys.txt`, BRAIN credentials, LLM keys, or `CREDENTIALS_SECRET`.
 - The reviewed historical `keys.txt` is a list of dataset identifiers, not API credentials. Do not claim it requires credential rotation. Scan every new file and change before committing; review any other suspected exposure separately.
 - Deploy only a clean, named commit with successful CI on the writable fork. Record the previous commit, CI run, database revision, backup ID, and pre/post task and run states.

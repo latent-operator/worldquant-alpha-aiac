@@ -531,9 +531,79 @@ def freeze_measured_seed_expansion(base, evidence):
     return frozen
 
 
+def freeze_measured_discovery_expansion(base, evidence):
+    """Build audited discovery quartets from saved seeds and measured lookbacks."""
+    if evidence.get("next_phase") != "discovery" or not evidence.get("local_expansion"):
+        raise ValueError("PPA_NO_LOCAL_VARIANTS")
+    limit = evidence.get("phase_limit", 12) - evidence["phase_counts"].get("discovery", 0)
+    if evidence.get("max_batch_cases") is not None:
+        limit = min(limit, evidence["max_batch_cases"])
+    if evidence.get("budget_remaining") is not None:
+        limit = min(limit, evidence["budget_remaining"] - 2)
+    parents = evidence.get("local_seeds") or evidence.get("seeds") or []
+    lookbacks = _measured_lookbacks(evidence)
+    combined = []
+    for parent in parents:
+        if len(combined) + 4 > limit:
+            break
+        if parent.get("dataset_id") not in base["datasets"]:
+            continue
+        expression = parent.get("expression") or ""
+        for slot_index, (start, end, original, operator) in enumerate(_lookback_slots(expression)):
+            values = [value for value in lookbacks.get(operator, []) if value != original]
+            for offset in range(len(values) - 3):
+                if len(combined) + 4 > limit:
+                    break
+                windows = values[offset:offset + 4]
+                identity = digest([parent.get("id"), parent.get("case_id"), slot_index, windows])[:16]
+                pair_id = f"M_{identity}"
+                group = [{"case_id": f"{pair_id}_{index}", "pair_id": pair_id,
+                          "arm": "CONTROL" if index == 0 else "TREATMENT",
+                          "dataset_id": parent["dataset_id"],
+                          "mechanism_id": parent["mechanism_id"],
+                          "expression": expression[:start] + str(window) + expression[end:],
+                          "changed_element": f"measured {operator} lookback {original} -> {window}",
+                          "expected_effect": "Test the saved seed hypothesis at a measured lookback",
+                          "risk": "Lookback sensitivity may reduce signal quality",
+                          "stop_condition": "No AMER gain or failed PPA checks"}
+                         for index, window in enumerate(windows)]
+                try:
+                    frozen = freeze_batch(base, evidence,
+                                          {"phase": "discovery", "cases": [*combined, *group]})
+                except ValueError:
+                    continue
+                combined = frozen["cases"]
+    if not combined:
+        raise ValueError("PPA_NO_LOCAL_VARIANTS")
+    frozen = freeze_batch(base, evidence, {"phase": "discovery", "cases": combined})
+    frozen["candidate_generation"].update(
+        source="measured_discovery_local_expansion", model="none",
+        rule_version="measured_discovery_v1",
+        seed_sha256=digest([{key: parent.get(key) for key in
+                             ("id", "case_id", "expression", "dataset_id", "mechanism_id")}
+                            for parent in parents]),
+        expanded_cases=len(combined), generation_seconds=0.0,
+        validation_attempts=0, top_up_calls=0)
+    return frozen
+
+
 def verify_batch_generation(base, evidence, batch):
     """Fail closed when a locally expanded batch is not the exact replay."""
     generation = batch.get("candidate_generation") or {}
+    if generation.get("source") == "measured_discovery_local_expansion":
+        if generation.get("rule_version") != "measured_discovery_v1":
+            raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH")
+        try:
+            checked = freeze_measured_discovery_expansion(base, evidence)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH") from exc
+        if (checked["cases"] != batch.get("cases") or
+                checked["candidate_generation"]["seed_sha256"] != generation.get("seed_sha256") or
+                checked["candidate_generation"]["expanded_cases"] != generation.get("expanded_cases") or
+                any(checked.get(key) != batch.get(key) for key in
+                    ("phase", "evidence_hash", "base_hash", "parent_version"))):
+            raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH")
+        return checked
     if generation.get("source") == "measured_seed_local_expansion":
         if generation.get("rule_version") != "measured_lookback_v1":
             raise ValueError("PPA_LOCAL_EXPANSION_MISMATCH")
