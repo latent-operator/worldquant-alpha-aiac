@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import time
+from dotenv import load_dotenv
+
+
+def load_runtime_env(env_file: Path) -> None:
+    if not env_file.is_file():
+        raise ValueError("Private runtime .env is missing")
+    load_dotenv(env_file, override=True)
 
 
 def is_idle(active: dict | None) -> bool:
@@ -13,7 +21,9 @@ def is_idle(active: dict | None) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--timeout-seconds", type=int, default=7200)
+    parser.add_argument("--env-file", type=Path, default=Path(__file__).resolve().parents[1] / ".env")
     args = parser.parse_args()
+    load_runtime_env(args.env_file)
     from backend.celery_app import celery_app
 
     deadline = time.monotonic() + args.timeout_seconds
