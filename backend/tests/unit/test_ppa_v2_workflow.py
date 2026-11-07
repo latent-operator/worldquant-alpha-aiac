@@ -71,9 +71,9 @@ class Brain:
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-@pytest.mark.parametrize("groups,expected_peak", [(1, 4), (2, 8)])
+@pytest.mark.parametrize("groups,expected_peak,reviewed", [(1, 4, True), (2, 8, True), (4, 8, False)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
-                                                                  groups, expected_peak):
+                                                                  groups, expected_peak, reviewed):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -98,7 +98,7 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
                        "research_request_budget": None, "continuous_mode": True}
-        run.checkpoint = {"ppa_first_batch_reviewed": True}
+        run.checkpoint = {"ppa_first_batch_reviewed": reviewed}
         run.config_snapshot = {"task": {"config": task.config}}
         await db.commit()
         evidence = await workflow.feedback_context(db, task, run)
@@ -117,12 +117,16 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
                               for name in base["datasets"]["dataset1"]]}
         await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
         assert brain.peak == expected_peak
-        assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
-        assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is (groups == 1)
+        if reviewed:
+            assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
+            assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is (groups == 1)
         rows = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == rid))).scalars().all()
         assert len(rows) == 4 * groups
         assert all((row.result_snapshot or {}).get("ppa_evaluation") for row in rows)
+        if not reviewed:
+            assert run.block_reason == "PPA_FIRST_BATCH_REVIEW"
+            assert run.checkpoint["ppa_first_batch_reviewed"] is True
 
 
 @pytest.mark.asyncio

@@ -506,9 +506,8 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                 or (row.request_status in {"RESULT", "CACHED"}
                     and (row.result_snapshot or {}).get("ppa_evaluation"))}
     first_review = (batch["phase"] == "discovery" and not checkpoint.get("ppa_first_batch_reviewed"))
-    ceiling = min(4, len(cases)) if first_review else len(cases)
     pending = []
-    for index, case in enumerate(cases[:ceiling]):
+    for index, case in enumerate(cases):
         if case["case_id"] in finished:
             continue
         validated = AlphaSemanticValidator(
@@ -649,7 +648,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
             run.checkpoint = {**(run.checkpoint or {}),
                               "ppa_max_in_flight": max(2, concurrency // 2)}
         return await pause(db, task, run, block_reason)
-    if first_review and all(case["case_id"] in finished for case in cases[:ceiling]):
+    if first_review and all(case["case_id"] in finished for case in cases):
         run.checkpoint = {**(run.checkpoint or {}), "ppa_first_batch_reviewed": True}
         return await pause(db, task, run, "PPA_FIRST_BATCH_REVIEW")
     if len(finished) >= len(cases):
