@@ -107,8 +107,10 @@ def research_row(row):
             "request_status": row.get("request_status", "RESULT")}
 
 
-def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, phase_limit=12):
-    if phase_limit not in (12, 16, 32):
+def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, phase_limit=None):
+    if phase_limit is None:
+        phase_limit = 16 if continuous else 12
+    if phase_limit != (16 if continuous else 12):
         raise ValueError("PPA_PHASE_LIMIT_INVALID")
     measured = [research_row(row) for row in rows]
     measured = [row for row in measured if row["request_status"] in {"RESULT", "CACHED"}]
@@ -119,7 +121,7 @@ def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, ph
     stopped = sorted(stopped_families(outcomes))
     # A failed window sweep does not invalidate a parent with a different expression.
     available = measured
-    seeds = select_seeds(available, limit=8 if phase_limit == 32 else 4 if phase_limit == 16 else 3)
+    seeds = select_seeds(available, limit=4 if continuous else 3)
     confirmed_counts = Counter(row.get("parent_candidate_id") for row in measured
                                if row.get("source") == "CONFIRMATION")
     finalists = [row for row in select_seeds(available, limit=len(available))
@@ -140,6 +142,7 @@ def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, ph
             "PPA_DISCOVERY_GROUP_CAPACITY" if not seeds and 0 < phase_limit - phase_counts.get("discovery", 0) < 4
             else "PPA_NO_QUALIFIED_SEEDS" if not seeds else "PPA_NO_FINALISTS")
     evidence = {"rows": measured, "seeds": seeds, "finalists": finalists,
+                "continuous": continuous,
                 "stopped_families": stopped, "budget_remaining": budget_remaining,
                 "phase_counts": phase_counts, "phase_limit": phase_limit,
                 "next_phase": phase, "stop_reason": reason}
@@ -167,7 +170,7 @@ def build_feedback(rows, budget_remaining, phase_counts, *, continuous=False, ph
             evidence["exhausted_templates"].append(list(key))
     evidence["seeds"] = select_active_seeds(
         available, {tuple(item) for item in evidence["exhausted_templates"]},
-        limit=8 if phase_limit == 32 else 4 if phase_limit == 16 else 3)
+        limit=4 if continuous else 3)
     if evidence["next_phase"] == "refinement" and not evidence["seeds"]:
         if phase_counts.get("discovery", 0) <= phase_limit - 4:
             evidence["next_phase"], evidence["stop_reason"] = "discovery", None
@@ -309,7 +312,7 @@ def generation_context(evidence):
     phase = evidence.get("next_phase")
     context = {key: evidence[key] for key in (
         "next_phase", "phase_counts", "phase_limit", "max_batch_cases", "budget_remaining",
-        "throughput_experiment", "strict_max_operator_count",
+        "continuous", "strict_max_operator_count",
         "stopped_families", "exhausted_templates", "proposed_avoid_expressions") if key in evidence}
     seed_rows = evidence.get("local_seeds", evidence.get("seeds", []))
     return {**context,
@@ -648,8 +651,8 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
         capacity = min(capacity, evidence["budget_remaining"] - (0 if phase == "confirmation" else 2))
     if capacity <= 0:
         raise ValueError("PPA_BATCH_PHASE_LIMIT")
-    structured_discovery = phase == "discovery" and evidence.get("throughput_experiment") is True
-    model = "gpt-6-astra" if evidence.get("throughput_experiment") is True else "gpt-6-luna"
+    structured_discovery = phase == "discovery" and evidence.get("continuous") is True
+    model = "gpt-6-astra" if evidence.get("continuous") is True else "gpt-6-luna"
     if structured_discovery:
         prompt = (f"Return ONLY JSON with phase='discovery' and discovery_groups (at most {capacity // 4}). "
                   "Each group needs dataset_id and mechanism_id from the supplied registry, "
@@ -792,7 +795,7 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
         truncated += generation.get("truncated_cases", 0)
         seconds += generation.get("generation_seconds", 0)
     frozen["candidate_generation"].update(
-        model="gpt-6-astra" if evidence.get("throughput_experiment") is True else "gpt-6-luna",
+        model="gpt-6-astra" if evidence.get("continuous") is True else "gpt-6-luna",
         proposed_cases=proposed, truncated_cases=truncated,
         generation_seconds=round(seconds, 3), validation_attempts=attempts,
         top_up_calls=calls, top_up_error=last_error)

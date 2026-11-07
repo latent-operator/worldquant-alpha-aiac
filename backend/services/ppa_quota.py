@@ -58,60 +58,6 @@ def retry_delay_for_429(quota, retry_after=None, streak=1):
     return max(server_wait, min(600, 30 * (2 ** min(max(0, streak - 1), 5))))
 
 
-def _supply_limited(row, concurrency):
-    groups = row.get("parent_groups")
-    return bool(row.get("supply_limited") or
-                (type(groups) is int and groups < concurrency))
-
-
-def choose_parallelism(current, history, transport="single"):
-    """Use real completed batches, never the theoretical eight-job ceiling."""
-    current = current if current in (2, 4, 8) else 2
-    history = [row for row in history if row.get("transport", "single") == transport]
-    if any("parent_peak" in row for row in history):
-        history = [row for row in history if "parent_peak" in row]
-    if (history and history[-1].get("concurrency") == current
-            and "parent_peak" in history[-1] and history[-1]["parent_peak"] < current
-            and not _supply_limited(history[-1], current)):
-        return 2
-    if history and history[-1].get("concurrency") == current and (
-            history[-1].get("unknown", 0) or history[-1].get("rate_limited")):
-        return max(2, current // 2)
-    totals = {}
-    for row in history:
-        level, count, seconds = row.get("concurrency"), row.get("completed", 0), row.get("wall_seconds", 0)
-        if (level in (2, 4, 8) and count > 0 and seconds > 0
-                and row.get("parent_peak", level) >= level
-                and not row.get("unknown") and not row.get("rate_limited")):
-            prior_count, prior_seconds = totals.get(level, (0, 0))
-            totals[level] = prior_count + count, prior_seconds + seconds
-    measured = {level: count / seconds for level, (count, seconds) in totals.items()
-                if count >= 24 and seconds >= 1800}
-    if current == 2 and 2 in measured and 4 not in measured:
-        return 4
-    if current == 4 and 4 in measured and 8 not in measured:
-        if 2 not in measured or measured[4] >= 1.1 * measured[2]:
-            return 8
-        return 2
-    if 8 in measured:
-        return max(measured, key=measured.get)
-    return current
-
-
-def next_transport(transport, current, history):
-    level = choose_parallelism(current, history, transport)
-    latest = history[-1] if history else {}
-    if (transport == "paired_multi" and latest.get("concurrency") == current
-            and latest.get("parent_peak", current) < current
-            and not _supply_limited(latest, current)):
-        return "single", 2
-    if (transport == "single" and current >= 4 and level < current
-            and not latest.get("unknown") and not latest.get("rate_limited")
-            and not _supply_limited(latest, current)):
-        return "paired_multi", 2
-    return transport, level
-
-
 def restore_quota(snapshots, now=None):
     now = now or datetime.now(timezone.utc)
     quota = QuotaWindow()

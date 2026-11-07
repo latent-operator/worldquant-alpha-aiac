@@ -12,3 +12,5 @@ Codex is the operator for this repository. For every code change requested in na
 - API and worker must use the same `.env` and exactly one worker. A release failure restores the previous code version; never auto-restore a live database after writes may have occurred.
 
 Run `python scripts/preflight.py` before each commit. The CI workflow runs the same offline checks.
+
+For PPA throughput changes, read `docs/ppa_runtime_contract.md` before editing. Trace the actual `theme_ppa_v3` entry point through dispatch and checkpoint recovery, then test the normal path. Record the pre-change and post-change completed WQ requests, active wall time, observed parent peak, and pause time from the same run or comparable windows. Treat tests as offline safety checks; claim a throughput improvement only after live metrics show it. If the same bottleneck survives three iterations, stop changing local branches and trace the full runtime path before another patch. Keep historical transport metadata readable until all old in-flight requests have reconciled.
