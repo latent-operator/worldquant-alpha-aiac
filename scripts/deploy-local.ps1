@@ -93,14 +93,27 @@ try {
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($last) {
         $prior = Get-Content -LiteralPath $last.FullName -Raw | ConvertFrom-Json
-        if ($prior.outcome -ne 'SUCCESS') { throw 'Latest release needs operator review before another deployment.' }
-        if ($prior.commit -eq $Commit) {
+        if ($prior.outcome -eq 'ROLLED_BACK') {
+            if (-not (Test-Path -LiteralPath $currentFile)) { throw 'Rollback has no current release record.' }
+            $current = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json
+            if ($current.commit -ne $prior.previous_commit -or $current.source -ne $prior.previous_source) {
+                throw 'Rolled-back release does not match the active version.'
+            }
+            Verify-Services $prior.previous_commit
+            $previousSource = $prior.previous_source
+            $previousCommit = $prior.previous_commit
+        } elseif ($prior.outcome -ne 'SUCCESS') {
+            throw 'Latest release needs operator review before another deployment.'
+        }
+        if ($prior.outcome -eq 'SUCCESS' -and $prior.commit -eq $Commit) {
             Verify-Services $Commit
             Write-Output "ALREADY_DEPLOYED commit=$Commit record=$($last.FullName)"
             return
         }
-        $previousSource = $prior.source
-        $previousCommit = $prior.commit
+        if ($prior.outcome -eq 'SUCCESS') {
+            $previousSource = $prior.source
+            $previousCommit = $prior.commit
+        }
     } else {
         if (-not $BootstrapPreviousSource) { throw 'First release requires the preserved previous source and built UI.' }
         $previousSource = (Resolve-Path -LiteralPath $BootstrapPreviousSource).Path
@@ -150,7 +163,7 @@ try {
     $paused = $true
     $before = Get-Content -LiteralPath $snapshot -Raw | ConvertFrom-Json
     if ($managed | Where-Object { $_.service -eq 'worker' -and $_.running }) {
-        & $python -m scripts.wait_worker_idle --timeout-seconds 7200
+        & $python -m scripts.wait_worker_idle --timeout-seconds 7200 --env-file $envFile
         Assert-Native 'Safe worker boundary'
     }
     & $manager -Action Stop -Services @('worker', 'api', 'ui') | Out-Null
