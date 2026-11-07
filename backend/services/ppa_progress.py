@@ -146,7 +146,7 @@ def progress_report(rows, current_run_id, checkpoint=None):
             "evidence_reasons": dict(missing), "cached_results": sum(r["request_status"] == "CACHED" for r in raw),
             "observed_quota": observed_quota,
             "daily_window": daily_window,
-            "parallelism": checkpoint.get("ppa_max_in_flight", 1),
+            "parallelism": checkpoint.get("ppa_max_in_flight", 8),
             "actual_parent_peak": ((checkpoint.get("ppa_throughput_history") or [])[-1].get("parent_peak")
                                    if checkpoint.get("ppa_throughput_history") else None),
             "batch_throughput": (checkpoint.get("ppa_throughput_history") or [])[-20:],

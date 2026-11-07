@@ -1,4 +1,5 @@
 from copy import deepcopy
+import logging
 from types import SimpleNamespace
 import asyncio
 import pytest
@@ -69,75 +70,35 @@ class Brain:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("phase_limit,transport,expected_pairs,history,expected_peak,concurrency,underfilled,groups,group_size", [
-    (16, "single", 0, [], 4, 2, False, 1, 2), (16, "paired_multi", 2, [], 2, 2, True, 1, 2),
-    (16, "single", 0, [{"transport": "single", "concurrency": 2, "completed": 12,
-                        "wall_seconds": 900, "unknown": 0, "rate_limited": False}] * 2, 4, 4, False, 1, 2),
-    (16, "single", 0, [], 4, 8, True, 1, 2),
-    (16, "single", 0, [], 8, 8, False, 2, 2),
-    (16, "paired_multi", 8, [], 8, 8, False, 4, 2),
-    (32, "paired_multi", 8, [
-        {"transport": "paired_multi", "group_size": 4, "concurrency": 2,
-         "completed": 24, "wall_seconds": 2400, "parent_peak": 2, "parent_groups": 8},
-        {"transport": "paired_multi", "group_size": 4, "concurrency": 4,
-         "completed": 24, "wall_seconds": 1800, "parent_peak": 4, "parent_groups": 8}],
-     8, 8, False, 8, 4),
-    (32, "paired_multi", 8, [{"transport": "paired_multi", "group_size": 2,
-                           "concurrency": 8, "completed": 32, "wall_seconds": 1800,
-                           "parent_peak": 8, "parent_groups": 16}], 2, 8, False, 8, 4)])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("groups,expected_peak", [(1, 4), (2, 8)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
-                                                                  phase_limit, transport, expected_pairs, history,
-                                                                  expected_peak, concurrency, underfilled, groups,
-                                                                  group_size):
+                                                                  groups, expected_peak):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
         peak = 0
-        pairs = 0
         async def simulate_single(self, expression, **settings):
             self.active += 1
             self.peak = max(self.peak, self.active)
             await asyncio.sleep(0.03)
             self.active -= 1
             return await super().simulate_single(expression, **settings)
-        async def simulate_audited_pair(self, expressions, **settings):
-            return await self.simulate_audited_multi(expressions, **settings)
-        async def simulate_audited_multi(self, expressions, **settings):
-            self.pairs += 1
-            self.active += 1
-            self.peak = max(self.peak, self.active)
-            await asyncio.sleep(0.03)
-            self.active -= 1
-            return [await super(ConcurrentBrain, self).simulate_single(expression, **settings)
-                    for expression in expressions]
     async def quality(**kwargs):
         return "OPTIMIZE"
     class PreparedLedger:
-        def __init__(self, *args, **kwargs):
-            pass
-        async def recover(self, *args):
-            return None
-        async def reserve(self, expression, settings, source, metadata=None):
-            return 1, None
-        async def mark_requested(self, candidate_id):
-            pass
-        async def finish(self, candidate_id, result):
-            pass
-    # The in-memory SQLite fixture has one shared connection, so isolate the
-    # network overlap test from ledger writes; ledger locking has separate tests.
+        def __init__(self, *args, **kwargs): pass
+        async def recover(self, *args): return None
+        async def reserve(self, *args, **kwargs): return 1, None
+        async def mark_requested(self, *args): pass
+        async def finish(self, *args): pass
     monkeypatch.setattr(workflow, "ResearchLedger", PreparedLedger)
     brain = ConcurrentBrain()
     async with maker() as db:
         task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
-        if groups > 6:
-            base["datasets"]["dataset1"].extend(
-                f"field_{group}_{arm}" for group in range(6, groups) for arm in range(4))
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
-                       "research_request_budget": None, "continuous_mode": True,
-                       "ppa_manifest": base, "ppa_throughput_experiment": group_size == 4}
-        run.checkpoint = {"ppa_phase_limit": phase_limit, "ppa_transport": transport,
-                          "ppa_max_in_flight": concurrency, "ppa_throughput_history": history,
-                          "ppa_first_batch_reviewed": True}
+                       "research_request_budget": None, "continuous_mode": True}
+        run.checkpoint = {"ppa_first_batch_reviewed": True}
         run.config_snapshot = {"task": {"config": task.config}}
         await db.commit()
         evidence = await workflow.feedback_context(db, task, run)
@@ -152,14 +113,12 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
                 result_snapshot={"research_case": case}))
         task.status = run.status = "RUNNING"
         await db.commit()
-        fields = {"dataset1": [{"id": name, "type": "MATRIX"} for name in base["datasets"]["dataset1"]]}
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"}
+                              for name in base["datasets"]["dataset1"]]}
         await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
         assert brain.peak == expected_peak
-        assert brain.pairs == expected_pairs
         assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
-        assert run.checkpoint["ppa_throughput_history"][-1]["group_size"] == (
-            group_size if transport == "paired_multi" else 1)
-        assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is underfilled
+        assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is (groups == 1)
         rows = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == rid))).scalars().all()
         assert len(rows) == 4 * groups
@@ -175,7 +134,7 @@ async def test_default_continuous_phase_uses_parallel_scheduler(async_engine, mo
                        "research_request_budget": None, "continuous_mode": True}
         await db.commit()
         evidence = await workflow.feedback_context(db, task, run)
-        assert evidence["phase_limit"] == 12
+        assert evidence["phase_limit"] == 16
         await workflow.import_batch(db, task, run, freeze_batch(base, evidence, discovery()))
         task.status = run.status = "RUNNING"
         await db.commit()
@@ -192,6 +151,39 @@ async def test_default_continuous_phase_uses_parallel_scheduler(async_engine, mo
                                              quality_evaluator=lambda **kwargs: "OPTIMIZE")
         assert result["reason"] == "PARALLEL_DEFAULT"
         assert called["batch"]["phase"] == "discovery"
+
+
+@pytest.mark.asyncio
+async def test_parallel_batch_logs_default_concurrency(async_engine, monkeypatch, caplog):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    from backend import alpha_semantic_validator
+    monkeypatch.setattr(alpha_semantic_validator, "AlphaSemanticValidator",
+                        lambda **kwargs: SimpleNamespace(validate=lambda expression:
+                                                          SimpleNamespace(valid=True)))
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "research_request_budget": None, "continuous_mode": True}
+        run.checkpoint = {"ppa_first_batch_reviewed": True}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        await workflow.import_batch(db, task, run, freeze_batch(base, evidence, discovery()))
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"}
+                               for name in base["datasets"]["dataset1"]]}
+        with caplog.at_level(logging.INFO):
+            await workflow.run_parallel_batch(db, Brain(), task, run, run.checkpoint["ppa_batch"],
+                                              base, fields, None, SimpleNamespace())
+        records = [record for record in caplog.records
+                   if getattr(record, "ppa_path", None) == "parallel"]
+        assert len(records) == 1
+        assert records[0].concurrency == 8
+        assert records[0].cases == 4
+
+
+def test_scheduler_has_no_transport_mode_switch():
+    from backend.services import ppa_quota
+    assert not hasattr(ppa_quota, "next_transport")
+    assert not hasattr(ppa_quota, "choose_parallelism")
 
 
 @pytest.mark.asyncio
@@ -242,6 +234,37 @@ async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch, remain
         assert 0 <= wait <= expected_max_wait
         if remaining == 0:
             assert wait > 3500
+
+
+@pytest.mark.asyncio
+async def test_uncertain_batch_reduces_saved_concurrency(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    class PreparedLedger:
+        def __init__(self, *args, **kwargs): pass
+        async def recover(self, *args): return None
+        async def reserve(self, *args, **kwargs): return 1, None
+        async def mark_requested(self, *args): pass
+        async def finish(self, *args): pass
+    monkeypatch.setattr(workflow, "ResearchLedger", PreparedLedger)
+    class UncertainBrain(Brain):
+        async def simulate_single(self, expression, **settings):
+            return {"success": False, "error": "uncertain request"}
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "research_request_budget": None, "continuous_mode": True}
+        run.checkpoint = {"ppa_first_batch_reviewed": True}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        await workflow.import_batch(db, task, run, freeze_batch(base, evidence, discovery()))
+        task.status = run.status = "RUNNING"
+        await db.commit()
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"}
+                              for name in base["datasets"]["dataset1"]]}
+        result = await workflow.run_theme_v2(db, UncertainBrain(), task, run, fields,
+                                             quality_evaluator=lambda **kwargs: "OPTIMIZE")
+        assert result["reason"] == "PPA_REQUEST_RECONCILIATION_PENDING"
+        assert run.checkpoint["ppa_max_in_flight"] == 4
 
 
 @pytest.mark.asyncio
@@ -355,8 +378,8 @@ async def test_qualification_reconcile_reads_original_alpha_and_releases_pending
         assert row.result_snapshot["platform_ppa_evaluation"]["status"] == "PPA_REJECTED"
         assert row.result_snapshot["qualification_check"]["source"] == "WQ_ALPHA_CHECK"
         assert run.block_reason == "AWAITING_RESEARCH_BATCH"
-        assert run.checkpoint["ppa_max_in_flight"] == 4
-        assert run.checkpoint["ppa_transport"] == "single"
+        assert run.checkpoint["ppa_max_in_flight"] == 8
+        assert "ppa_transport" not in run.checkpoint
         assert {alpha for _, alpha in brain.calls} == {"alpha-957"}
         assert brain.peak >= 2
         assert confirmation_calls == [1]

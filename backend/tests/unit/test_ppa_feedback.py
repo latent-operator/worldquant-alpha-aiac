@@ -147,7 +147,7 @@ def test_refinement_generation_clamps_to_remaining_slots(tmp_path):
         prompts.append(__import__("pathlib").Path(argv[5]).read_text(encoding="utf-8"))
         return SimpleNamespace(stdout=json.dumps(proposal))
     evidence = feedback.build_feedback([candidate()], None,
-                                       {"discovery": 4, "refinement": 10}, continuous=True)
+                                       {"discovery": 4, "refinement": 14}, continuous=True)
     batch = feedback.prepare_batch(base(), evidence, script, runner=runner)
     assert [case["case_id"] for case in batch["cases"]] == ["r0", "r1"]
     assert batch["candidate_generation"]["proposed_cases"] == 3
@@ -362,21 +362,20 @@ def test_discovery_keeps_valid_group_when_later_cockpit_call_fails(tmp_path):
     assert "CalledProcessError" in batch["candidate_generation"]["top_up_error"]
 
 
-@pytest.mark.parametrize("phase_limit,group_count", [(16, 4), (32, 8)])
+@pytest.mark.parametrize("phase_limit,group_count", [(16, 4)])
 def test_full_discovery_batch_uses_four_case_cockpit_subcalls(tmp_path, phase_limit, group_count):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")
     proposals = []
     for group_index in range(group_count):
-        prefix = f"g{group_index}"
-        proposals.append({"phase": "discovery", "cases": [
-            {"case_id": f"{prefix}_{arm_index}", "pair_id": prefix,
-             "arm": "CONTROL" if arm_index == 0 else "TREATMENT",
-             "dataset_id": "pv1", "mechanism_id": "reversal",
-             "expression": f"rank(ts_sum(returns,{2 + group_index * 4 + arm_index}))",
-             "changed_element": "window", "expected_effect": "AMER test",
-             "risk": "noise", "stop_condition": "no gain"}
-            for arm_index in range(4)]})
+        window = 2 + group_index * 4
+        proposals.append({"phase": "discovery", "discovery_groups": [{
+            "dataset_id": "pv1", "mechanism_id": "reversal",
+            "control_expression": f"rank(ts_sum(returns,{window}))",
+            "hypothesis": "AMER test", "risk": "noise", "stop_condition": "no gain",
+            "treatments": [{"old_token": str(window), "new_token": str(window + offset),
+                            "changed_element": "window", "expected_effect": "AMER test"}
+                           for offset in range(1, 4)]}]})
     prompts = []
 
     def runner(argv, **kwargs):
@@ -387,7 +386,7 @@ def test_full_discovery_batch_uses_four_case_cockpit_subcalls(tmp_path, phase_li
     batch = feedback.prepare_batch_filled(base(), evidence, script, runner=runner)
     assert len(batch["cases"]) == phase_limit
     assert len(prompts) == group_count
-    assert all("Generate at most 4 cases" in prompt for prompt in prompts)
+    assert all("discovery_groups (at most 1)" in prompt for prompt in prompts)
 
 
 def test_refinement_salvages_novel_case_from_exhausted_template(tmp_path):
@@ -523,7 +522,7 @@ def test_discovery_pair_error_identifies_the_two_expressions():
 def test_experiment_discovery_builds_exact_single_token_controls(tmp_path):
     data = base()
     evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
-    evidence.update(throughput_experiment=True, max_batch_cases=4)
+    evidence.update(max_batch_cases=4)
     proposal = {"phase": "discovery", "discovery_groups": [{
         "dataset_id": "pv1", "mechanism_id": "reversal",
         "control_expression": "rank(ts_sum(returns,5))",
@@ -680,3 +679,6 @@ def test_recent_failed_windows_exhaust_template_after_older_improvement():
     recovered = feedback.build_feedback([original, improved, *failures, recovery], None,
                                         {"discovery": 4, "refinement": 6}, continuous=True)
     assert ["reversal", "rank(ts_sum(returns,#))"] not in recovered["exhausted_templates"]
+def test_continuous_feedback_rejects_legacy_thirty_two_slot_tier():
+    with pytest.raises(ValueError, match="PPA_PHASE_LIMIT_INVALID"):
+        feedback.build_feedback([], None, {}, continuous=True, phase_limit=32)

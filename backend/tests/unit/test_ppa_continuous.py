@@ -17,21 +17,9 @@ from backend.services import theme_ppa_v2 as workflow
 from backend.services.research_report import research_report
 
 
-def test_audited_continuous_tasks_default_to_throughput_mode():
-    audited = SimpleNamespace(config={
-        "research_protocol": "theme_ppa_v3",
-        "audit_candidates": True,
-        "research_request_budget": None,
-    })
-    opted_out = SimpleNamespace(config={**audited.config, "ppa_throughput_experiment": False})
-    ordinary = SimpleNamespace(config={
-        "research_protocol": "theme_ppa_v3",
-        "audit_candidates": False,
-        "research_request_budget": None,
-    })
-    assert workflow.throughput_experiment_enabled(audited)
-    assert not workflow.throughput_experiment_enabled(opted_out)
-    assert not workflow.throughput_experiment_enabled(ordinary)
+def test_continuous_scheduler_does_not_use_experiment_inference():
+    assert not hasattr(workflow, "throughput_experiment_enabled")
+    assert not hasattr(workflow, "implicit_throughput_experiment")
 
 
 def test_continuous_theme_allows_no_total_request_cap():
@@ -45,7 +33,7 @@ def test_continuous_theme_allows_no_total_request_cap():
 
 
 def test_continuous_feedback_can_restart_discovery_after_exhausted_epoch():
-    exhausted = build_feedback([], None, {"discovery": 12, "refinement": 12, "confirmation": 12},
+    exhausted = build_feedback([], None, {"discovery": 16, "refinement": 16, "confirmation": 16},
                                continuous=True)
     assert exhausted["next_phase"] is None
     restarted = build_feedback([], None, {}, continuous=True)
@@ -59,7 +47,7 @@ def test_discovery_continues_when_first_four_have_no_seed():
 
 
 def test_discovery_with_two_slots_left_rolls_epoch_before_cockpit():
-    evidence = build_feedback([], None, {"discovery": 10}, continuous=True)
+    evidence = build_feedback([], None, {"discovery": 14}, continuous=True)
     assert evidence["next_phase"] is None
     assert evidence["stop_reason"] == "PPA_DISCOVERY_GROUP_CAPACITY"
 
@@ -214,7 +202,7 @@ async def test_throughput_experiment_starts_with_own_discovery_slots(async_engin
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("experiment,expected_limit", [(False, 16), (True, 32), (None, 32)])
+@pytest.mark.parametrize("experiment,expected_limit", [(False, 16), (True, 16), (None, 16)])
 async def test_epoch_advance_is_atomic_and_stale_retry_is_rejected(
         async_engine, monkeypatch, experiment, expected_limit):
     maker, task_id, run_id, data = await setup(async_engine, monkeypatch)
@@ -467,7 +455,7 @@ def test_experiment_prefetches_with_requests_in_flight_using_projected_capacity(
                          {"case_id": "active-0"}]}
     def request(url, payload=None):
         if url.endswith("/tasks/14"):
-            return {"status": "RUNNING", "config": {"ppa_throughput_experiment": True}}
+            return {"status": "RUNNING", "config": {"research_protocol": "theme_ppa_v3"}}
         if url.endswith("/tasks/14/runs"):
             return [{"id": 21, "status": "RUNNING", "checkpoint": {
                 "ppa_batch": {"phase": "refinement", "cases": active},
@@ -493,7 +481,7 @@ def test_experiment_skips_prefetch_when_active_batch_fills_phase(tmp_path, monke
     active = [{"case_id": f"active-{index}"} for index in range(4)]
     def request(url, payload=None):
         if url.endswith("/tasks/14"):
-            return {"status": "RUNNING", "config": {"ppa_throughput_experiment": True}}
+            return {"status": "RUNNING", "config": {"research_protocol": "theme_ppa_v3"}}
         if url.endswith("/tasks/14/runs"):
             return [{"id": 21, "status": "RUNNING", "checkpoint": {
                 "ppa_batch": {"phase": "refinement", "cases": active},
@@ -586,7 +574,7 @@ async def test_import_accepts_only_replayable_local_expansion_when_enabled(async
         await db.commit()
         evidence = await workflow.feedback_context(db, task, run)
         batch = freeze_seed_expansion(data, evidence, seed, model="gpt-6-luna")
-        assert len(batch["cases"]) == 12
+        assert len(batch["cases"]) == 16
         tampered = json.loads(json.dumps(batch))
         tampered["cases"][4]["expression"] = "rank(field_0_0)"
         tampered["candidate_generation"]["plan_sha256"] = workflow.digest(
@@ -594,7 +582,7 @@ async def test_import_accepts_only_replayable_local_expansion_when_enabled(async
         with pytest.raises(ValueError, match="PPA_LOCAL_EXPANSION_MISMATCH"):
             await workflow.import_batch(db, task, run, tampered)
         await workflow.import_batch(db, task, run, batch)
-        assert run.checkpoint["ppa_batch"]["candidate_generation"]["expanded_cases"] == 8
+        assert run.checkpoint["ppa_batch"]["candidate_generation"]["expanded_cases"] == 12
 
 
 @pytest.mark.asyncio

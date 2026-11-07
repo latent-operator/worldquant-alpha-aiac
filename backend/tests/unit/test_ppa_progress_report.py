@@ -21,6 +21,7 @@ def test_empty_report_does_not_claim_zero_correlation_or_pass():
     report = progress.progress_report([], 2)
     assert report["best_amer_positive_test"] is None
     assert report["ppa_ready"] == 0
+    assert report["parallelism"] == 8
 
 
 def test_timing_separates_direct_wq_recovery_generation_and_pause():
