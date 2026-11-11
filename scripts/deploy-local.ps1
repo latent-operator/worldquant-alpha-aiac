@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory)][ValidateRange(1, [long]::MaxValue)][long]$CiRun,
     [string]$BootstrapPreviousSource,
     [ValidateRange(1, [int]::MaxValue)][int]$HandoffRunId,
+    [ValidateRange(1, [int]::MaxValue)][int]$EmptySuccessorRunId,
     [string]$RuntimeHome = (Join-Path $PSScriptRoot '..')
 )
 
@@ -76,6 +77,7 @@ function Verify-Services([string]$expectedCommit) {
 
 Push-Location $root
 try {
+    if ($HandoffRunId -and $EmptySuccessorRunId) { throw 'Only one PPA boundary mode may be selected.' }
     if (-not (Test-Path -LiteralPath $python) -or -not (Test-Path -LiteralPath $envFile)) {
         throw 'Python environment or private .env is missing.'
     }
@@ -173,6 +175,10 @@ try {
     if ($HandoffRunId) {
         & $python -m scripts.ppa_handoff check --run-id $HandoffRunId --env-file $envFile
         Assert-Native 'PPA handoff boundary'
+    }
+    if ($EmptySuccessorRunId) {
+        & $python -m scripts.ppa_handoff check-empty --run-id $EmptySuccessorRunId --env-file $envFile
+        Assert-Native 'PPA empty successor boundary'
     }
     & $manager -Action Stop -RuntimeHome $runtimeHomePath -Services @('worker', 'api', 'ui') | Out-Null
     $quiescentAlphaCount = (& docker exec aiac-local-db-1 psql -U aiac_local -d alpha_gpt_local -tAc 'SELECT count(*) FROM alphas').Trim()

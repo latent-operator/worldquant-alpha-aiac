@@ -22,10 +22,12 @@ def require_maintenance(current_file: Path, maintenance_file: Path) -> None:
 
 async def execute(action, run_id, manifest=None):
     from backend.database import AsyncSessionLocal
-    from backend.services.ppa_handoff import inspect_ppa_boundary, close_ppa_run, install_ppa_config
+    from backend.services.ppa_handoff import inspect_ppa_boundary, inspect_empty_successor, close_ppa_run, install_ppa_config
     async with AsyncSessionLocal() as db:
         if action == "check":
             return await inspect_ppa_boundary(db, 14, run_id)
+        if action == "check-empty":
+            return await inspect_empty_successor(db, 14, run_id)
         if action == "close":
             return await close_ppa_run(db, 14, run_id)
         return await install_ppa_config(db, 14, run_id, manifest)
@@ -33,7 +35,7 @@ async def execute(action, run_id, manifest=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check", "close", "install"))
+    parser.add_argument("action", choices=("check", "check-empty", "close", "install"))
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--commit")
@@ -47,7 +49,7 @@ def main(argv=None):
         parser.error("A positive run ID and absolute environment path are required")
     manifest = None
     journal = None
-    if args.action != "check":
+    if args.action not in {"check", "check-empty"}:
         if (not args.commit or not args.ci_run or not args.current_file or not args.current_file.is_absolute()
                 or not args.journal or not args.journal.is_absolute() or args.journal.exists()):
             parser.error("A commit, CI run, current release and new absolute journal path are required")
