@@ -37,6 +37,36 @@ async def test_boundary_inspection_is_read_only(async_engine, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("unsafe", [None, "batch", "candidate", "previous_incomplete"])
+async def test_empty_successor_boundary_requires_complete_previous_batch(async_engine, monkeypatch, unsafe):
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    await prepared(maker, tid, rid)
+    async with maker() as db:
+        await ppa_handoff.close_ppa_run(db, tid, rid)
+        old = await db.get(ExperimentRun, rid)
+        if unsafe == "previous_incomplete":
+            old.checkpoint = {**old.checkpoint, "ppa_batch_cursor": 3}
+        task = await db.get(MiningTask, tid)
+        task.status = "PAUSED"
+        run = ExperimentRun(task_id=tid, status="PAUSED", block_reason="AWAITING_RESEARCH_BATCH",
+                            checkpoint={"ppa_batch": {"cases": discovery()["cases"]}} if unsafe == "batch" else {})
+        db.add(run)
+        await db.flush()
+        if unsafe == "candidate":
+            db.add(ResearchCandidate(task_id=tid, run_id=run.id, source="DISCOVERY", family_id="x",
+                   experiment_group="x", expression="rank(x)", expression_hash="x", settings_hash="s",
+                   settings={}, validation_status="VALID", request_status="UNKNOWN", gate_failures=[], metrics={}))
+        await db.commit()
+        if unsafe:
+            with pytest.raises(ValueError, match="PPA_HANDOFF_"):
+                await ppa_handoff.inspect_empty_successor(db, tid, run.id)
+        else:
+            result = await ppa_handoff.inspect_empty_successor(db, tid, run.id)
+            assert result == {"task_id": tid, "run_id": run.id, "previous_run_id": rid,
+                              "status": "PAUSED", "cases": 0}
+
+
+@pytest.mark.asyncio
 async def test_close_only_complete_reconciled_paused_batch(async_engine, monkeypatch):
     maker, tid, rid, _ = await setup(async_engine, monkeypatch)
     await prepared(maker, tid, rid)

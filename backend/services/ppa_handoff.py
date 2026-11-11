@@ -53,6 +53,31 @@ async def inspect_ppa_boundary(db, task_id: int, expected_run_id: int) -> dict:
             "cases": len(checkpoint["ppa_batch"]["cases"])}
 
 
+async def inspect_empty_successor(db, task_id: int, expected_run_id: int) -> dict:
+    """Allow a release between a closed complete batch and its untouched successor."""
+    task = (await db.execute(select(MiningTask).where(MiningTask.id == task_id)
+                             .with_for_update())).scalar_one_or_none()
+    runs = (await db.execute(select(ExperimentRun).where(ExperimentRun.task_id == task_id)
+                             .order_by(ExperimentRun.id.desc()).limit(2)
+                             .with_for_update())).scalars().all()
+    if (not task or (task.config or {}).get("research_protocol") != "theme_ppa_v3"
+            or len(runs) != 2 or runs[0].id != expected_run_id or task.status != "PAUSED"
+            or runs[0].status != "PAUSED" or runs[0].block_reason != "AWAITING_RESEARCH_BATCH"
+            or runs[1].status != "STOPPED" or runs[1].block_reason != "PPA_HANDOFF_COMPLETED"):
+        raise ValueError("PPA_HANDOFF_RUN_STATE_INVALID")
+    run, previous = runs
+    checkpoint = run.checkpoint or {}
+    if checkpoint.get("ppa_batch") or checkpoint.get("ppa_batch_history") or checkpoint.get("ppa_batch_cursor", 0):
+        raise ValueError("PPA_HANDOFF_BATCH_INCOMPLETE")
+    rows = (await db.execute(select(ResearchCandidate).where(
+        ResearchCandidate.run_id.in_([run.id, previous.id])).with_for_update())).scalars().all()
+    if any(row.run_id == run.id for row in rows):
+        raise ValueError("PPA_HANDOFF_REQUEST_PENDING")
+    validate_boundary(previous.checkpoint or {}, [row for row in rows if row.run_id == previous.id])
+    return {"task_id": task.id, "run_id": run.id, "previous_run_id": previous.id,
+            "status": "PAUSED", "cases": 0}
+
+
 async def close_ppa_run(db, task_id: int, expected_run_id: int) -> dict:
     task, run, checkpoint = await _locked_paused_boundary(db, task_id, expected_run_id)
     now = datetime.now(timezone.utc)

@@ -122,7 +122,7 @@ foreach ($service in $Services) {
     if ($service -eq 'coordinator') {
         $arguments += @('--coordinator-config', ('"' + $coordinatorConfig + '"'))
     }
-    $started = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $root `
+    $started = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $resolvedSource `
         -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     Start-Sleep -Seconds 2
     if ($started.HasExited) { throw "$service exited during startup; inspect $stderr" }
