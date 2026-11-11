@@ -88,12 +88,39 @@ def validate_theme_task(task) -> str | None:
     ):
         return "PPA_SCOPE_MISMATCH"
     datasets = manifest.get("datasets") or {}
-    if (task.dataset_strategy != "SPECIFIC" or not 1 <= len(datasets) <= 2
+    if (task.dataset_strategy != "SPECIFIC" or not datasets
+            or (not continuous and len(datasets) > 2)
             or set(task.target_datasets or []) != set(datasets)):
         return "PPA_DATASET_MISMATCH"
     if (not all(isinstance(fields, list) and fields for fields in datasets.values())
             or not isinstance(manifest.get("settings"), dict)):
         return "PPA_MANIFEST_INCOMPLETE"
+    metadata = manifest.get("field_metadata")
+    if continuous and (len(datasets) > 2 or metadata is not None):
+        if not isinstance(metadata, dict):
+            return "PPA_FIELD_EVIDENCE_REQUIRED"
+        for dataset, fields in datasets.items():
+            entries = metadata.get(dataset)
+            if not isinstance(entries, dict):
+                return "PPA_FIELD_EVIDENCE_REQUIRED"
+            for field in fields:
+                item = entries.get(field)
+                if not isinstance(item, dict) or item.get("type") not in {"MATRIX", "VECTOR"} or item.get("account_verified") is not True:
+                    return "PPA_FIELD_EVIDENCE_REQUIRED"
+                if item["type"] == "VECTOR":
+                    aggregators = item.get("verified_aggregators")
+                    if (not isinstance(aggregators, list) or not aggregators
+                            or any(op != "vec_avg" or op not in manifest.get("allowed_operators", [])
+                                   for op in aggregators)):
+                        return "PPA_FIELD_EVIDENCE_REQUIRED"
+                source = urlparse(str(item.get("source_url") or ""))
+                observed = _timestamp(item.get("verified_at"))
+                if (source.scheme != "https" or source.hostname != "platform.worldquantbrain.com"
+                        or not observed or observed.tzinfo is None):
+                    return "PPA_FIELD_EVIDENCE_REQUIRED"
+                if any(type(item.get(key)) not in (int, float) or not 0 < item[key] <= 1
+                       for key in ("instrument_coverage", "date_coverage")):
+                    return "PPA_FIELD_EVIDENCE_REQUIRED"
     if (set(manifest.get("dataset_categories") or {}) != set(datasets)
             or not all(isinstance(value, str) and value.strip()
                        for value in (manifest.get("dataset_categories") or {}).values())

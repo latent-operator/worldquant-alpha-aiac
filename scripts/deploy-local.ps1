@@ -2,14 +2,17 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$Commit,
     [Parameter(Mandatory)][ValidateRange(1, [long]::MaxValue)][long]$CiRun,
-    [string]$BootstrapPreviousSource
+    [string]$BootstrapPreviousSource,
+    [ValidateRange(1, [int]::MaxValue)][int]$HandoffRunId,
+    [string]$RuntimeHome = (Join-Path $PSScriptRoot '..')
 )
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$python = Join-Path $root '.venv\Scripts\python.exe'
-$runtimeRoot = [IO.Path]::GetFullPath((Join-Path $root '..\..\runtime\aiac-ops'))
-$envFile = Join-Path $root '.env'
+$runtimeHomePath = (Resolve-Path -LiteralPath $RuntimeHome).Path
+$python = Join-Path $runtimeHomePath '.venv\Scripts\python.exe'
+$runtimeRoot = [IO.Path]::GetFullPath((Join-Path $runtimeHomePath '..\..\runtime\aiac-ops'))
+$envFile = Join-Path $runtimeHomePath '.env'
 $manager = Join-Path $root 'scripts\manage-local.ps1'
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 $source = Join-Path $runtimeRoot "source-$Commit"
@@ -65,7 +68,7 @@ function Verify-Services([string]$expectedCommit) {
     if ($ui.status -ne 'ok' -or $ui.commit -ne $expectedCommit) { throw 'UI release identity does not match.' }
     Wait-Http 'http://127.0.0.1:5174/tasks'
     Wait-Http 'http://127.0.0.1:5174/api/v1/tasks'
-    $services = & $manager -Action Status | ConvertFrom-Json
+    $services = & $manager -Action Status -RuntimeHome $runtimeHomePath | ConvertFrom-Json
     if (($services | Where-Object { $_.service -eq 'worker' -and $_.running }).Count -ne 1) {
         throw 'Exactly one managed worker must be running.'
     }
@@ -123,7 +126,7 @@ try {
         throw 'Previous code has no tested web bundle for rollback.'
     }
 
-    $managed = & $manager -Action Status | ConvertFrom-Json
+    $managed = & $manager -Action Status -RuntimeHome $runtimeHomePath | ConvertFrom-Json
     $unmanagedWorker = Get-CimInstance Win32_Process | Where-Object {
         $_.Name -match '^python(w)?\.exe$' -and $_.CommandLine -and
         $_.CommandLine.Contains('backend.celery_app') -and
@@ -158,7 +161,8 @@ try {
 
     if (Test-Path -LiteralPath $maintenanceFile) { throw 'Another deployment is in maintenance.' }
     $stamp | Set-Content -LiteralPath $maintenanceFile -Encoding ascii
-    & $python -m scripts.release_tasks pause --snapshot $snapshot
+    & $manager -Action Stop -RuntimeHome $runtimeHomePath -Services @('coordinator') | Out-Null
+    & $python -m scripts.release_tasks pause --snapshot $snapshot --env-file $envFile
     Assert-Native 'Pause active tasks'
     $paused = $true
     $before = Get-Content -LiteralPath $snapshot -Raw | ConvertFrom-Json
@@ -166,7 +170,11 @@ try {
         & $python -m scripts.wait_worker_idle --timeout-seconds 7200 --env-file $envFile
         Assert-Native 'Safe worker boundary'
     }
-    & $manager -Action Stop -Services @('worker', 'api', 'ui') | Out-Null
+    if ($HandoffRunId) {
+        & $python -m scripts.ppa_handoff check --run-id $HandoffRunId --env-file $envFile
+        Assert-Native 'PPA handoff boundary'
+    }
+    & $manager -Action Stop -RuntimeHome $runtimeHomePath -Services @('worker', 'api', 'ui') | Out-Null
     $quiescentAlphaCount = (& docker exec aiac-local-db-1 psql -U aiac_local -d alpha_gpt_local -tAc 'SELECT count(*) FROM alphas').Trim()
     Assert-Native 'Quiescent Alpha count'
     if ([int]$quiescentAlphaCount -lt [int]$before.alpha_count) {
@@ -190,18 +198,26 @@ try {
         if ([int]$restored -ne [int]$quiescentAlphaCount) { throw 'Restored Alpha count differs from the quiescent database.' }
     } finally { & docker exec aiac-local-db-1 dropdb -U aiac_local $verifyDb | Out-Null }
 
+    if ($HandoffRunId) {
+        $handoffJournal = Join-Path $runtimeRoot "ppa-handoff-close-$stamp.json"
+        & $python -m scripts.ppa_handoff close --run-id $HandoffRunId --env-file $envFile `
+            --commit $Commit --ci-run $CiRun --current-file $currentFile --journal $handoffJournal `
+            --maintenance-file $maintenanceFile
+        Assert-Native 'PPA handoff close'
+    }
+
     & $python -m scripts.run_migrations --source $source --env-file $envFile
     Assert-Native 'Committed database migrations'
     $revisionAfter = (& docker exec aiac-local-db-1 psql -U aiac_local -d alpha_gpt_local -tAc 'SELECT version_num FROM alembic_version').Trim()
     Assert-Native 'Database revision check'
     $schemaChanged = $revisionAfter -ne $before.db_revision
-    & $manager -Action Start -Source $source -Commit $Commit -AllowMaintenance | Out-Null
+    & $manager -Action Start -RuntimeHome $runtimeHomePath -Source $source -Commit $Commit -AllowMaintenance | Out-Null
     Verify-Services $Commit
-    & $python -m scripts.release_tasks verify --snapshot $snapshot | Out-Null
+    & $python -m scripts.release_tasks verify --snapshot $snapshot --env-file $envFile | Out-Null
     Assert-Native 'Persistent state verification'
-    & $python -m scripts.release_tasks resume --snapshot $snapshot
+    & $python -m scripts.release_tasks resume --snapshot $snapshot --env-file $envFile
     Assert-Native 'Original run resume'
-    & $python -m scripts.release_tasks verify --snapshot $snapshot | Out-Null
+    & $python -m scripts.release_tasks verify --snapshot $snapshot --env-file $envFile | Out-Null
     Assert-Native 'Post-resume identity verification'
     Write-ReleaseRecord 'SUCCESS' 'Backup restored in isolation; health and original run identities verified.'
     [ordered]@{ commit = $Commit; source = $source; ci_run = $CiRun; record = $recordPath } |
@@ -224,10 +240,10 @@ try {
     } catch { $schemaChanged = $true }
     if (-not $schemaChanged -and $previousSource) {
         try {
-            & $manager -Action Stop -Services @('worker', 'api', 'ui') | Out-Null
-            & $manager -Action Start -Source $previousSource -Commit $previousCommit -AllowMaintenance | Out-Null
+            & $manager -Action Stop -RuntimeHome $runtimeHomePath -Services @('worker', 'api', 'ui') | Out-Null
+            & $manager -Action Start -RuntimeHome $runtimeHomePath -Source $previousSource -Commit $previousCommit -AllowMaintenance | Out-Null
             Verify-Services $previousCommit
-            & $python -m scripts.release_tasks resume --snapshot $snapshot | Out-Null
+            & $python -m scripts.release_tasks resume --snapshot $snapshot --env-file $envFile | Out-Null
             Assert-Native 'Rollback original run resume'
             Write-ReleaseRecord 'ROLLED_BACK' $detail
             [ordered]@{ commit = $previousCommit; source = $previousSource; record = $recordPath } |
@@ -237,7 +253,7 @@ try {
             Write-ReleaseRecord 'FAILED_NEEDS_OPERATOR' "$detail; rollback failed: $($_.Exception.Message)"
         }
     } else {
-        & $manager -Action Stop -Services @('worker', 'api', 'ui') | Out-Null
+        & $manager -Action Stop -RuntimeHome $runtimeHomePath -Services @('worker', 'api', 'ui') | Out-Null
         Write-ReleaseRecord 'FAILED_NEEDS_OPERATOR' "$detail; schema revision changed or previous source missing"
     }
     throw "Release failed: $detail. See $recordPath"

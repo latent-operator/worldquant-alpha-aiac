@@ -340,6 +340,8 @@ class TaskService(BaseService):
         task = await self.task_repo.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
+        if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
+            await self.db.refresh(task, with_for_update=True)
         
         valid_start_statuses = ["PENDING", "PAUSED", "STOPPED", "FAILED", "COMPLETED"]
         if task.status not in valid_start_statuses:
@@ -410,6 +412,8 @@ class TaskService(BaseService):
         action = action.upper()
         
         if action == "PAUSE":
+            if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
+                await self.db.refresh(task, with_for_update=True)
             if task.status not in {"RUNNING", "WAITING_LLM"}:
                 raise ValueError("Can only pause running tasks")
             active_run = (await self.db.execute(
@@ -420,20 +424,32 @@ class TaskService(BaseService):
                 active_run.status = "PAUSED"
                 active_run.next_retry_at = None
                 if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
-                    active_run.checkpoint = {**(active_run.checkpoint or {}),
-                        "ppa_pause_started_at": (active_run.checkpoint or {}).get("ppa_pause_started_at")
-                        or datetime.now(timezone.utc).isoformat()}
+                    from backend.services.ppa_progress import begin_pause
+                    active_run.block_reason = "USER_PAUSED"
+                    active_run.checkpoint = begin_pause(active_run.checkpoint, "USER_PAUSED")
             await self.task_repo.update_status(task_id, "PAUSED")
             await self.commit()
             return {"action": "paused", "new_status": "PAUSED"}
         
         elif action == "RESUME":
+            expected_run_id = (parameters or {}).get("expected_run_id")
+            if expected_run_id is not None:
+                if type(expected_run_id) is not int or expected_run_id < 1:
+                    raise ValueError("PPA_STALE_RUN")
+                await self.db.refresh(task, with_for_update=True)
             if task.status != "PAUSED":
                 raise ValueError("Can only resume paused tasks")
             paused_run = (await self.db.execute(
                 select(ExperimentRun).where(ExperimentRun.task_id == task_id)
                 .order_by(ExperimentRun.id.desc()).limit(1)
             )).scalar_one_or_none()
+            if expected_run_id is not None and (not paused_run or paused_run.id != expected_run_id):
+                raise ValueError("PPA_STALE_RUN")
+            expected_reason = (parameters or {}).get("expected_block_reason")
+            if expected_reason is not None and (not isinstance(expected_reason, str) or not paused_run
+                                                or paused_run.status != "PAUSED"
+                                                or paused_run.block_reason != expected_reason):
+                raise ValueError("PPA_STALE_RUN")
             await self.task_repo.update_status(task_id, "RUNNING")
             if paused_run and paused_run.status == "PAUSED":
                 paused_run.status = "RUNNING"

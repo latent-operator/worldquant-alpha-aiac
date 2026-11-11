@@ -1,8 +1,29 @@
 """A software deployment resumes only the exact runs it paused."""
 
 import pytest
+import os
+import subprocess
+import sys
 
 from scripts import release_tasks
+
+
+def test_release_cli_loads_explicit_environment_before_database(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("CREDENTIALS_SECRET=offline-test\nPOSTGRES_PORT=12345\n", encoding="utf-8")
+    code = """import os, sys
+import scripts.release_tasks as r
+assert 'backend.database' not in sys.modules
+async def fake(args):
+    assert os.environ['POSTGRES_PORT'] == '12345'
+r._run = fake
+r.main(['capture', '--env-file', sys.argv[1]])
+"""
+    env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
+    env.update(CREDENTIALS_SECRET="", POSTGRES_PORT="1")
+    result = subprocess.run([sys.executable, "-c", code, str(env_file)], env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-400:]
 
 
 def test_active_entries_exclude_prior_paused_and_stopped_tasks():

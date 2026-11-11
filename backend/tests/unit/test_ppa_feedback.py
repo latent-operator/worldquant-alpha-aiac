@@ -84,6 +84,46 @@ def test_batch_rejects_invalid_plan(mutation):
         feedback.freeze_batch(base(), evidence, data)
 
 
+def test_vector_field_requires_verified_direct_aggregation():
+    data = base()
+    data["datasets"]["pv1"] = ["vector_signal"]
+    data["field_metadata"] = {"pv1": {"vector_signal": {"type": "VECTOR",
+        "verified_aggregators": ["vec_avg"]}}}
+    data["allowed_operators"] = ["rank", "vec_avg"]
+    evidence = feedback.build_feedback([candidate()], 51, {"discovery": 4})
+    proposal = plan()
+    proposal["cases"][0]["expression"] = "rank(vec_avg(vector_signal))"
+    assert feedback.freeze_batch(data, evidence, proposal)["cases"]
+    proposal["cases"][0]["expression"] = "rank(vector_signal)"
+    with pytest.raises(ValueError, match="PPA_VECTOR_AGGREGATION_REQUIRED"):
+        feedback.freeze_batch(data, evidence, proposal)
+    proposal["cases"][0]["expression"] = "rank(vec_avg(vector_signal)) + rank(vector_signal)"
+    with pytest.raises(ValueError, match="PPA_VECTOR_AGGREGATION_REQUIRED"):
+        feedback.freeze_batch(data, evidence, proposal)
+
+
+def test_seed_expansion_preserves_vector_field_types(monkeypatch):
+    data = base()
+    data["datasets"]["pv1"] = ["vector_signal"]
+    data["field_metadata"] = {"pv1": {"vector_signal": {"type": "VECTOR",
+        "verified_aggregators": ["vec_avg"]}}}
+    data["allowed_operators"].append("vec_avg")
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    seed = [{"case_id": f"g_{i}", "pair_id": "g", "arm": "CONTROL" if i == 0 else "TREATMENT",
+             "dataset_id": "pv1", "mechanism_id": "reversal",
+             "expression": f"rank(ts_sum(vec_avg(vector_signal),{i + 2}))",
+             "changed_element": "window", "expected_effect": "AMER test", "risk": "noise",
+             "stop_condition": "no gain"} for i in range(4)]
+    actual = feedback.AlphaSemanticValidator
+    observed = []
+    def capture(*args, **kwargs):
+        observed.extend(kwargs.get("fields", []))
+        return actual(*args, **kwargs)
+    monkeypatch.setattr(feedback, "AlphaSemanticValidator", capture)
+    feedback.freeze_seed_expansion(data, evidence, seed, model="gpt-6-luna")
+    assert observed and all(field["type"] == "VECTOR" for field in observed)
+
+
 def test_frozen_batch_bound_to_feedback_and_budget():
     evidence = feedback.build_feedback([candidate()], 51, {"discovery": 4})
     result = feedback.freeze_batch(base(), evidence, plan())
@@ -180,6 +220,49 @@ def test_discovery_top_up_combines_distinct_complete_groups(tmp_path):
     assert len(calls) == 2
     assert batch["candidate_generation"]["top_up_calls"] == 2
     assert {case["pair_id"] for case in batch["cases"]} == {"g1", "g2"}
+
+
+def test_filled_discovery_requests_each_allocated_mechanism(tmp_path, monkeypatch):
+    data = base()
+    data["mechanisms"]["other"] = {"dataset_id": "pv1", "hypothesis": "other", "direction": "positive"}
+    data["discovery_allocation"] = {"reversal": 1, "other": 1}
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    evidence["max_batch_cases"] = 8
+    requested = []
+    def fake_prepare(base, evidence, script, *, runner, required_mechanism=None):
+        requested.append(required_mechanism)
+        offset = 10 if required_mechanism == "other" else 2
+        cases = [{"case_id": f"{required_mechanism}_{i}", "pair_id": required_mechanism,
+                  "arm": "CONTROL" if i == 0 else "TREATMENT", "dataset_id": "pv1",
+                  "mechanism_id": required_mechanism, "expression": f"rank(ts_sum(returns,{offset+i}))",
+                  "changed_element": "window", "expected_effect": "test", "risk": "noise",
+                  "stop_condition": "no gain"} for i in range(4)]
+        return {"cases": cases, "candidate_generation": {"model": "gpt-6-astra"}}
+    monkeypatch.setattr(feedback, "prepare_batch", fake_prepare)
+    batch = feedback.prepare_batch_filled(data, evidence, tmp_path / "ask.ps1")
+    assert requested == ["reversal", "other"]
+    assert len(batch["cases"]) == 8
+
+
+def test_model_group_outside_required_allocation_is_rejected(tmp_path):
+    data = base()
+    data["mechanisms"]["other"] = {"dataset_id": "pv1", "hypothesis": "other", "direction": "positive"}
+    script = tmp_path / "ask.ps1"
+    script.write_text("# mock")
+    prompts = []
+    proposal = {"phase": "discovery", "discovery_groups": [{
+        "dataset_id": "pv1", "mechanism_id": "reversal", "control_expression": "rank(ts_sum(returns,20))",
+        "hypothesis": "test", "risk": "noise", "stop_condition": "no gain",
+        "treatments": [{"old_token": "20", "new_token": str(n), "changed_element": "window",
+                        "expected_effect": "test"} for n in (30, 40, 50)]}]}
+    def runner(argv, **kwargs):
+        prompts.append(__import__("pathlib").Path(argv[5]).read_text(encoding="utf-8"))
+        return SimpleNamespace(stdout=json.dumps(proposal))
+    evidence = feedback.build_feedback([], None, {}, continuous=True, phase_limit=16)
+    evidence["max_batch_cases"] = 4
+    with pytest.raises(ValueError, match="PPA_DISCOVERY_ALLOCATION_MISMATCH"):
+        feedback.prepare_batch(data, evidence, script, runner=runner, required_mechanism="other")
+    assert len(prompts) == 3 and all('mechanism_id "other"' in p for p in prompts)
 
 
 def test_local_expansion_replays_audited_discovery_groups():

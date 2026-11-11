@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -57,7 +58,26 @@ def request_json(url, payload=None):
         return json.load(response)
 
 
-def first_batch_reviewable(evidence, run_id, case_ids):
+def first_batch_reviewable(evidence, run_id, cases):
+    if type(evidence.get("unresolved_requests")) is not int or evidence["unresolved_requests"] != 0:
+        return False
+    allocation = (evidence.get("base") or {}).get("discovery_allocation")
+    if allocation:
+        if not all(isinstance(case, dict) for case in cases):
+            return False
+        groups = {}
+        for case in cases:
+            pair, mechanism = case.get("pair_id"), case.get("mechanism_id")
+            if not pair or not mechanism or (pair in groups and groups[pair][0] != mechanism):
+                return False
+            groups.setdefault(pair, (mechanism, []))[1].append(case)
+        if (dict(Counter(value[0] for value in groups.values())) != allocation or
+                any(len(group) != 4 or Counter(c.get("arm") for c in group) !=
+                    {"CONTROL": 1, "TREATMENT": 3} for _, group in groups.values())):
+            return False
+    case_ids = [case.get("case_id") if isinstance(case, dict) else case for case in cases]
+    if not all(case_ids) or len(set(case_ids)) != len(case_ids):
+        return False
     rows = {row["case_id"]: row for row in evidence["rows"]
             if row["run_id"] == run_id and row["source"] == "DISCOVERY"}
     return bool(case_ids) and all(
@@ -81,11 +101,13 @@ def acquire_lease(run_id, *, port=None):
     return lease
 
 
-def run_step_with_retry(operation, output_dir, *, sleep=time.sleep):
+def run_step_with_retry(operation, output_dir, *, sleep=time.sleep, enabled=lambda: True):
     output_dir.mkdir(parents=True, exist_ok=True)
     failures = 0
     model_waits = 0
     while True:
+        if not enabled():
+            return "STOP"
         try:
             action = operation()
             state = {"at": datetime.now(timezone.utc).isoformat(), "action": action,
@@ -132,6 +154,8 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
     run = next((row for row in runs if row["id"] == run_id), None)
     if run is None:
         raise ValueError("PPA_RUN_MISSING")
+    if max((row["id"] for row in runs), default=None) != run_id:
+        return "STOP"
     if task["status"] in {"COMPLETED", "STOPPED", "FAILED"}:
         return "STOP"
     if task["status"] == "RUNNING":
@@ -181,12 +205,12 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
                 return "WAIT_RECONCILE"
             evidence = request_json(f"{api}/runs/{run_id}/ppa-feedback")
         cases = ((run.get("checkpoint") or {}).get("ppa_batch") or {}).get("cases") or []
-        if not first_batch_reviewable(evidence, run_id, [case["case_id"] for case in cases]):
-            raise ValueError("PPA_FIRST_BATCH_EVIDENCE_INCOMPLETE")
-        request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME"})
+        if not first_batch_reviewable(evidence, run_id, cases):
+            return "WAIT_FIRST_BATCH_EVIDENCE_INCOMPLETE"
+        request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME", "parameters": {"expected_run_id": run_id, "expected_block_reason": reason}})
         return "RESUMED_REVIEWED"
     if reason == "PPA_BATCH_READY":
-        request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME"})
+        request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME", "parameters": {"expected_run_id": run_id, "expected_block_reason": reason}})
         return "RESUMED_BATCH"
     if reason == "PPA_REQUEST_RECONCILIATION_PENDING":
         recovered = request_json(f"{api}/runs/{run_id}/ppa-reconcile", {})
@@ -203,7 +227,7 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
             reset_time = reset_time.replace(tzinfo=timezone.utc)
         if reset_time > datetime.now(timezone.utc):
             return "WAIT_RATE_LIMIT"
-        request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME"})
+        request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME", "parameters": {"expected_run_id": run_id, "expected_block_reason": reason}})
         return "RESUMED_RATE_LIMIT"
     if reason != "AWAITING_RESEARCH_BATCH":
         raise ValueError(f"PPA_REQUIRES_REVIEW:{reason}")
@@ -259,34 +283,57 @@ def step(api, task_id, run_id, cockpit_script, output_dir):
     request_json(f"{api}/runs/{run_id}/ppa-batch", batch)
     if prefetch_path.exists():
         prefetch_path.unlink()
-    request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME"})
+    request_json(f"{api}/tasks/{task_id}/intervene", {"action": "RESUME", "parameters": {"expected_run_id": run_id, "expected_block_reason": "PPA_BATCH_READY"}})
     return f"IMPORTED:{batch_path.name}"
 
 
-def main():
+def activation_is_current(path, commit, task_id, run_id, cockpit_script, output_dir):
+    try:
+        config = json.loads(path.read_text(encoding="utf-8-sig"))
+        return (config.get("enabled") is True and config.get("commit") == commit
+                and config.get("task_id") == task_id and config.get("run_id") == run_id
+                and Path(config["cockpit_script"]) == cockpit_script
+                and Path(config["output_dir"]) == output_dir)
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-id", type=int, required=True)
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--cockpit-script", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--api-base", default="http://127.0.0.1:8003/api/v1")
-    args = parser.parse_args()
+    parser.add_argument("--maintenance-file", type=Path)
+    parser.add_argument("--activation-file", type=Path)
+    parser.add_argument("--activation-commit")
+    args = parser.parse_args(argv)
+    if bool(args.activation_file) != bool(args.activation_commit):
+        raise ValueError("PPA_COORDINATOR_ACTIVATION_INVALID")
     if args.api_base not in {"http://127.0.0.1:8003/api/v1", "http://localhost:8003/api/v1"}:
         raise ValueError("Only the local AIAC API is allowed")
     lease = acquire_lease(args.run_id)
     try:
+        def enabled():
+            return not (args.maintenance_file and args.maintenance_file.exists() or
+                        args.activation_file and not activation_is_current(
+                            args.activation_file, args.activation_commit, args.task_id, args.run_id,
+                            args.cockpit_script, args.output_dir))
         while True:
+            if not enabled():
+                break
             try:
                 action = run_step_with_retry(
                     lambda: step(args.api_base, args.task_id, args.run_id, args.cockpit_script, args.output_dir),
-                    args.output_dir)
+                    args.output_dir, enabled=enabled)
             except CoordinatorRetryExhausted:
                 time.sleep(300)
                 continue
             print(json.dumps({"at": datetime.now(timezone.utc).isoformat(), "action": action}), flush=True)
             if action == "STOP":
                 break
-            time.sleep(60 if action in {"WAIT_RECONCILE", "WAIT_RATE_LIMIT"} else 10)
+            time.sleep(60 if action in {"WAIT_RECONCILE", "WAIT_RATE_LIMIT", "WAIT_FIRST_BATCH_EVIDENCE_INCOMPLETE"} else 10)
     finally:
         lease.close()
 

@@ -282,6 +282,54 @@ async def test_resuming_ppa_run_records_paused_time(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ppa_resume_rejects_superseded_expected_run(monkeypatch):
+    run = SimpleNamespace(id=19, status="PAUSED", next_retry_at=None, checkpoint={})
+    task = SimpleNamespace(id=14, status="PAUSED", config={"research_protocol": "theme_ppa_v3"})
+    db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+        scalar_one_or_none=lambda: run)), commit=AsyncMock(), rollback=AsyncMock(), refresh=AsyncMock())
+    service = TaskService(db)
+    service.task_repo.get_by_id = AsyncMock(return_value=task)
+    service.task_repo.update_status = AsyncMock()
+    queued = Mock()
+    monkeypatch.setattr("backend.tasks.run_mining_task.delay", queued)
+    with pytest.raises(ValueError, match="PPA_STALE_RUN"):
+        await service.intervene_task(14, "RESUME", {"expected_run_id": 18})
+    service.task_repo.update_status.assert_not_called()
+    queued.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ppa_resume_does_not_override_manual_pause(monkeypatch):
+    run = SimpleNamespace(id=18, status="PAUSED", block_reason="USER_PAUSED", checkpoint={})
+    task = SimpleNamespace(id=14, status="PAUSED", config={"research_protocol": "theme_ppa_v3"})
+    db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+        scalar_one_or_none=lambda: run)), commit=AsyncMock(), rollback=AsyncMock(), refresh=AsyncMock())
+    service = TaskService(db)
+    service.task_repo.get_by_id = AsyncMock(return_value=task)
+    service.task_repo.update_status = AsyncMock()
+    monkeypatch.setattr("backend.tasks.run_mining_task.delay", Mock(return_value=SimpleNamespace(id="mock")))
+    with pytest.raises(ValueError, match="PPA_STALE_RUN"):
+        await service.intervene_task(14, "RESUME", {"expected_run_id": 18,
+                                                    "expected_block_reason": "PPA_RATE_LIMIT"})
+    service.task_repo.update_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manual_ppa_pause_clears_stale_automatic_resume_reason():
+    run = SimpleNamespace(id=18, status="RUNNING", block_reason="PPA_FIRST_BATCH_REVIEW",
+                          next_retry_at=None, checkpoint={})
+    task = SimpleNamespace(id=14, status="RUNNING", config={"research_protocol": "theme_ppa_v3"})
+    db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+        scalar_one_or_none=lambda: run)), commit=AsyncMock(), rollback=AsyncMock(), refresh=AsyncMock())
+    service = TaskService(db)
+    service.task_repo.get_by_id = AsyncMock(return_value=task)
+    service.task_repo.update_status = AsyncMock()
+    await service.intervene_task(14, "PAUSE")
+    assert run.block_reason == "USER_PAUSED"
+    assert run.checkpoint["ppa_pause_reason"] == "USER_PAUSED"
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_waiting_run():
     run = SimpleNamespace(id=9, status="WAITING_LLM", next_retry_at=datetime.now(timezone.utc), finished_at=None)
     task = SimpleNamespace(id=3, status="WAITING_LLM")

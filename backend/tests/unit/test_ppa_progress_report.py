@@ -2,6 +2,15 @@ from backend.services import ppa_progress as progress
 from datetime import datetime, timezone, timedelta
 
 
+def test_rate_limit_pause_separates_overdue_resume_time():
+    start = datetime(2026, 11, 11, tzinfo=timezone.utc)
+    checkpoint = progress.begin_pause({}, "PPA_RATE_LIMIT", now=start,
+                                      retry_at=start + timedelta(seconds=30))
+    closed = progress.close_pause(checkpoint, now=start + timedelta(seconds=90))
+    assert closed["ppa_retry_wait_seconds"] == 30
+    assert closed["ppa_retry_overdue_seconds"] == 60
+
+
 def test_report_excludes_dedup_and_keeps_denominator_and_amer():
     rows = [dict(id=1, request_status="RESULT", source="DISCOVERY", arm="CONTROL", pair_id="p",
                  run_id=1, metrics={"sharpe": 1, "fitness": 0.5, "amer_sharpe": 0.7, "test_sharpe": 0.4}),
@@ -21,7 +30,7 @@ def test_empty_report_does_not_claim_zero_correlation_or_pass():
     report = progress.progress_report([], 2)
     assert report["best_amer_positive_test"] is None
     assert report["ppa_ready"] == 0
-    assert report["parallelism"] == 8
+    assert report["parallelism"] == 2
 
 
 def test_timing_separates_direct_wq_recovery_generation_and_pause():
@@ -45,7 +54,8 @@ def test_timing_separates_direct_wq_recovery_generation_and_pause():
     assert report["timing"] == {"wq_seconds": 60, "wq_wall_seconds": 60, "timed_requests": 1,
                                 "recovered_requests": 1, "generation_seconds": 12,
                                 "qualification_seconds": 5, "pause_seconds": 90,
-                                "pause_seconds_by_reason": {},
+                                "pause_seconds_by_reason": {}, "retry_wait_seconds": None,
+                                "retry_overdue_seconds": None,
                                 "recovery_seconds": 20}
 
 
@@ -86,3 +96,16 @@ def test_report_exposes_observed_quota_and_batch_throughput():
     assert report["actual_parent_peak"] == 2
     assert report["daily_window"]["successful_results"] == 1
     assert report["batch_throughput"][0]["completed"] == 12
+def test_batch_request_timing_excludes_recovered_and_missing_intervals():
+    from types import SimpleNamespace
+    from backend.services.ppa_progress import batch_request_timing
+    rows = [
+        SimpleNamespace(request_status="RESULT", result_snapshot={"request": {
+            "sent_at": "2026-11-11T00:00:00+00:00", "finished_at": "2026-11-11T00:00:10+00:00"}}),
+        SimpleNamespace(request_status="RESULT", result_snapshot={"recovery": {"duration_seconds": 4}, "request": {
+            "sent_at": "2026-11-11T00:00:00+00:00", "finished_at": "2026-11-11T01:00:00+00:00"}}),
+        SimpleNamespace(request_status="RESULT", result_snapshot={}),
+        SimpleNamespace(request_status="FAILED", result_snapshot={}),
+    ]
+    assert batch_request_timing(rows) == {"wall_seconds": 10.0, "included": 1, "excluded": 3}
+    assert batch_request_timing(rows[1:])["wall_seconds"] is None

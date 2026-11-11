@@ -70,8 +70,55 @@ class Brain:
 
 
 @pytest.mark.asyncio
+async def test_worker_pause_does_not_replace_manual_pause(async_engine, monkeypatch):
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.status = run.status = "PAUSED"
+        run.block_reason = "USER_PAUSED"
+        run.checkpoint = {"ppa_pause_reason": "USER_PAUSED"}
+        await db.commit()
+        result = await workflow.pause(db, task, run, "PPA_RATE_LIMIT")
+        assert result["reason"] == "USER_PAUSED"
+        assert run.block_reason == "USER_PAUSED"
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("groups,expected_peak,reviewed", [(1, 4, True), (2, 8, True), (4, 8, False)])
+async def test_worker_detects_manual_pause_from_another_session(async_engine, monkeypatch):
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    async with maker() as worker:
+        task, run = await worker.get(MiningTask, tid), await worker.get(ExperimentRun, rid)
+        task.status = run.status = "RUNNING"
+        await worker.commit()
+        async with maker() as operator:
+            operator_task = await operator.get(MiningTask, tid)
+            operator_run = await operator.get(ExperimentRun, rid)
+            operator_task.status = operator_run.status = "PAUSED"
+            operator_run.block_reason = "USER_PAUSED"
+            await operator.commit()
+        assert task.status == "RUNNING"
+        result = await workflow.pause(worker, task, run, "PPA_RATE_LIMIT")
+        assert result["reason"] == "USER_PAUSED"
+        assert run.block_reason == "USER_PAUSED"
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_discovery_allocation_mismatch(async_engine, monkeypatch):
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        base["discovery_allocation"] = {"signal": 2}
+        task.config = {**task.config, "ppa_manifest": base}
+        await db.commit()
+        evidence = await workflow.feedback_context(db, task, run)
+        batch = freeze_batch(base, evidence, discovery())
+        with pytest.raises(ValueError, match="PPA_DISCOVERY_ALLOCATION_MISMATCH"):
+            await workflow.import_batch(db, task, run, batch)
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+@pytest.mark.parametrize("groups,expected_peak,reviewed", [(1, 2, True), (2, 2, True), (4, 2, False)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
                                                                   groups, expected_peak, reviewed):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
@@ -117,9 +164,8 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
                               for name in base["datasets"]["dataset1"]]}
         await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
         assert brain.peak == expected_peak
-        if reviewed:
-            assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
-            assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is (groups == 1)
+        assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
+        assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is False
         rows = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == rid))).scalars().all()
         assert len(rows) == 4 * groups
@@ -127,6 +173,10 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         if not reviewed:
             assert run.block_reason == "PPA_FIRST_BATCH_REVIEW"
             assert run.checkpoint["ppa_first_batch_reviewed"] is True
+            task.status = run.status = "RUNNING"
+            await db.commit()
+            await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
+            assert len(run.checkpoint["ppa_throughput_history"]) == 1
 
 
 @pytest.mark.asyncio
@@ -180,7 +230,7 @@ async def test_parallel_batch_logs_default_concurrency(async_engine, monkeypatch
         records = [record for record in caplog.records
                    if getattr(record, "ppa_path", None) == "parallel"]
         assert len(records) == 1
-        assert records[0].concurrency == 8
+        assert records[0].concurrency == 2
         assert records[0].cases == 4
 
 
@@ -234,6 +284,7 @@ async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch, remain
         assert brain.calls <= 2
         assert run.checkpoint["ppa_batch_cursor"] == 0
         assert run.checkpoint["ppa_batch_completed"] == []
+        assert run.checkpoint["ppa_throughput_history"][-1]["rate_limited"] is True
         assert run.next_retry_at is not None
         from datetime import datetime, timezone
         wait = (run.next_retry_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds()
@@ -270,7 +321,8 @@ async def test_uncertain_batch_reduces_saved_concurrency(async_engine, monkeypat
         result = await workflow.run_theme_v2(db, UncertainBrain(), task, run, fields,
                                              quality_evaluator=lambda **kwargs: "OPTIMIZE")
         assert result["reason"] == "PPA_REQUEST_RECONCILIATION_PENDING"
-        assert run.checkpoint["ppa_max_in_flight"] == 4
+        assert run.checkpoint["ppa_max_in_flight"] == 2
+        assert run.checkpoint["ppa_throughput_history"][-1]["unknown"] > 0
 
 
 @pytest.mark.asyncio
