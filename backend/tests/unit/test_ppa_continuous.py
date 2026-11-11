@@ -32,6 +32,69 @@ def test_continuous_theme_allows_no_total_request_cap():
     assert validate_theme_task(task) is None
 
 
+def test_expanded_dataset_scope_requires_typed_coverage_and_account_evidence():
+    data = manifest()
+    data["datasets"] = {"dataset1": ["a"], "dataset2": ["b"], "dataset3": ["c"]}
+    data["dataset_categories"] = {name: "analyst" for name in data["datasets"]}
+    data["mechanisms"] = {"m": {"dataset_id": "dataset1", "hypothesis": "signal", "direction": "positive"}}
+    t = SimpleNamespace(region=data["region"], universe=data["universe"], dataset_strategy="SPECIFIC",
+                        target_datasets=list(data["datasets"]), config={"research_protocol": "theme_ppa_v3",
+                        "continuous_mode": True, "research_request_budget": None,
+                        "budget_root_run_id": 16, "ppa_manifest": data})
+    assert validate_theme_task(t) == "PPA_FIELD_EVIDENCE_REQUIRED"
+    data["field_metadata"] = {dataset: {fields[0]: {"type": "MATRIX", "instrument_coverage": 0.9,
+                                 "date_coverage": 1.0, "account_verified": True,
+                                 "verified_at": "2026-11-11T00:00:00Z",
+                                 "source_url": "https://platform.worldquantbrain.com/data"}}
+                              for dataset, fields in data["datasets"].items()}
+    assert validate_theme_task(t) is None
+    del data["field_metadata"]["dataset3"]["c"]["source_url"]
+    assert validate_theme_task(t) == "PPA_FIELD_EVIDENCE_REQUIRED"
+    data["field_metadata"]["dataset3"]["c"]["source_url"] = "https://platform.worldquantbrain.com/data"
+    data["field_metadata"]["dataset3"]["c"]["type"] = "VECTOR"
+    assert validate_theme_task(t) == "PPA_FIELD_EVIDENCE_REQUIRED"
+    data["field_metadata"]["dataset3"]["c"]["verified_aggregators"] = ["vec_avg"]
+    data["allowed_operators"].append("vec_avg")
+    assert validate_theme_task(t) is None
+    data["field_metadata"]["dataset3"]["c"]["type"] = "MATRIX"
+    data["field_metadata"]["dataset3"]["c"]["account_verified"] = False
+    assert validate_theme_task(t) == "PPA_FIELD_EVIDENCE_REQUIRED"
+
+
+def test_runtime_field_metadata_must_match_account_catalog():
+    base = {"datasets": {"ds": ["alpha"]}, "field_metadata": {"ds": {"alpha": {
+        "type": "MATRIX", "instrument_coverage": 0.9, "date_coverage": 1.0,
+        "account_verified": True}}}}
+    assert workflow.runtime_fields_match(base, {"ds": [{"id": "alpha", "type": "MATRIX"}]})
+    assert not workflow.runtime_fields_match(base, {"ds": [{"id": "alpha", "type": "VECTOR"}]})
+    assert not workflow.runtime_fields_match(base, {"ds": [{"id": "other", "type": "MATRIX"}]})
+    assert not workflow.runtime_fields_match(base, {"ds": [{"id": "alpha"}]})
+
+
+def test_new_fields_require_evidence_even_with_only_two_datasets():
+    historical = {"datasets": {"old": ["a"]}}
+    base = {"datasets": {"old": ["a"], "new": ["b"]}}
+    assert not workflow.new_fields_have_evidence(base, historical)
+    base["field_metadata"] = {"new": {"b": {"type": "MATRIX"}}}
+    assert workflow.new_fields_have_evidence(base, historical)
+    assert workflow.new_fields_have_evidence(historical, historical)
+
+
+def test_historical_mechanisms_can_be_registered_without_new_batch_access():
+    data = manifest()
+    data["mechanisms"] = {"new": {"dataset_id": "dataset1", "hypothesis": "new", "direction": "positive"}}
+    data["historical_mechanisms"] = {"p0": "legacy"}
+    data["historical_mechanism_registry"] = {"legacy": {"dataset_id": "old_dataset",
+        "hypothesis": "historical signal", "direction": "negative"}}
+    t = SimpleNamespace(region=data["region"], universe=data["universe"], dataset_strategy="SPECIFIC",
+                        target_datasets=list(data["datasets"]), config={"research_protocol": "theme_ppa_v3",
+                        "continuous_mode": True, "research_request_budget": None,
+                        "budget_root_run_id": 16, "ppa_manifest": data})
+    assert validate_theme_task(t) is None
+    data["historical_mechanisms"]["p0"] = "missing"
+    assert validate_theme_task(t) == "PPA_HISTORICAL_MECHANISM_INVALID"
+
+
 def test_continuous_feedback_can_restart_discovery_after_exhausted_epoch():
     exhausted = build_feedback([], None, {"discovery": 16, "refinement": 16, "confirmation": 16},
                                continuous=True)
@@ -70,7 +133,8 @@ def test_first_batch_review_requires_complete_platform_evidence():
              "metrics": {"amer_sharpe": 0.8}, "platform_ppa_evaluation": {"status": "PPA_REJECTED"}}
             for i in range(16)]
     cases = [row["case_id"] for row in rows]
-    assert first_batch_reviewable({"rows": rows}, 17, cases)
+    assert first_batch_reviewable({"rows": rows, "unresolved_requests": 0}, 17, cases)
+    assert not first_batch_reviewable({"rows": rows}, 17, cases)
     rows[2]["platform_ppa_evaluation"]["status"] = "PPA_PENDING"
     assert not first_batch_reviewable({"rows": rows}, 17, cases)
     rows[2]["platform_ppa_evaluation"]["status"] = "PPA_REJECTED"
@@ -78,6 +142,58 @@ def test_first_batch_review_requires_complete_platform_evidence():
     assert not first_batch_reviewable({"rows": rows}, 17, cases)
     rows[15]["metrics"] = {"amer_sharpe": 0.8}
     assert not first_batch_reviewable({"rows": rows[:-1]}, 17, cases)
+
+
+def test_watcher_never_operates_on_superseded_run(tmp_path, monkeypatch):
+    calls = []
+    def request(url, payload=None):
+        calls.append((url, payload))
+        if url.endswith("/tasks/14"):
+            return {"status": "PAUSED"}
+        if url.endswith("/tasks/14/runs"):
+            return [{"id": 19, "status": "PAUSED"},
+                    {"id": 18, "status": "PAUSED", "block_reason": "PPA_BATCH_READY"}]
+        pytest.fail(f"Unexpected request: {url}")
+    monkeypatch.setattr(watch_theme_ppa, "request_json", request)
+    assert watch_theme_ppa.step("http://127.0.0.1:8003/api/v1", 14, 18,
+                                tmp_path / "ask.ps1", tmp_path) == "STOP"
+    assert not any(payload is not None for _, payload in calls)
+
+
+def test_coordinator_exits_before_calls_during_release_maintenance(tmp_path, monkeypatch):
+    maintenance = tmp_path / "maintenance.lock"
+    maintenance.write_text("maintenance", encoding="utf-8")
+    monkeypatch.setattr(watch_theme_ppa, "step", lambda *args: pytest.fail("must not control task"))
+    watch_theme_ppa.main(["--task-id", "14", "--run-id", "18", "--cockpit-script", str(tmp_path / "ask"),
+                          "--output-dir", str(tmp_path), "--maintenance-file", str(maintenance)])
+
+
+def test_coordinator_exits_when_activation_is_revoked(tmp_path, monkeypatch):
+    activation = tmp_path / "activation.json"
+    activation.write_text(json.dumps({"enabled": False, "task_id": 14, "run_id": 18,
+                                      "commit": "a" * 40}), encoding="utf-8")
+    monkeypatch.setattr(watch_theme_ppa, "step", lambda *args: pytest.fail("must not control task"))
+    watch_theme_ppa.main(["--task-id", "14", "--run-id", "18", "--cockpit-script", str(tmp_path / "ask"),
+                          "--output-dir", str(tmp_path), "--activation-file", str(activation),
+                          "--activation-commit", "a" * 40])
+
+
+def test_first_batch_review_checks_unresolved_and_mechanism_allocation():
+    cases = [{"case_id": f"c{i}", "pair_id": f"p{i // 4}", "arm": "CONTROL" if i % 4 == 0 else "TREATMENT",
+              "mechanism_id": "model" if i < 4 else "baseline"} for i in range(8)]
+    rows = [{"case_id": c["case_id"], "run_id": 17, "source": "DISCOVERY",
+             "request_status": "RESULT", "metrics": {"amer_sharpe": 0.8},
+             "platform_ppa_evaluation": {"status": "PPA_REJECTED"}} for c in cases]
+    evidence = {"rows": rows, "unresolved_requests": 0,
+                "base": {"discovery_allocation": {"model": 1, "baseline": 1}}}
+    assert first_batch_reviewable(evidence, 17, cases)
+    assert not first_batch_reviewable(evidence, 17, cases[:-1])
+    assert not first_batch_reviewable(evidence, 17, cases[:-1] + [cases[0]])
+    evidence["unresolved_requests"] = 1
+    assert not first_batch_reviewable(evidence, 17, cases)
+    evidence["unresolved_requests"] = 0
+    evidence["base"]["discovery_allocation"] = {"model": 2}
+    assert not first_batch_reviewable(evidence, 17, cases)
 
 
 def test_watcher_holds_first_batch_until_all_cases_are_reviewable(tmp_path, monkeypatch):
@@ -101,8 +217,7 @@ def test_watcher_holds_first_batch_until_all_cases_are_reviewable(tmp_path, monk
     monkeypatch.setattr(watch_theme_ppa, "request_json", request)
     args = ("http://127.0.0.1:8003/api/v1", 14, 18, tmp_path / "ask.ps1", tmp_path)
     rows[15]["platform_ppa_evaluation"]["status"] = "PPA_PENDING"
-    with pytest.raises(ValueError, match="PPA_FIRST_BATCH_EVIDENCE_INCOMPLETE"):
-        watch_theme_ppa.step(*args)
+    assert watch_theme_ppa.step(*args) == "WAIT_FIRST_BATCH_EVIDENCE_INCOMPLETE"
     assert not any(url.endswith("/intervene") for url in calls)
     rows[15]["platform_ppa_evaluation"]["status"] = "PPA_REJECTED"
     assert watch_theme_ppa.step(*args) == "RESUMED_REVIEWED"
@@ -366,7 +481,8 @@ def test_watcher_waits_for_rate_reset_then_resumes_same_run(tmp_path, monkeypatc
     assert not any(url.endswith("/intervene") for url, _ in calls)
     retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     assert watch_theme_ppa.step(*args) == "RESUMED_RATE_LIMIT"
-    assert calls[-1][1] == {"action": "RESUME"}
+    assert calls[-1][1] == {"action": "RESUME", "parameters": {"expected_run_id": 18,
+                                                                 "expected_block_reason": "PPA_RATE_LIMIT"}}
 
 
 def test_watcher_refreshes_pending_qualification_and_keeps_existing_run(tmp_path, monkeypatch):
@@ -752,6 +868,19 @@ def test_watcher_single_instance_lease(tmp_path):
             watch_theme_ppa.acquire_lease(18, port=port)
     finally:
         first.close()
+
+
+def test_watcher_stops_before_retry_when_activation_is_revoked(tmp_path):
+    active = [True]
+    attempts = []
+    def unavailable():
+        attempts.append(1)
+        raise ValueError("COCKPIT_BATCH_INVALID:temporary")
+    def revoke(_seconds):
+        active[0] = False
+    assert watch_theme_ppa.run_step_with_retry(unavailable, tmp_path, sleep=revoke,
+                                               enabled=lambda: active[0]) == "STOP"
+    assert len(attempts) == 1
 
 
 def test_watcher_alerts_after_bounded_retry_cycle(tmp_path):

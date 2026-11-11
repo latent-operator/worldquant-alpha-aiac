@@ -5,7 +5,25 @@ from backend.services.ppa_feedback import research_row
 from backend.services.ppa_research_policy import evidence_metrics, effective_improvement
 
 
-def begin_pause(checkpoint, reason, now=None):
+def batch_request_timing(rows):
+    intervals = []
+    for row in rows:
+        snapshot = row.result_snapshot or {}
+        if row.request_status != "RESULT" or snapshot.get("recovery"):
+            continue
+        request = snapshot.get("request") or {}
+        try:
+            start = datetime.fromisoformat(request["sent_at"])
+            finish = datetime.fromisoformat(request["finished_at"])
+            if finish >= start:
+                intervals.append((start, finish))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return {"wall_seconds": interval_union_seconds(intervals) if intervals else None,
+            "included": len(intervals), "excluded": len(rows) - len(intervals)}
+
+
+def begin_pause(checkpoint, reason, now=None, retry_at=None):
     now = now or datetime.now(timezone.utc)
     updated = dict(checkpoint or {})
     if updated.get("ppa_pause_started_at"):
@@ -14,6 +32,10 @@ def begin_pause(checkpoint, reason, now=None):
         updated = close_pause(updated, now)
     updated["ppa_pause_started_at"] = now.isoformat()
     updated["ppa_pause_reason"] = reason
+    if reason == "PPA_RATE_LIMIT" and retry_at is not None:
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        updated["ppa_pause_retry_at"] = retry_at.isoformat()
     return updated
 
 
@@ -22,9 +44,15 @@ def close_pause(checkpoint, now=None):
     updated = dict(checkpoint or {})
     began = updated.pop("ppa_pause_started_at", None)
     reason = updated.pop("ppa_pause_reason", "UNATTRIBUTED")
+    retry_at = updated.pop("ppa_pause_retry_at", None)
     if began:
         try:
             seconds = max(0, (now - datetime.fromisoformat(began)).total_seconds())
+            if retry_at:
+                retry = datetime.fromisoformat(retry_at)
+                overdue = min(seconds, max(0, (now - retry).total_seconds()))
+                updated["ppa_retry_wait_seconds"] = updated.get("ppa_retry_wait_seconds", 0) + seconds - overdue
+                updated["ppa_retry_overdue_seconds"] = updated.get("ppa_retry_overdue_seconds", 0) + overdue
             updated["ppa_pause_seconds"] = updated.get("ppa_pause_seconds", 0) + seconds
             by_reason = dict(updated.get("ppa_pause_by_reason") or {})
             by_reason[reason] = by_reason.get(reason, 0) + seconds
@@ -146,7 +174,7 @@ def progress_report(rows, current_run_id, checkpoint=None):
             "evidence_reasons": dict(missing), "cached_results": sum(r["request_status"] == "CACHED" for r in raw),
             "observed_quota": observed_quota,
             "daily_window": daily_window,
-            "parallelism": checkpoint.get("ppa_max_in_flight", 8),
+            "parallelism": checkpoint.get("ppa_max_in_flight", 2),
             "actual_parent_peak": ((checkpoint.get("ppa_throughput_history") or [])[-1].get("parent_peak")
                                    if checkpoint.get("ppa_throughput_history") else None),
             "batch_throughput": (checkpoint.get("ppa_throughput_history") or [])[-20:],
@@ -157,6 +185,8 @@ def progress_report(rows, current_run_id, checkpoint=None):
                        "generation_seconds": sum(generations) if generations else None,
                        "qualification_seconds": sum(qualification_durations) if qualification_durations else None,
                        "pause_seconds": pause_seconds,
+                       "retry_wait_seconds": checkpoint.get("ppa_retry_wait_seconds"),
+                       "retry_overdue_seconds": checkpoint.get("ppa_retry_overdue_seconds"),
                        "pause_seconds_by_reason": pause_by_reason,
                        "recovery_seconds": sum(recovery_durations) if recovery_durations else None},
             "speed_claim": "NO_TIME_TO_PASS_ESTIMATE"}

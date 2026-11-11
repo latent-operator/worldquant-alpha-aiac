@@ -4,6 +4,28 @@ from backend.services import ppa_quota
 from datetime import datetime, timezone, timedelta
 
 
+def test_concurrency_increases_only_after_two_clean_full_batches():
+    clean = {"concurrency": 2, "completed": 4, "cases": 4, "unknown": 0, "rate_limited": False,
+             "execution_error": False, "parent_peak": 2, "supply_limited": False}
+    assert ppa_quota.next_parallelism(2, []) == 2
+    assert ppa_quota.next_parallelism(2, [clean]) == 2
+    assert ppa_quota.next_parallelism(2, [{**clean, "batch_hash": "a"}, {**clean, "batch_hash": "b"}]) == 4
+    assert ppa_quota.next_parallelism(4, [clean, clean]) == 4
+    assert ppa_quota.next_parallelism(2, [clean, {**clean, "unknown": 1}]) == 2
+    assert ppa_quota.next_parallelism(2, [clean, {**clean, "supply_limited": True}]) == 2
+    assert ppa_quota.next_parallelism(2, [clean, {**clean, "parent_peak": 1}]) == 2
+    assert ppa_quota.next_parallelism(2, [clean, {**clean, "completed": 3}]) == 2
+
+
+def test_concurrency_requires_two_distinct_identified_batches():
+    clean = {"concurrency": 2, "completed": 4, "cases": 4, "unknown": 0,
+             "rate_limited": False, "execution_error": False, "parent_peak": 2,
+             "supply_limited": False, "batch_hash": "batch-a"}
+    assert ppa_quota.next_parallelism(2, [clean, clean]) == 2
+    assert ppa_quota.next_parallelism(2, [{**clean, "batch_hash": None}, clean]) == 2
+    assert ppa_quota.next_parallelism(2, [clean, {**clean, "batch_hash": "batch-b"}]) == 4
+
+
 def test_quota_window_stops_after_observed_remaining_is_claimed():
     quota = QuotaWindow()
     assert quota.claim()

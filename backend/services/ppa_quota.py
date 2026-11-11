@@ -3,6 +3,22 @@ import time
 from datetime import datetime, timezone, timedelta
 
 
+def next_parallelism(current, history):
+    """Increase only after two complete, full, clean batches at the current level."""
+    current = min(4, max(2, int(current)))
+    recent = history[-2:]
+    if (current == 2 and len(recent) == 2 and all(item.get("batch_hash") for item in recent)
+            and recent[0]["batch_hash"] != recent[1]["batch_hash"] and all(
+        item.get("concurrency") == 2 and item.get("cases", 0) >= 2
+        and item.get("completed") == item.get("cases")
+        and item.get("parent_peak", 0) >= 2 and not item.get("supply_limited")
+        and not item.get("rate_limited") and not item.get("unknown")
+        and not item.get("execution_error") for item in recent
+    )):
+        return 4
+    return current
+
+
 class QuotaWindow:
     def __init__(self):
         self.limit = None

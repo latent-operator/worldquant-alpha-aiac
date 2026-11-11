@@ -26,6 +26,31 @@ def needs_reconciliation(row):
             or row.request_status == "RESULT" and not (row.result_snapshot or {}).get("ppa_evaluation"))
 
 
+def new_fields_have_evidence(base, historical):
+    previous = historical.get("datasets") or {}
+    metadata = base.get("field_metadata") or {}
+    return all(metadata.get(dataset, {}).get(name)
+               for dataset, fields in (base.get("datasets") or {}).items()
+               for name in fields if name not in previous.get(dataset, []))
+
+
+def runtime_fields_match(base, fields_by_dataset):
+    """Require newly evidenced fields to match the account catalog before dispatch."""
+    metadata = base.get("field_metadata")
+    if metadata is None:
+        return True
+    for dataset, names in base.get("datasets", {}).items():
+        catalog = {field.get("id"): field for field in fields_by_dataset.get(dataset, [])
+                   if isinstance(field, dict)}
+        for name in names:
+            field = catalog.get(name) or {}
+            actual = field.get("type") or field.get("field_type")
+            expected = (metadata.get(dataset, {}).get(name) or {}).get("type")
+            if not isinstance(actual, str) or actual.upper() != expected:
+                return False
+    return True
+
+
 def validate_v2_manifest(task):
     config = task.config or {}
     base = config.get("ppa_manifest") or {}
@@ -39,7 +64,13 @@ def validate_v2_manifest(task):
     identities = [(m["dataset_id"], m["hypothesis"].strip().lower(), m["direction"].lower()) for m in mechanisms.values()]
     if len(set(identities)) != len(identities):
         return "PPA_MECHANISM_ALIAS"
-    if any(name not in mechanisms for name in (base.get("historical_mechanisms") or {}).values()):
+    historical_registry = base.get("historical_mechanism_registry") or {}
+    if (not isinstance(historical_registry, dict) or set(historical_registry) & set(mechanisms)
+            or any(not isinstance(m, dict) or not m.get("dataset_id") or not m.get("hypothesis")
+                   or not m.get("direction") for m in historical_registry.values())):
+        return "PPA_HISTORICAL_MECHANISM_INVALID"
+    if any(name not in mechanisms and name not in historical_registry
+           for name in (base.get("historical_mechanisms") or {}).values()):
         return "PPA_HISTORICAL_MECHANISM_INVALID"
     return None
 
@@ -194,6 +225,11 @@ async def import_batch(db, task, run, batch):
     checked = verify_batch_generation(task.config["ppa_manifest"], evidence, batch)
     if checked["cases"] != batch["cases"] or batch.get("base_hash") != digest(task.config["ppa_manifest"]):
         raise ValueError("PPA_BATCH_CONSTRAINT_MISMATCH")
+    allocation = task.config["ppa_manifest"].get("discovery_allocation")
+    if batch.get("phase") == "discovery" and allocation:
+        groups = {case["pair_id"]: case["mechanism_id"] for case in checked["cases"]}
+        if dict(Counter(groups.values())) != allocation:
+            raise ValueError("PPA_DISCOVERY_ALLOCATION_MISMATCH")
     history = list(checkpoint.get("ppa_batch_history") or [])
     if old:
         history.append(old)
@@ -208,9 +244,14 @@ async def import_batch(db, task, run, batch):
 
 async def pause(db, task, run, reason):
     from backend.services.ppa_progress import begin_pause
+    await db.refresh(task, with_for_update=True)
+    if task.status == "PAUSED":
+        await db.refresh(run)
+        if run.block_reason == "USER_PAUSED":
+            return {"done": True, "reason": "USER_PAUSED"}
     task.status = run.status = "PAUSED"
     run.block_reason = reason
-    run.checkpoint = {**begin_pause(run.checkpoint, reason), "ppa_stop_reason": reason}
+    run.checkpoint = {**begin_pause(run.checkpoint, reason, retry_at=run.next_retry_at), "ppa_stop_reason": reason}
     await db.commit()
     return {"done": True, "reason": reason}
 
@@ -519,12 +560,12 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
     if pending and not checkpoint.get("ppa_execution_started_at"):
         run.checkpoint = {**checkpoint, "ppa_execution_started_at": datetime.now(timezone.utc).isoformat()}
         await db.commit()
-    concurrency = min(8, max(2, int(checkpoint.get("ppa_max_in_flight", 8))))
+    from backend.services.ppa_quota import next_parallelism
+    concurrency = next_parallelism(checkpoint.get("ppa_max_in_flight", 2),
+                                   checkpoint.get("ppa_throughput_history") or [])
     if checkpoint.get("ppa_parallel_scheduler") != "v1":
-        # Existing continuous runs were calibrated by the old serial path and
-        # commonly carry ppa_max_in_flight=2. Migrate once to the new default;
-        # later adaptive reductions (429/UNKNOWN) remain authoritative.
-        concurrency = 8
+        # Preserve safe saved limits while migrating older checkpoints.
+        concurrency = min(4, max(2, int(checkpoint.get("ppa_max_in_flight", 2))))
         run.checkpoint = {**(run.checkpoint or {}),
                           "ppa_max_in_flight": concurrency,
                           "ppa_parallel_scheduler": "v1"}
@@ -630,6 +671,14 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
     if quota_exhausted.is_set():
         block_reason = block_reason or "PPA_RATE_LIMIT"
     if block_reason:
+        history = list((run.checkpoint or {}).get("ppa_throughput_history") or [])[-19:]
+        history.append({"batch_hash": (batch.get("candidate_generation") or {}).get("plan_sha256"),
+                        "concurrency": concurrency, "completed": len(finished), "cases": len(cases),
+                        "parent_peak": parent_peak, "supply_limited": len(pending) < concurrency,
+                        "rate_limited": block_reason == "PPA_RATE_LIMIT",
+                        "unknown": int(block_reason == "PPA_REQUEST_RECONCILIATION_PENDING"),
+                        "execution_error": block_reason == "PPA_EXECUTION_ERROR"})
+        run.checkpoint = {**(run.checkpoint or {}), "ppa_throughput_history": history}
         if block_reason == "PPA_RATE_LIMIT":
             from backend.services.ppa_quota import retry_delay_for_429
 
@@ -638,16 +687,14 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
             streak = int((run.checkpoint or {}).get("ppa_429_streak", 0)) + 1
             wait_seconds = retry_delay_for_429(quota, retry_after=retry_wait, streak=streak)
             run.checkpoint = {**(run.checkpoint or {}), "ppa_429_streak": streak,
-                              "ppa_max_in_flight": concurrency if exhausted else max(2, concurrency // 2),
+                              "ppa_max_in_flight": max(2, concurrency // 2),
                               "ppa_rate_limit_kind": "DAILY" if exhausted else "BURST"}
             run.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=wait_seconds)
         elif block_reason == "PPA_REQUEST_RECONCILIATION_PENDING":
             run.checkpoint = {**(run.checkpoint or {}),
                               "ppa_max_in_flight": max(2, concurrency // 2)}
         return await pause(db, task, run, block_reason)
-    if first_review and all(case["case_id"] in finished for case in cases):
-        run.checkpoint = {**(run.checkpoint or {}), "ppa_first_batch_reviewed": True}
-        return await pause(db, task, run, "PPA_FIRST_BATCH_REVIEW")
+    review_due = first_review and all(case["case_id"] in finished for case in cases)
     if len(finished) >= len(cases):
         # A recovered final request may leave the cursor behind even though all
         # original Alpha results are persisted. Close the batch before importing another.
@@ -662,26 +709,30 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         ))).scalars().all()
         completed_count = sum(row.request_status == "RESULT" for row in rows)
         unknown_count = sum(row.request_status == "UNKNOWN" for row in rows)
-        from backend.services.ppa_progress import interval_union_seconds
-        intervals = []
-        for row in rows:
-            request = (row.result_snapshot or {}).get("request") or {}
-            try:
-                start = datetime.fromisoformat(request["sent_at"])
-                finish = datetime.fromisoformat(request["finished_at"])
-                if finish >= start:
-                    intervals.append((start, finish))
-            except (KeyError, TypeError, ValueError):
-                continue
+        from backend.services.ppa_progress import batch_request_timing
+        timing = batch_request_timing(rows)
         # Pauses and qualification checks are outside WQ's active request wall time.
-        wall_seconds = max(0.001, interval_union_seconds(intervals)) if intervals else 0
+        wall_seconds = timing["wall_seconds"]
         history = list((run.checkpoint or {}).get("ppa_throughput_history") or [])[-19:]
-        history.append({"concurrency": concurrency, "completed": completed_count,
-                        "wall_seconds": round(wall_seconds, 3), "unknown": unknown_count,
-                        "rate_limited": False, "parent_peak": parent_peak,
-                        "parent_groups": len(pending), "supply_limited": len(pending) < concurrency})
+        batch_hash = (batch.get("candidate_generation") or {}).get("plan_sha256")
+        prior = [item for item in history if batch_hash and item.get("batch_hash") == batch_hash]
+        if not any(item.get("batch_complete") for item in prior):
+            history.append({"batch_hash": batch_hash, "batch_complete": True,
+                            "concurrency": concurrency, "completed": completed_count, "cases": len(cases),
+                            "wall_seconds": round(wall_seconds, 3) if wall_seconds is not None else None,
+                            "timed_requests_included": timing["included"],
+                            "timed_requests_excluded": timing["excluded"],
+                            "unknown": unknown_count or any(item.get("unknown") for item in prior),
+                            "rate_limited": any(item.get("rate_limited") for item in prior),
+                            "execution_error": any(item.get("execution_error") for item in prior),
+                            "parent_peak": parent_peak, "parent_groups": len(pending),
+                            "supply_limited": len(pending) < concurrency})
         run.checkpoint = {**(run.checkpoint or {}), "ppa_throughput_history": history,
                           "ppa_max_in_flight": concurrency, "ppa_429_streak": 0}
+        if review_due:
+            run.checkpoint = {**run.checkpoint, "ppa_first_batch_reviewed": True}
+            await db.commit()
+            return await pause(db, task, run, "PPA_FIRST_BATCH_REVIEW")
         await db.commit()
         context = await feedback_context(db, task, run)
         if context["next_phase"] is None:
@@ -699,6 +750,12 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
     if reason:
         return await pause(db, task, run, reason)
     base = task.config["ppa_manifest"]
+    if continuous:
+        root = await db.get(ExperimentRun, task.config["budget_root_run_id"])
+        root_config = (((root.config_snapshot or {}).get("task") or {}).get("config") or {}) if root else {}
+        historical = root_config.get("ppa_manifest") or {}
+        if not root or not new_fields_have_evidence(base, historical):
+            return await pause(db, task, run, "PPA_FIELD_EVIDENCE_REQUIRED")
     now = datetime.now(timezone.utc)
     if not _timestamp(base["starts_at"]) <= now <= _timestamp(base["ends_at"]):
         return await pause(db, task, run, "PPA_THEME_NOT_ACTIVE")
@@ -709,6 +766,8 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
         return await pause(db, task, run, "PPA_BATCH_HASH_INVALID")
     if any(not fields_by_dataset.get(key) for key in base["datasets"]):
         return await pause(db, task, run, "PPA_FIELDS_NOT_AVAILABLE")
+    if not runtime_fields_match(base, fields_by_dataset):
+        return await pause(db, task, run, "PPA_FIELD_EVIDENCE_MISMATCH")
     ledger = ResearchLedger(task.id, run.id, None if continuous else 80,
                             f"theme_ppa_v3:{base['theme_id']}" if continuous else f"theme_ppa_v2:{base['theme_id']}",
                             budget_root_run_id=task.config["budget_root_run_id"])

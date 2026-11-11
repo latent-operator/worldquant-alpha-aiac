@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
+import runpy
 import sys
 
 from dotenv import load_dotenv
@@ -26,12 +28,34 @@ def load_runtime_env(env_file: Path) -> None:
         raise ValueError("CREDENTIALS_SECRET is required for API and worker")
 
 
+def load_coordinator_config(path: Path, commit: str) -> dict:
+    """A coordinator starts only with an explicit, release-bound task activation."""
+    try:
+        config = json.loads(path.read_text(encoding="utf-8-sig"))
+        script = Path(config["cockpit_script"])
+        output = Path(config["output_dir"])
+        if (config.get("enabled") is not True or config.get("task_id") != 14
+                or type(config.get("run_id")) is not int or not 1 <= config["run_id"] <= 18535
+                or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit)
+                or config.get("commit") != commit or not script.is_absolute() or not script.is_file()
+                or not output.is_absolute()):
+            raise ValueError
+        return config
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise ValueError("PPA_COORDINATOR_ACTIVATION_INVALID") from exc
+
+
+def load_coordinator_main(source: Path):
+    return runpy.run_path(str(source / "scripts" / "watch_theme_ppa.py"))["main"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--service", choices=("api", "worker", "ui"), required=True)
+    parser.add_argument("--service", choices=("api", "worker", "ui", "coordinator"), required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--coordinator-config", type=Path)
     args = parser.parse_args()
 
     source = args.source.resolve()
@@ -46,6 +70,15 @@ def main() -> None:
     elif args.service == "worker":
         from backend.celery_app import celery_app
         celery_app.worker_main(["worker", "--loglevel=info", "--pool=solo", "--concurrency=1"])
+    elif args.service == "coordinator":
+        if args.coordinator_config is None:
+            raise ValueError("PPA_COORDINATOR_ACTIVATION_INVALID")
+        config = load_coordinator_config(args.coordinator_config, args.commit)
+        coordinator_main = load_coordinator_main(source)
+        coordinator_main(["--task-id", str(config["task_id"]), "--run-id", str(config["run_id"]),
+                          "--cockpit-script", config["cockpit_script"], "--output-dir", config["output_dir"],
+                          "--maintenance-file", str(args.coordinator_config.parent / "maintenance.lock"),
+                          "--activation-file", str(args.coordinator_config), "--activation-commit", args.commit])
     else:
         from aiohttp import web
         web.run_app(

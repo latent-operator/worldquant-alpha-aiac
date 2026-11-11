@@ -3,12 +3,13 @@ param(
     [Parameter(Mandatory)][ValidateSet('Start', 'Stop', 'Status')][string]$Action,
     [string]$Source,
     [string]$Commit,
+    [string]$RuntimeHome = (Join-Path $PSScriptRoot '..'),
     [switch]$AllowMaintenance,
-    [ValidateSet('api', 'ui', 'worker')][string[]]$Services = @('api', 'ui', 'worker')
+    [ValidateSet('api', 'ui', 'worker', 'coordinator')][string[]]$Services = @('api', 'ui', 'worker', 'coordinator')
 )
 
 $ErrorActionPreference = 'Stop'
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$root = (Resolve-Path -LiteralPath $RuntimeHome).Path
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $runtimeRoot = [IO.Path]::GetFullPath((Join-Path $root '..\..\runtime\aiac-ops'))
 $pidRoot = Join-Path $runtimeRoot 'pids'
@@ -16,6 +17,7 @@ $logRoot = Join-Path $runtimeRoot 'logs'
 $envFile = Join-Path $root '.env'
 $currentFile = Join-Path $runtimeRoot 'current.json'
 $maintenanceFile = Join-Path $runtimeRoot 'maintenance.lock'
+$coordinatorConfig = Join-Path $runtimeRoot 'ppa-coordinator.json'
 
 function Get-Managed([string]$service) {
     $file = Join-Path $pidRoot "$service.json"
@@ -82,6 +84,18 @@ foreach ($service in $Services) {
         continue
     }
 
+    if ($service -eq 'coordinator') {
+        if ((Test-Path -LiteralPath $maintenanceFile) -or -not (Test-Path -LiteralPath $coordinatorConfig)) {
+            $result += [pscustomobject]@{ service = $service; running = $false; skipped = 'inactive or maintenance' }
+            continue
+        }
+        $activation = Get-Content -LiteralPath $coordinatorConfig -Raw | ConvertFrom-Json
+        if ($activation.enabled -ne $true -or $activation.commit -ne $Commit) {
+            $result += [pscustomobject]@{ service = $service; running = $false; skipped = 'release not activated' }
+            continue
+        }
+    }
+
     if (-not $Source -or -not $Commit) { throw 'Start requires -Source and -Commit.' }
     if (-not (Test-Path -LiteralPath $python)) { throw 'Python environment is missing.' }
     if (-not (Test-Path -LiteralPath $envFile)) { throw 'Private .env is missing.' }
@@ -105,6 +119,9 @@ foreach ($service in $Services) {
         '--source', ('"' + $resolvedSource + '"'),
         '--env-file', ('"' + $envFile + '"'), '--commit', $Commit
     )
+    if ($service -eq 'coordinator') {
+        $arguments += @('--coordinator-config', ('"' + $coordinatorConfig + '"'))
+    }
     $started = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $root `
         -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     Start-Sleep -Seconds 2

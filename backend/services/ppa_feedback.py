@@ -219,8 +219,23 @@ def freeze_batch(base, evidence, proposal):
         mechanism = mechanisms.get(case.get("mechanism_id")) or {}
         if dataset not in base["datasets"] or mechanism.get("dataset_id") != dataset:
             raise ValueError("PPA_MECHANISM_INVALID")
-        fields = [{"id": name, "type": "MATRIX"} for name in base["datasets"][dataset]]
-        result = AlphaSemanticValidator(fields=fields, strict_field_check=True).validate(case.get("expression", ""))
+        field_metadata = (base.get("field_metadata") or {}).get(dataset) or {}
+        fields = [{"id": name, "type": (field_metadata.get(name) or {}).get("type", "MATRIX")}
+                  for name in base["datasets"][dataset]]
+        expression = case.get("expression", "")
+        for field in fields:
+            if field["type"] != "VECTOR":
+                continue
+            name = field["id"]
+            allowed = (field_metadata.get(name) or {}).get("verified_aggregators") or []
+            remainder = expression
+            for op in allowed:
+                if op == "vec_avg" and op in base["allowed_operators"]:
+                    remainder = re.sub(r"\bvec_avg\s*\(\s*" + re.escape(name) + r"\s*\)",
+                                       "0", remainder, flags=re.IGNORECASE)
+            if re.search(r"\b" + re.escape(name) + r"\b", remainder, flags=re.IGNORECASE):
+                raise ValueError("PPA_VECTOR_AGGREGATION_REQUIRED")
+        result = AlphaSemanticValidator(fields=fields, strict_field_check=True).validate(expression)
         from backend.agents.graph.nodes.evaluation import _operator_call_count
         if (evidence.get("strict_max_operator_count") is not None
                 and _operator_call_count(case["expression"]) > evidence["strict_max_operator_count"]):
@@ -414,9 +429,11 @@ def freeze_seed_expansion(base, evidence, seed_cases, *, model):
             break
         dataset = group[0]["dataset_id"]
         used = set()
+        field_metadata = (base.get("field_metadata") or {}).get(dataset) or {}
         for case in group:
             used.update(AlphaSemanticValidator(
-                fields=[{"id": name, "type": "MATRIX"} for name in base["datasets"][dataset]],
+                fields=[{"id": name, "type": (field_metadata.get(name) or {}).get("type", "MATRIX")}
+                        for name in base["datasets"][dataset]],
                 strict_field_check=True).validate(case["expression"]).used_fields)
         if len(used) == 1:
             old_field = next(iter(used))
@@ -636,7 +653,7 @@ def verify_batch_generation(base, evidence, batch):
     return checked
 
 
-def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
+def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run, required_mechanism=None):
     script = Path(cockpit_script).resolve()
     if not script.is_file():
         raise FileNotFoundError("Cockpit script missing")
@@ -652,6 +669,8 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
     if capacity <= 0:
         raise ValueError("PPA_BATCH_PHASE_LIMIT")
     structured_discovery = phase == "discovery" and evidence.get("continuous") is True
+    if required_mechanism is not None and (not structured_discovery or required_mechanism not in base.get("mechanisms", {})):
+        raise ValueError("PPA_DISCOVERY_ALLOCATION_INVALID")
     model = "gpt-6-astra" if evidence.get("continuous") is True else "gpt-6-luna"
     if structured_discovery:
         prompt = (f"Return ONLY JSON with phase='discovery' and discovery_groups (at most {capacity // 4}). "
@@ -684,6 +703,8 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
               "A ranked fixed-window mean of returns is treated as the same signal as its sum at that window.\n"
               + json.dumps({"base": base, "evidence": generation_context(evidence)},
                            ensure_ascii=False, allow_nan=False))
+    if required_mechanism is not None:
+        prompt += "\nMandatory for this call: exactly one complete group with mechanism_id " + json.dumps(required_mechanism) + "."
     with tempfile.TemporaryDirectory(prefix="ppa-feedback-") as directory:
         path = Path(directory) / "prompt.txt"
         for attempt in range(3):
@@ -729,6 +750,9 @@ def prepare_batch(base, evidence, cockpit_script, *, runner=subprocess.run):
                         raise ValueError("PPA_ALL_PROPOSALS_EXHAUSTED")
                     proposal = {**proposal, "cases": kept[:capacity]}
                 batch = freeze_batch(base, evidence, proposal)
+                if required_mechanism is not None and (len(batch["cases"]) != 4 or
+                        {case["mechanism_id"] for case in batch["cases"]} != {required_mechanism}):
+                    raise ValueError("PPA_DISCOVERY_ALLOCATION_MISMATCH")
                 batch["candidate_generation"]["model"] = model
                 batch["candidate_generation"]["proposed_cases"] = proposed
                 batch["candidate_generation"]["truncated_cases"] = max(0, proposed - len(batch["cases"]))
@@ -760,7 +784,17 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
     if capacity <= 0:
         raise ValueError("PPA_BATCH_PHASE_LIMIT")
     if local_expansion:
+        if phase == "discovery" and base.get("discovery_allocation"):
+            raise ValueError("PPA_ALLOCATION_REQUIRES_MODEL_GENERATION")
         return _prepare_batch_filled_local(base, evidence, cockpit_script, capacity, runner)
+    allocation = base.get("discovery_allocation") if phase == "discovery" else None
+    schedule = None
+    if allocation is not None:
+        if (not isinstance(allocation, dict) or not allocation or
+                any(name not in base.get("mechanisms", {}) or type(count) is not int or count < 1
+                    for name, count in allocation.items()) or sum(allocation.values()) * 4 != capacity):
+            raise ValueError("PPA_DISCOVERY_ALLOCATION_INVALID")
+        schedule = [name for name, count in allocation.items() for _ in range(count)]
     combined, attempts, proposed, truncated, seconds, calls = [], 0, 0, 0, 0.0, 0
     last_error = None
     for _ in range((capacity + 3) // 4):
@@ -777,7 +811,10 @@ def prepare_batch_filled(base, evidence, cockpit_script, *, runner=subprocess.ru
                          for item in combined)],
                    "proposed_avoid_expressions": [item["expression"] for item in combined]}
         try:
-            part = prepare_batch(base, updated, cockpit_script, runner=runner)
+            kwargs = {"runner": runner}
+            if schedule is not None:
+                kwargs["required_mechanism"] = schedule[calls - 1]
+            part = prepare_batch(base, updated, cockpit_script, **kwargs)
             candidate = [*combined, *part["cases"]]
             frozen = freeze_batch(base, evidence, {"phase": phase, "cases": candidate})
         except (ValueError, KeyError, TypeError, OSError,

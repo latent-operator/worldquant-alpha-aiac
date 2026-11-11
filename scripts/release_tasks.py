@@ -10,11 +10,6 @@ from pathlib import Path
 
 from sqlalchemy import func, select, text
 
-from backend.database import AsyncSessionLocal
-from backend.models import Alpha, ExperimentRun, MiningTask
-from backend.services.task_service import TaskService
-
-
 ACTIVE = frozenset({"RUNNING", "WAITING_LLM"})
 
 
@@ -43,6 +38,8 @@ def validate_persistent_state(before: dict, after: dict) -> None:
 
 
 async def capture() -> dict:
+    from backend.database import AsyncSessionLocal
+    from backend.models import Alpha, ExperimentRun, MiningTask
     async with AsyncSessionLocal() as db:
         tasks = (await db.execute(select(MiningTask).order_by(MiningTask.id))).scalars().all()
         runs = (await db.execute(select(ExperimentRun).order_by(ExperimentRun.id.desc()))).scalars().all()
@@ -66,6 +63,8 @@ async def capture() -> dict:
 
 
 async def pause_active(snapshot: dict) -> None:
+    from backend.database import AsyncSessionLocal
+    from backend.services.task_service import TaskService
     async with AsyncSessionLocal() as db:
         service = TaskService(db)
         for entry in active_entries(snapshot):
@@ -79,6 +78,8 @@ async def pause_active(snapshot: dict) -> None:
 
 
 async def resume_original(snapshot: dict) -> None:
+    from backend.database import AsyncSessionLocal
+    from backend.services.task_service import TaskService
     current = await capture()
     validate_resume_target(snapshot, current)
     by_id = {entry["task_id"]: entry for entry in current["tasks"]}
@@ -115,13 +116,17 @@ async def _run(args) -> None:
         print(json.dumps(current, sort_keys=True))
 
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("capture", "pause", "resume", "verify"))
     parser.add_argument("--snapshot")
-    args = parser.parse_args()
+    parser.add_argument("--env-file", type=Path)
+    args = parser.parse_args(argv)
     if args.action != "capture" and not args.snapshot:
         parser.error("--snapshot is required")
+    if args.env_file is not None:
+        from scripts.launch_runtime import load_runtime_env
+        load_runtime_env(args.env_file)
     asyncio.run(_run(args))
 
 
