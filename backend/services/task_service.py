@@ -456,7 +456,8 @@ class TaskService(BaseService):
                 paused_run.next_retry_at = None
                 if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
                     from backend.services.ppa_progress import close_pause
-                    paused_run.checkpoint = close_pause(paused_run.checkpoint)
+                    paused_run.checkpoint = {**close_pause(paused_run.checkpoint), "ppa_stop_reason": None}
+                    paused_run.block_reason = None
                 await self.commit()
                 from backend.tasks import run_mining_task
                 queued = run_mining_task.delay(task_id, paused_run.id)

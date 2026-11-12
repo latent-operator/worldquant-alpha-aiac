@@ -266,7 +266,10 @@ async def test_pause_then_resume_running_task_reuses_run(monkeypatch):
 async def test_resuming_ppa_run_records_paused_time(monkeypatch):
     began = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
     run = SimpleNamespace(id=18, status="PAUSED", next_retry_at=None,
-                          checkpoint={"ppa_pause_started_at": began, "ppa_pause_seconds": 5},
+                          block_reason="PPA_REQUEST_RECONCILIATION_PENDING",
+                          checkpoint={"ppa_pause_started_at": began, "ppa_pause_seconds": 5,
+                                      "ppa_pause_reason": "PPA_REQUEST_RECONCILIATION_PENDING",
+                                      "ppa_stop_reason": "PPA_REQUEST_RECONCILIATION_PENDING"},
                           celery_task_id="old")
     task = SimpleNamespace(id=14, status="PAUSED", config={"research_protocol": "theme_ppa_v3"})
     db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
@@ -279,6 +282,9 @@ async def test_resuming_ppa_run_records_paused_time(monkeypatch):
     await service.intervene_task(14, "RESUME")
     assert 65 <= run.checkpoint["ppa_pause_seconds"] < 70
     assert "ppa_pause_started_at" not in run.checkpoint
+    assert run.checkpoint["ppa_stop_reason"] is None
+    assert run.block_reason is None
+    assert run.checkpoint["ppa_pause_by_reason"]["PPA_REQUEST_RECONCILIATION_PENDING"] >= 60
 
 
 @pytest.mark.asyncio
