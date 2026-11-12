@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from aiohttp import ClientSession, ClientTimeout, web
 
@@ -16,7 +17,19 @@ def make_app(dist: Path, commit: str, api_base: str = "http://127.0.0.1:8003") -
     if not (root / "index.html").is_file():
         raise ValueError("Built UI has no index.html")
 
-    app = web.Application(client_max_size=10 * 1024 * 1024)
+    @web.middleware
+    async def local_host_only(request, handler):
+        try:
+            host = urlsplit("//" + request.host)
+            if (host.hostname not in {"127.0.0.1", "localhost", "::1"}
+                    or host.username is not None or host.password is not None
+                    or host.path or host.query or host.fragment):
+                raise web.HTTPBadRequest()
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        return await handler(request)
+
+    app = web.Application(client_max_size=10 * 1024 * 1024, middlewares=[local_host_only])
 
     async def session_context(application):
         application["upstream_session"] = ClientSession(

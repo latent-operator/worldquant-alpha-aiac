@@ -52,6 +52,19 @@ its ignored `compose.local.yaml` and its volume mapping. The example file's
 named volume is for fresh installations. Do not replace the live Compose file
 or run `docker compose down -v` while preserving this database.
 
+The shipped Compose configurations bind published ports to loopback. Existing
+containers retain their old bindings until safely recreated; updating the YAML
+alone does not change them. Inspect Docker port bindings and the effective
+Compose overrides before a maintenance window. In particular, do not expose an
+unauthenticated Redis or a local API to untrusted networks. Preserve the actual
+database volume, verify a backup, and respect the PPA handoff boundary before
+recreating dependencies. Restrict network access separately until then.
+
+The host API accepts browser origins for the supported localhost UI/API ports
+and native clients without an Origin header. The released UI and API reject
+untrusted Host headers. This is a local-use boundary, not authentication for
+remote deployments; do not publish these services on a public interface.
+
 Before changing processes, save `git status`, running commands, the Docker
 volume ID, `alembic_version`, key table counts, and a `pg_dump -Fc` file.
 Validate the dump by restoring into a separate temporary database. Keep the

@@ -9,6 +9,15 @@ from scripts import serve_ui
 
 
 @pytest.mark.asyncio
+async def test_ui_rejects_rebound_host_before_serving_or_proxying(tmp_path):
+    (tmp_path / "index.html").write_text("ready")
+    app = serve_ui.make_app(tmp_path, "a" * 40, "http://127.0.0.1:1")
+    async with TestClient(TestServer(app)) as client:
+        assert (await client.get("/", headers={"Host": "untrusted.example:5174"})).status == 400
+        assert (await client.get("/api/v1/ping", headers={"Host": "untrusted.example:5174"})).status == 400
+
+
+@pytest.mark.asyncio
 async def test_static_ui_and_spa_fallback(tmp_path):
     (tmp_path / "index.html").write_text("<title>AIAC release</title>")
     app = serve_ui.make_app(tmp_path, "a" * 40, "http://127.0.0.1:1")
