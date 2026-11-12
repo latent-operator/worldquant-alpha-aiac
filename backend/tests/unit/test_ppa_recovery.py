@@ -9,6 +9,38 @@ from backend.services import research_audit as audit
 
 
 @pytest.mark.asyncio
+async def test_reconcile_endpoint_prevents_overlapping_polls(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from backend.routers import runs
+    from backend.adapters import mcp_brain_adapter
+    from backend.services import theme_ppa_v2
+    from backend.tasks import mining_tasks
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def reconcile(*_args):
+        calls.append(1)
+        started.set()
+        await release.wait()
+        return {"resolved": 1, "pending": 0}
+    class Brain:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+    run = SimpleNamespace(task_id=14)
+    task = SimpleNamespace(region="GLB", universe="TOP3000", config={"ppa_manifest": {"datasets": {}}})
+    db = SimpleNamespace(get=AsyncMock(side_effect=[run, task]))
+    monkeypatch.setattr(mcp_brain_adapter, "MCPBrainAdapter", Brain)
+    monkeypatch.setattr(theme_ppa_v2, "reconcile_paused", reconcile)
+    monkeypatch.setattr(mining_tasks, "_get_dataset_fields", AsyncMock())
+    first = asyncio.create_task(runs.post_ppa_reconcile(98765, db))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    assert await runs.post_ppa_reconcile(98765, db) == {"resolved": 0, "pending": 1, "in_progress": True}
+    assert len(calls) == 1
+    release.set()
+    assert await asyncio.wait_for(first, timeout=5) == {"resolved": 1, "pending": 0}
+
+
+@pytest.mark.asyncio
 async def test_location_is_saved_before_polling():
     brain = BrainAdapter()
     brain._safe_api_call = AsyncMock(return_value=httpx.Response(201, headers={"Location": "/simulations/a"}))

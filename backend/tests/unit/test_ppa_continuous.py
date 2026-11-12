@@ -884,6 +884,20 @@ def test_watcher_single_instance_lease(tmp_path):
         first.close()
 
 
+def test_watcher_allows_server_reconciliation_timeout(monkeypatch):
+    import io
+    from backend.services.theme_ppa_v2 import PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS
+    timeouts = []
+    def open_url(_request, timeout):
+        timeouts.append(timeout)
+        return io.BytesIO(b'{}')
+    monkeypatch.setattr(watch_theme_ppa, "urlopen", open_url)
+    watch_theme_ppa.request_json("http://127.0.0.1:8003/api/v1/runs/28/ppa-reconcile", {})
+    watch_theme_ppa.request_json("http://127.0.0.1:8003/api/v1/runs/28")
+    assert timeouts[0] > PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS
+    assert timeouts[1] == 30
+
+
 def test_watcher_stops_before_retry_when_activation_is_revoked(tmp_path):
     active = [True]
     attempts = []
