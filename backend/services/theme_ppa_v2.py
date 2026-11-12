@@ -642,6 +642,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
 
     running = [asyncio.create_task(simulate_pending(*item)) for item in pending]
     block_reason = None
+    execution_error_type = None
     try:
         for completed in asyncio.as_completed(running):
             try:
@@ -649,13 +650,19 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
             except Exception as exc:
                 stop_dispatch.set()
                 block_reason = "PPA_EXECUTION_ERROR"
-                run.checkpoint = {**(run.checkpoint or {}), "ppa_execution_error": type(exc).__name__}
+                execution_error_type = type(exc).__name__
                 continue
             for index, case, settings, result, wrapped in outcomes:
                 if result is None:
                     continue
                 row = await persist_result(db, wrapped, task, run, case, settings, result, batch["phase"],
                                            quality_evaluator, fields_by_dataset[case["dataset_id"]])
+                # A concurrent manual pause updates the same checkpoint. Refresh
+                # under the task/run locks before merging the completed case.
+                await db.refresh(task, with_for_update=True)
+                await db.refresh(run, with_for_update=True)
+                if task.status != "RUNNING":
+                    stop_dispatch.set()
                 if result.get("http_status") != 429 and not is_uncertain_result(result):
                     finished.add(case["case_id"])
                 done_indices = {i for i, item in enumerate(cases) if item["case_id"] in finished}
@@ -670,9 +677,16 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
     finally:
         if running:
             await asyncio.gather(*running, return_exceptions=True)
+    await db.refresh(task, with_for_update=True)
+    await db.refresh(run, with_for_update=True)
+    if task.status == "PAUSED" and run.block_reason == "USER_PAUSED":
+        await db.commit()
+        return {"done": True, "reason": "USER_PAUSED"}
     if quota_exhausted.is_set():
         block_reason = block_reason or "PPA_RATE_LIMIT"
     if block_reason:
+        if execution_error_type:
+            run.checkpoint = {**(run.checkpoint or {}), "ppa_execution_error": execution_error_type}
         history = list((run.checkpoint or {}).get("ppa_throughput_history") or [])[-19:]
         history.append({"batch_hash": (batch.get("candidate_generation") or {}).get("plan_sha256"),
                         "concurrency": concurrency, "completed": len(finished), "cases": len(cases),
