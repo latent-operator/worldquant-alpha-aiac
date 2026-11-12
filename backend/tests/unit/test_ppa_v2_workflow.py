@@ -223,7 +223,10 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         await db.commit()
         fields = {"dataset1": [{"id": name, "type": "MATRIX"}
                               for name in base["datasets"]["dataset1"]]}
-        await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
+        outcome = await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
+        assert outcome["reason"] == ("AWAITING_RESEARCH_BATCH" if reviewed else "PPA_FIRST_BATCH_REVIEW"), {
+            "outcome": outcome, "execution_error": run.checkpoint.get("ppa_execution_error"),
+            "history": run.checkpoint.get("ppa_throughput_history"), "calls": brain.calls}
         assert brain.peak == expected_peak
         assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
         assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is False
