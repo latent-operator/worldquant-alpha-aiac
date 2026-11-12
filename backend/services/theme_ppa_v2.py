@@ -12,7 +12,8 @@ from backend.services.ppa_feedback import (behavioral_signature, build_feedback,
                                            research_row, select_local_seeds, verify_batch_generation)
 from backend.services.ppa_eligibility import evaluate_ppa_candidate
 from backend.services.ppa_research_policy import evidence_metrics, seed_decision
-from backend.services.research_audit import ResearchLedger, ResearchBudgetBrain, safe_result, signature
+from backend.services.research_audit import (ResearchLedger, ResearchBudgetBrain, safe_result, signature,
+                                             is_uncertain_result)
 
 CHARGED = {"RESERVED", "REQUESTED", "UNKNOWN", "FAILED", "RESULT"}
 ACCEPTED = CHARGED | {"CACHED"}
@@ -585,7 +586,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         nonlocal retry_wait
         if result.get("http_status") == 429 or result.get("error") in {
             "BUDGET_EXHAUSTED", "TASK_NOT_RUNNING",
-        } or (not result.get("alpha_id") and "uncertain" in str(result.get("error", "")).lower()):
+        } or is_uncertain_result(result):
             stop_dispatch.set()
             try:
                 retry_wait = max(retry_wait, float(result.get("retry_after") or 0))
@@ -655,7 +656,8 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                     continue
                 row = await persist_result(db, wrapped, task, run, case, settings, result, batch["phase"],
                                            quality_evaluator, fields_by_dataset[case["dataset_id"]])
-                if result.get("http_status") != 429: finished.add(case["case_id"])
+                if result.get("http_status") != 429 and not is_uncertain_result(result):
+                    finished.add(case["case_id"])
                 done_indices = {i for i, item in enumerate(cases) if item["case_id"] in finished}
                 cursor = next((i for i in range(len(cases)) if i not in done_indices), len(cases))
                 run.checkpoint = {**(run.checkpoint or {}), "ppa_batch_cursor": cursor,
@@ -663,7 +665,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                 await db.commit()
                 if result.get("http_status") == 429:
                     block_reason = "PPA_RATE_LIMIT"
-                elif not result.get("alpha_id") and "uncertain" in str(result.get("error", "")).lower():
+                elif is_uncertain_result(result):
                     block_reason = "PPA_REQUEST_RECONCILIATION_PENDING"
     finally:
         if running:

@@ -31,6 +31,12 @@ CONDITION_FIELDS = (
 WINDOWS = (5, 10, 20, 30, 60)
 
 
+def is_uncertain_result(result: dict) -> bool:
+    error = str(result.get("error") or "").lower()
+    return not result.get("alpha_id") and any(word in error for word in (
+        "timeout", "timed out", "connection", "uncertain", "fewer results", "missing response"))
+
+
 def paper_matrix() -> list[dict[str, Any]]:
     """Five shared sentiment controls plus 20 vendor-field proxy treatments."""
     result = []
@@ -377,12 +383,9 @@ class ResearchLedger:
             candidate = await db.get(ResearchCandidate, candidate_id)
             if candidate is None:
                 return
-            error = str(result.get("error") or "").lower()
             candidate.request_status = (
                 "RESULT" if result.get("alpha_id") else
-                "UNKNOWN" if any(word in error for word in (
-                    "timeout", "timed out", "connection", "uncertain", "fewer results", "missing response",
-                )) else
+                "UNKNOWN" if is_uncertain_result(result) else
                 "FAILED"
             )
             candidate.wq_alpha_id = result.get("alpha_id")
