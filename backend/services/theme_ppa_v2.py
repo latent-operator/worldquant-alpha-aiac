@@ -62,6 +62,13 @@ def validate_v2_manifest(task):
     if not mechanisms or any(not isinstance(m, dict) or m.get("dataset_id") not in base["datasets"]
                              or not m.get("hypothesis") or not m.get("direction") for m in mechanisms.values()):
         return "PPA_MECHANISM_REGISTRY_REQUIRED"
+    for mechanism in mechanisms.values():
+        required = mechanism.get("required_fields")
+        if required is not None and (not isinstance(required, list) or not required
+                or any(not isinstance(name, str) or not name for name in required)
+                or len(set(required)) != len(required)
+                or not set(required).issubset(base["datasets"][mechanism["dataset_id"]])):
+            return "PPA_MECHANISM_FIELDS_INVALID"
     identities = [(m["dataset_id"], m["hypothesis"].strip().lower(), m["direction"].lower()) for m in mechanisms.values()]
     if len(set(identities)) != len(identities):
         return "PPA_MECHANISM_ALIAS"

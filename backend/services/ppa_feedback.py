@@ -245,6 +245,12 @@ def freeze_batch(base, evidence, proposal):
                 or len(set(result.used_fields)) > base["max_fields"]
                 or _operator_call_count(case["expression"]) > base["max_operator_count"]):
             raise ValueError("PPA_EXPRESSION_INVALID")
+        required = mechanism.get("required_fields")
+        if required is not None and (not isinstance(required, list) or not required
+                or any(not isinstance(name, str) or not name for name in required)
+                or len(set(required)) != len(required)
+                or not set(required).issubset(result.used_fields)):
+            raise ValueError("PPA_MECHANISM_FIELD_MISMATCH")
         overrides = case.get("settings") or {}
         if phase != "confirmation" and overrides:
             raise ValueError("PPA_SETTINGS_NOT_FROZEN")

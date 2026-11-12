@@ -134,6 +134,18 @@ def test_frozen_batch_bound_to_feedback_and_budget():
         feedback.freeze_batch(base(), evidence, plan())
 
 
+def test_mechanism_requires_its_declared_field_even_within_same_dataset():
+    data = base()
+    data["datasets"]["pv1"] = ["returns", "adv20"]
+    data["mechanisms"]["reversal"]["required_fields"] = ["returns"]
+    evidence = feedback.build_feedback([candidate()], 51, {"discovery": 4})
+    assert feedback.freeze_batch(data, evidence, plan())["cases"]
+    wrong = plan()
+    wrong["cases"][0]["expression"] = "rank(ts_sum(adv20,2))"
+    with pytest.raises(ValueError, match="PPA_MECHANISM_FIELD_MISMATCH"):
+        feedback.freeze_batch(data, evidence, wrong)
+
+
 def test_cockpit_invalid_output_repairs_at_most_twice(tmp_path):
     script = tmp_path / "ask.ps1"
     script.write_text("# mock")
