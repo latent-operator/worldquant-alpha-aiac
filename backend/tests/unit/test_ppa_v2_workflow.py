@@ -103,6 +103,67 @@ async def test_worker_detects_manual_pause_from_another_session(async_engine, mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ledger_failure", [False, True])
+async def test_manual_pause_timestamp_survives_inflight_result(async_engine, monkeypatch, ledger_failure):
+    from backend.services.ppa_progress import begin_pause
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    started, release = asyncio.Event(), asyncio.Event()
+    class PreparedLedger:
+        def __init__(self, *args, **kwargs): pass
+        async def recover(self, *args):
+            if ledger_failure and "field_0_1" in args[0]:
+                await release.wait()
+                raise RuntimeError("ledger unavailable")
+            return None
+        async def reserve(self, *args, **kwargs): return 1, None
+        async def mark_requested(self, *args): pass
+        async def finish(self, *args): pass
+    class SlowBrain(Brain):
+        async def simulate_single(self, expression, **settings):
+            started.set()
+            await release.wait()
+            if ledger_failure:
+                await asyncio.sleep(0.03)
+            return await super().simulate_single(expression, **settings)
+    async def quality(**kwargs):
+        return "OPTIMIZE"
+    monkeypatch.setattr(workflow, "ResearchLedger", PreparedLedger)
+    async with maker() as worker:
+        task, run = await worker.get(MiningTask, tid), await worker.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3",
+                       "research_request_budget": None, "continuous_mode": True}
+        run.config_snapshot = {"task": {"config": task.config}}
+        await worker.commit()
+        evidence = await workflow.feedback_context(worker, task, run)
+        await workflow.import_batch(worker, task, run, freeze_batch(base, evidence, discovery()))
+        for case in discovery()["cases"]:
+            worker.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY", family_id="test",
+                experiment_group=case["case_id"], expression=case["expression"],
+                expression_hash=case["case_id"], settings_hash="s", settings={}, validation_status="VALID",
+                request_status="NOT_REQUESTED", gate_failures=[], metrics={}, result_snapshot={"research_case": case}))
+        task.status = run.status = "RUNNING"
+        await worker.commit()
+        fields = {"dataset1": [{"id": name, "type": "MATRIX"} for name in base["datasets"]["dataset1"]]}
+        execution = asyncio.create_task(workflow.run_theme_v2(worker, SlowBrain(), task, run, fields,
+                                                            quality_evaluator=quality))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        async with maker() as operator:
+            other_task, other_run = await operator.get(MiningTask, tid), await operator.get(ExperimentRun, rid)
+            other_task.status = other_run.status = "PAUSED"
+            other_run.block_reason = "USER_PAUSED"
+            other_run.checkpoint = begin_pause(other_run.checkpoint, "USER_PAUSED")
+            began = other_run.checkpoint["ppa_pause_started_at"]
+            await operator.commit()
+        release.set()
+        await asyncio.wait_for(execution, timeout=10)
+        async with maker() as verify:
+            saved = await verify.get(ExperimentRun, rid)
+            assert saved.block_reason == "USER_PAUSED"
+            assert saved.checkpoint.get("ppa_pause_started_at") == began
+            assert saved.checkpoint.get("ppa_pause_reason") == "USER_PAUSED"
+
+
+@pytest.mark.asyncio
 async def test_import_rejects_discovery_allocation_mismatch(async_engine, monkeypatch):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     async with maker() as db:
@@ -118,9 +179,10 @@ async def test_import_rejects_discovery_allocation_mismatch(async_engine, monkey
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-@pytest.mark.parametrize("groups,expected_peak,reviewed", [(1, 2, True), (2, 2, True), (4, 2, False)])
+@pytest.mark.parametrize("groups,expected_peak,reviewed,slow_refresh", [
+    (1, 2, True, False), (2, 2, True, False), (4, 2, False, False), (4, 2, False, True)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
-                                                                  groups, expected_peak, reviewed):
+                                                                  groups, expected_peak, reviewed, slow_refresh):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -162,7 +224,18 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         await db.commit()
         fields = {"dataset1": [{"id": name, "type": "MATRIX"}
                               for name in base["datasets"]["dataset1"]]}
-        await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
+        if slow_refresh:
+            refresh = db.refresh
+            async def delayed_refresh(obj, *args, **kwargs):
+                if obj is run or obj is task:
+                    db.expire(obj)
+                    await asyncio.sleep(0.08)
+                return await refresh(obj, *args, **kwargs)
+            monkeypatch.setattr(db, "refresh", delayed_refresh)
+        outcome = await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
+        assert outcome["reason"] == ("AWAITING_RESEARCH_BATCH" if reviewed else "PPA_FIRST_BATCH_REVIEW"), {
+            "outcome": outcome, "execution_error": run.checkpoint.get("ppa_execution_error"),
+            "history": run.checkpoint.get("ppa_throughput_history"), "calls": brain.calls}
         assert brain.peak == expected_peak
         assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
         assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is False
