@@ -1,5 +1,6 @@
 """Conservative per-process view of WQ's observed daily simulation allowance."""
 import time
+import math
 from datetime import datetime, timezone, timedelta
 
 
@@ -11,6 +12,11 @@ def next_parallelism(current, history):
             and recent[0]["batch_hash"] != recent[1]["batch_hash"] and all(
         item.get("concurrency") == 2 and item.get("cases", 0) >= 2
         and item.get("completed") == item.get("cases")
+        and item.get("timed_requests_included") == item.get("cases")
+        and item.get("timed_requests_excluded") == 0
+        and type(item.get("wall_seconds")) in (int, float) and math.isfinite(item["wall_seconds"])
+        and type(item.get("request_seconds")) in (int, float) and math.isfinite(item["request_seconds"])
+        and item["wall_seconds"] > 0 and item["request_seconds"] > item["wall_seconds"]
         and item.get("parent_peak", 0) >= 2 and not item.get("supply_limited")
         and not item.get("rate_limited") and not item.get("unknown")
         and not item.get("execution_error") for item in recent

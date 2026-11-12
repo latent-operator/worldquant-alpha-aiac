@@ -107,5 +107,6 @@ def test_batch_request_timing_excludes_recovered_and_missing_intervals():
         SimpleNamespace(request_status="RESULT", result_snapshot={}),
         SimpleNamespace(request_status="FAILED", result_snapshot={}),
     ]
-    assert batch_request_timing(rows) == {"wall_seconds": 10.0, "included": 1, "excluded": 3}
+    assert batch_request_timing(rows) == {"wall_seconds": 10.0, "request_seconds": 10.0,
+                                          "included": 1, "excluded": 3}
     assert batch_request_timing(rows[1:])["wall_seconds"] is None

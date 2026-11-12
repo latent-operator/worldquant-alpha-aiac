@@ -6,7 +6,9 @@ from datetime import datetime, timezone, timedelta
 
 def test_concurrency_increases_only_after_two_clean_full_batches():
     clean = {"concurrency": 2, "completed": 4, "cases": 4, "unknown": 0, "rate_limited": False,
-             "execution_error": False, "parent_peak": 2, "supply_limited": False}
+             "execution_error": False, "parent_peak": 2, "supply_limited": False,
+             "timed_requests_included": 4, "timed_requests_excluded": 0,
+             "wall_seconds": 30, "request_seconds": 40}
     assert ppa_quota.next_parallelism(2, []) == 2
     assert ppa_quota.next_parallelism(2, [clean]) == 2
     assert ppa_quota.next_parallelism(2, [{**clean, "batch_hash": "a"}, {**clean, "batch_hash": "b"}]) == 4
@@ -20,10 +22,23 @@ def test_concurrency_increases_only_after_two_clean_full_batches():
 def test_concurrency_requires_two_distinct_identified_batches():
     clean = {"concurrency": 2, "completed": 4, "cases": 4, "unknown": 0,
              "rate_limited": False, "execution_error": False, "parent_peak": 2,
-             "supply_limited": False, "batch_hash": "batch-a"}
+             "supply_limited": False, "batch_hash": "batch-a", "timed_requests_included": 4,
+             "timed_requests_excluded": 0, "wall_seconds": 30, "request_seconds": 40}
     assert ppa_quota.next_parallelism(2, [clean, clean]) == 2
     assert ppa_quota.next_parallelism(2, [{**clean, "batch_hash": None}, clean]) == 2
     assert ppa_quota.next_parallelism(2, [clean, {**clean, "batch_hash": "batch-b"}]) == 4
+
+
+def test_concurrency_requires_complete_timing_and_actual_request_overlap():
+    clean = {"concurrency": 2, "completed": 4, "cases": 4, "unknown": 0,
+             "rate_limited": False, "execution_error": False, "parent_peak": 2,
+             "supply_limited": False, "batch_hash": "a", "timed_requests_included": 4,
+             "timed_requests_excluded": 0, "wall_seconds": 30, "request_seconds": 40}
+    assert ppa_quota.next_parallelism(2, [clean, {**clean, "batch_hash": "b"}]) == 4
+    for patch in ({"timed_requests_excluded": 3, "timed_requests_included": 2},
+                  {"timed_requests_excluded": None}, {"request_seconds": None},
+                  {"request_seconds": 30}):
+        assert ppa_quota.next_parallelism(2, [clean, {**clean, "batch_hash": "b", **patch}]) == 2
 
 
 def test_quota_window_stops_after_observed_remaining_is_claimed():
