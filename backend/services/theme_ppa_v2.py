@@ -728,7 +728,10 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
             ResearchCandidate.experiment_group.in_([case["case_id"] for case in cases]),
         ))).scalars().all()
         completed_count = sum(row.request_status == "RESULT" for row in rows)
-        unknown_count = sum(row.request_status == "UNKNOWN" for row in rows)
+        # A resolved original request still means this batch encountered an
+        # uncertainty and must not count toward the two-clean-batch ramp.
+        unknown_count = sum(row.request_status == "UNKNOWN" or bool((row.result_snapshot or {}).get("recovery"))
+                            for row in rows)
         from backend.services.ppa_progress import batch_request_timing
         timing = batch_request_timing(rows)
         # Pauses and qualification checks are outside WQ's active request wall time.

@@ -179,10 +179,12 @@ async def test_import_rejects_discovery_allocation_mismatch(async_engine, monkey
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-@pytest.mark.parametrize("groups,expected_peak,reviewed,slow_refresh", [
-    (1, 2, True, False), (2, 2, True, False), (4, 2, False, False), (4, 2, False, True)])
+@pytest.mark.parametrize("groups,expected_peak,reviewed,slow_refresh,recovered_result", [
+    (1, 2, True, False, False), (2, 2, True, False, False), (4, 2, False, False, False),
+    (4, 2, False, True, False), (4, 2, False, False, True)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
-                                                                  groups, expected_peak, reviewed, slow_refresh):
+                                                                  groups, expected_peak, reviewed, slow_refresh,
+                                                                  recovered_result):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -213,13 +215,14 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         evidence = await workflow.feedback_context(db, task, run)
         batch = discovery(groups)
         await workflow.import_batch(db, task, run, freeze_batch(base, evidence, batch))
-        for case in batch["cases"]:
+        for index, case in enumerate(batch["cases"]):
             db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
                 family_id="theme_ppa_v3:nov", experiment_group=case["case_id"],
                 expression=case["expression"], expression_hash=case["case_id"],
                 settings_hash="settings", settings={}, validation_status="VALID",
                 request_status="NOT_REQUESTED", gate_failures=[], metrics={},
-                result_snapshot={"research_case": case}))
+                result_snapshot={"research_case": case, **({"recovery": {"source": "original_location"}}
+                                                          if recovered_result and index == 0 else {})}))
         task.status = run.status = "RUNNING"
         await db.commit()
         fields = {"dataset1": [{"id": name, "type": "MATRIX"}
@@ -239,6 +242,8 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         assert brain.peak == expected_peak
         assert run.checkpoint["ppa_throughput_history"][-1]["parent_peak"] == expected_peak
         assert run.checkpoint["ppa_throughput_history"][-1]["supply_limited"] is False
+        if recovered_result:
+            assert run.checkpoint["ppa_throughput_history"][-1]["unknown"]
         rows = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == rid))).scalars().all()
         assert len(rows) == 4 * groups
