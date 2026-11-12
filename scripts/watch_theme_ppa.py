@@ -54,7 +54,11 @@ def request_json(url, payload=None):
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = Request(url, data=data, method="POST" if data is not None else "GET",
                   headers={"Content-Type": "application/json"} if data is not None else {})
-    with urlopen(req, timeout=30) as response:
+    timeout = 30
+    if url.endswith("/ppa-reconcile"):
+        from backend.services.theme_ppa_v2 import PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS
+        timeout = PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS + 60
+    with urlopen(req, timeout=timeout) as response:
         return json.load(response)
 
 

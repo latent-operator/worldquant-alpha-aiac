@@ -4,6 +4,8 @@ Runs Router - Experiment run management
 Uses RunService for all business logic.
 """
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
@@ -20,6 +22,10 @@ router = APIRouter(
     tags=["runs"],
     responses={404: {"description": "Not found"}},
 )
+
+# The managed local API runs a single process. Retried clients must not poll
+# the same original simulation concurrently while a prior call is still active.
+_ppa_reconcile_locks: dict[int, asyncio.Lock] = {}
 
 
 @router.get("/{run_id}/research-candidates")
@@ -103,17 +109,21 @@ async def post_ppa_reconcile(run_id: int, db: AsyncSession = Depends(get_db)):
     from backend.models import ExperimentRun, MiningTask
     from backend.services.theme_ppa_v2 import reconcile_paused
     from backend.tasks.mining_tasks import _get_dataset_fields
-    run = await db.get(ExperimentRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    task = await db.get(MiningTask, run.task_id)
-    try:
-        fields = {dataset: await _get_dataset_fields(db, dataset, task.region, task.universe)
-                  for dataset in (task.config or {}).get("ppa_manifest", {}).get("datasets", {})}
-        async with MCPBrainAdapter() as brain:
-            return await reconcile_paused(db, task, run, brain, fields)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
+    lock = _ppa_reconcile_locks.setdefault(run_id, asyncio.Lock())
+    if lock.locked():
+        return {"resolved": 0, "pending": 1, "in_progress": True}
+    async with lock:
+        run = await db.get(ExperimentRun, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        task = await db.get(MiningTask, run.task_id)
+        try:
+            fields = {dataset: await _get_dataset_fields(db, dataset, task.region, task.universe)
+                      for dataset in (task.config or {}).get("ppa_manifest", {}).get("datasets", {})}
+            async with MCPBrainAdapter() as brain:
+                return await reconcile_paused(db, task, run, brain, fields)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.post("/{run_id}/ppa-qualification-reconcile")
