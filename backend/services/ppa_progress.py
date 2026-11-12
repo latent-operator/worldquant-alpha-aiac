@@ -100,10 +100,29 @@ def progress_report(rows, current_run_id, checkpoint=None):
     best = max(positive, key=lambda row: row["metrics"]["amer_sharpe"], default=None)
     missing = Counter(reason for row in measured for reason in row["platform_ppa_evaluation"].get("reasons", []))
     durations, intervals, recovered, recovery_durations, qualification_durations = [], [], 0, [], []
+    reconciliation_attempts = 0
+    reconciliation_incomplete = 0
+    reconciliation_observed = False
     for row in new:
         snapshot = row.get("result_snapshot") or {}
         request = snapshot.get("request") or {}
         recovery = snapshot.get("recovery") or {}
+        attempts = [attempt for attempt in (snapshot.get("reconcile_attempts") or [])
+                    if isinstance(attempt, dict)]
+        reconciliation_attempts += len(attempts)
+        last_attempt = snapshot.get("reconcile_last_attempt_at")
+        reconciliation_observed |= bool(attempts or last_attempt)
+        if last_attempt and not any(attempt.get("started_at") == last_attempt for attempt in attempts):
+            reconciliation_incomplete += 1
+        # The successful recovery duration includes its final poll and evaluation.
+        # Count preceding attempts separately, but not that final poll twice.
+        prior_attempts = attempts
+        if (isinstance(recovery.get("duration_seconds"), (int, float)) and attempts
+                and attempts[-1].get("outcome") == "RESULT"):
+            prior_attempts = attempts[:-1]
+        recovery_durations.extend(attempt["duration_seconds"] for attempt in prior_attempts
+                                  if isinstance(attempt.get("duration_seconds"), (int, float))
+                                  and attempt["duration_seconds"] >= 0)
         if recovery:
             recovered += 1
             if isinstance(recovery.get("duration_seconds"), (int, float)):
@@ -189,5 +208,8 @@ def progress_report(rows, current_run_id, checkpoint=None):
                        "retry_wait_seconds": checkpoint.get("ppa_retry_wait_seconds"),
                        "retry_overdue_seconds": checkpoint.get("ppa_retry_overdue_seconds"),
                        "pause_seconds_by_reason": pause_by_reason,
-                       "recovery_seconds": sum(recovery_durations) if recovery_durations else None},
+                       "recovery_seconds": sum(recovery_durations) if recovery_durations else None,
+                       "reconciliation_attempts": reconciliation_attempts or None,
+                       "reconciliation_incomplete_attempts": (reconciliation_incomplete
+                                                               if reconciliation_observed else None)},
             "speed_claim": "NO_TIME_TO_PASS_ESTIMATE"}

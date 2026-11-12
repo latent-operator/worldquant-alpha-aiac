@@ -31,6 +31,30 @@ def test_empty_report_does_not_claim_zero_correlation_or_pass():
     assert report["best_amer_positive_test"] is None
     assert report["ppa_ready"] == 0
     assert report["parallelism"] == 2
+    assert report["timing"]["reconciliation_attempts"] is None
+
+
+def test_recovery_time_includes_unresolved_attempts_without_double_counting_success():
+    rows = [dict(id=1, run_id=2, request_status="UNKNOWN", source="DISCOVERY", metrics={},
+                 result_snapshot={"reconcile_attempts": [{"duration_seconds": 900, "outcome": "TIMEOUT"}]}),
+            dict(id=2, run_id=2, request_status="RESULT", source="DISCOVERY", metrics={},
+                 result_snapshot={"reconcile_attempts": [{"duration_seconds": 100, "outcome": "PENDING"},
+                                                         {"duration_seconds": 5, "outcome": "RESULT"}],
+                                  "recovery": {"duration_seconds": 7}}),
+            dict(id=3, run_id=2, request_status="RESULT", source="DISCOVERY", metrics={},
+                 result_snapshot={"recovery": {"duration_seconds": 20}})]
+    timing = progress.progress_report(rows, current_run_id=2)["timing"]
+    assert timing["recovery_seconds"] == 1027
+    assert timing["reconciliation_attempts"] == 3
+
+
+def test_reconciliation_report_marks_started_without_completed_attempt():
+    rows = [dict(id=1, run_id=2, request_status="UNKNOWN", source="DISCOVERY", metrics={},
+                 result_snapshot={"reconcile_last_attempt_at": "2026-11-12T14:00:00+00:00"})]
+    timing = progress.progress_report(rows, current_run_id=2)["timing"]
+    assert timing["recovery_seconds"] is None
+    assert timing["reconciliation_attempts"] is None
+    assert timing["reconciliation_incomplete_attempts"] == 1
 
 
 def test_timing_separates_direct_wq_recovery_generation_and_pause():
@@ -56,7 +80,8 @@ def test_timing_separates_direct_wq_recovery_generation_and_pause():
                                 "qualification_seconds": 5, "pause_seconds": 90,
                                 "pause_seconds_by_reason": {}, "retry_wait_seconds": None,
                                 "retry_overdue_seconds": None,
-                                "recovery_seconds": 20}
+                                "recovery_seconds": 20, "reconciliation_attempts": None,
+                                "reconciliation_incomplete_attempts": None}
 
 
 def test_pause_reason_is_recorded_once_on_resume():
