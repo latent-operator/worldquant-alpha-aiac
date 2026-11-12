@@ -95,6 +95,20 @@ def test_historical_mechanisms_can_be_registered_without_new_batch_access():
     assert validate_theme_task(t) == "PPA_HISTORICAL_MECHANISM_INVALID"
 
 
+def test_mechanism_required_fields_must_be_declared_in_its_dataset():
+    data = manifest()
+    data["mechanisms"] = {"new": {"dataset_id": "dataset1", "hypothesis": "signal",
+                                  "direction": "positive", "required_fields": ["field_0_0"]}}
+    t = SimpleNamespace(region=data["region"], universe=data["universe"], dataset_strategy="SPECIFIC",
+                        target_datasets=list(data["datasets"]), config={"research_protocol": "theme_ppa_v3",
+                        "continuous_mode": True, "research_request_budget": None,
+                        "budget_root_run_id": 16, "ppa_manifest": data})
+    assert validate_theme_task(t) is None
+    for bad in (["missing_field"], [], "field_0_0", ["field_0_0", "field_0_0"]):
+        data["mechanisms"]["new"]["required_fields"] = bad
+        assert validate_theme_task(t) == "PPA_MECHANISM_FIELDS_INVALID"
+
+
 def test_continuous_feedback_can_restart_discovery_after_exhausted_epoch():
     exhausted = build_feedback([], None, {"discovery": 16, "refinement": 16, "confirmation": 16},
                                continuous=True)
