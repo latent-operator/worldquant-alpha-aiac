@@ -581,6 +581,10 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
     retry_wait = 0.0
     active_parents = 0
     parent_peak = 0
+    # Concurrent requests must not read ORM attributes while the owner session
+    # refreshes them to merge a manual pause.
+    batch_epoch = int((run.checkpoint or {}).get("ppa_epoch", 0))
+    batch_region, batch_universe = task.region, task.universe
 
     def review_result(result):
         nonlocal retry_wait
@@ -600,9 +604,9 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                 stop_dispatch.set()
 
     def prepare_case(original):
-        case = {**original, "epoch": int((run.checkpoint or {}).get("ppa_epoch", 0))}
-        settings = {**base["settings"], **case.get("settings", {}), "region": task.region,
-                    "universe": task.universe, "delay": base["delay"]}
+        case = {**original, "epoch": batch_epoch}
+        settings = {**base["settings"], **case.get("settings", {}), "region": batch_region,
+                    "universe": batch_universe, "delay": base["delay"]}
         return case, settings
 
     async def simulate_one(index, original):

@@ -179,9 +179,10 @@ async def test_import_rejects_discovery_allocation_mismatch(async_engine, monkey
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-@pytest.mark.parametrize("groups,expected_peak,reviewed", [(1, 2, True), (2, 2, True), (4, 2, False)])
+@pytest.mark.parametrize("groups,expected_peak,reviewed,slow_refresh", [
+    (1, 2, True, False), (2, 2, True, False), (4, 2, False, False), (4, 2, False, True)])
 async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, monkeypatch,
-                                                                  groups, expected_peak, reviewed):
+                                                                  groups, expected_peak, reviewed, slow_refresh):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class ConcurrentBrain(Brain):
         active = 0
@@ -223,6 +224,14 @@ async def test_continuous_batch_overlaps_independent_wq_requests(async_engine, m
         await db.commit()
         fields = {"dataset1": [{"id": name, "type": "MATRIX"}
                               for name in base["datasets"]["dataset1"]]}
+        if slow_refresh:
+            refresh = db.refresh
+            async def delayed_refresh(obj, *args, **kwargs):
+                if obj is run or obj is task:
+                    db.expire(obj)
+                    await asyncio.sleep(0.08)
+                return await refresh(obj, *args, **kwargs)
+            monkeypatch.setattr(db, "refresh", delayed_refresh)
         outcome = await workflow.run_theme_v2(db, brain, task, run, fields, quality_evaluator=quality)
         assert outcome["reason"] == ("AWAITING_RESEARCH_BATCH" if reviewed else "PPA_FIRST_BATCH_REVIEW"), {
             "outcome": outcome, "execution_error": run.checkpoint.get("ppa_execution_error"),
