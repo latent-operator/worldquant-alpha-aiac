@@ -743,6 +743,8 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
             history.append({"batch_hash": batch_hash, "batch_complete": True,
                             "concurrency": concurrency, "completed": completed_count, "cases": len(cases),
                             "wall_seconds": round(wall_seconds, 3) if wall_seconds is not None else None,
+                            "request_seconds": round(timing["request_seconds"], 3)
+                            if timing["request_seconds"] is not None else None,
                             "timed_requests_included": timing["included"],
                             "timed_requests_excluded": timing["excluded"],
                             "unknown": unknown_count or any(item.get("unknown") for item in prior),

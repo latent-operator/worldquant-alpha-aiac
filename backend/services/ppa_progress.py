@@ -20,6 +20,7 @@ def batch_request_timing(rows):
         except (KeyError, TypeError, ValueError):
             continue
     return {"wall_seconds": interval_union_seconds(intervals) if intervals else None,
+            "request_seconds": sum((finish - start).total_seconds() for start, finish in intervals) if intervals else None,
             "included": len(intervals), "excluded": len(rows) - len(intervals)}
 
 
