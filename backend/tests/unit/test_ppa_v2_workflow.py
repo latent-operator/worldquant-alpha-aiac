@@ -294,7 +294,9 @@ async def test_parallel_429_stops_unsent_cases(async_engine, monkeypatch, remain
 
 
 @pytest.mark.asyncio
-async def test_uncertain_batch_reduces_saved_concurrency(async_engine, monkeypatch):
+@pytest.mark.parametrize("error", ["uncertain request", "Simulation timed out after 1200s",
+                                   "connection reset", "missing response"])
+async def test_uncertain_batch_reduces_saved_concurrency(async_engine, monkeypatch, error):
     maker, tid, rid, base = await setup(async_engine, monkeypatch)
     class PreparedLedger:
         def __init__(self, *args, **kwargs): pass
@@ -304,8 +306,11 @@ async def test_uncertain_batch_reduces_saved_concurrency(async_engine, monkeypat
         async def finish(self, *args): pass
     monkeypatch.setattr(workflow, "ResearchLedger", PreparedLedger)
     class UncertainBrain(Brain):
+        calls = 0
         async def simulate_single(self, expression, **settings):
-            return {"success": False, "error": "uncertain request"}
+            self.calls += 1
+            return {"success": False, "error": error}
+    brain = UncertainBrain()
     async with maker() as db:
         task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
         task.config = {**task.config, "research_protocol": "theme_ppa_v3",
@@ -318,9 +323,12 @@ async def test_uncertain_batch_reduces_saved_concurrency(async_engine, monkeypat
         await db.commit()
         fields = {"dataset1": [{"id": name, "type": "MATRIX"}
                               for name in base["datasets"]["dataset1"]]}
-        result = await workflow.run_theme_v2(db, UncertainBrain(), task, run, fields,
+        result = await workflow.run_theme_v2(db, brain, task, run, fields,
                                              quality_evaluator=lambda **kwargs: "OPTIMIZE")
         assert result["reason"] == "PPA_REQUEST_RECONCILIATION_PENDING"
+        assert brain.calls <= 2
+        assert run.checkpoint["ppa_batch_cursor"] == 0
+        assert run.checkpoint["ppa_batch_completed"] == []
         assert run.checkpoint["ppa_max_in_flight"] == 2
         assert run.checkpoint["ppa_throughput_history"][-1]["unknown"] > 0
 
