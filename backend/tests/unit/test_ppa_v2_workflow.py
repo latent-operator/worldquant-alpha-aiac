@@ -934,6 +934,10 @@ async def test_reconcile_rotates_unresolved_original_locations(async_engine, mon
             assert await workflow.reconcile_paused(db, task, run, brain, {}) == {
                 "resolved": 0, "pending": 2}
         assert brain.locations == ["/simulations/original-0", "/simulations/original-1"]
+        rows = (await db.execute(select(ResearchCandidate).where(
+            ResearchCandidate.run_id == rid).order_by(ResearchCandidate.id))).scalars().all()
+        assert [row.result_snapshot["reconcile_attempts"][0]["outcome"] for row in rows] == ["TIMEOUT", "PENDING"]
+        assert all(row.result_snapshot["reconcile_attempts"][0]["duration_seconds"] >= 0 for row in rows)
 
 
 @pytest.mark.asyncio

@@ -341,6 +341,16 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
     row.result_snapshot = {**(row.result_snapshot or {}),
                            "reconcile_last_attempt_at": datetime.now(timezone.utc).isoformat()}
     await db.commit()
+
+    async def record_attempt(outcome):
+        snapshot = row.result_snapshot or {}
+        attempts = list(snapshot.get("reconcile_attempts") or [])
+        attempts.append({"started_at": snapshot["reconcile_last_attempt_at"],
+                         "duration_seconds": round(time.perf_counter() - recovery_started, 3),
+                         "outcome": outcome})
+        row.result_snapshot = {**snapshot, "reconcile_attempts": attempts}
+        await db.commit()
+
     if row.request_status == "RESULT":
         result = row.result_snapshot or {}
     else:
@@ -355,6 +365,7 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
                     timeout=PPA_RECONCILE_TIMEOUT_SECONDS,
                 )
         except asyncio.TimeoutError:
+            await record_attempt("TIMEOUT")
             return {"resolved": 0, "pending": len(candidates)}
     definitive_failure = str(result.get("status") or "").upper() in {"ERROR", "FAILED"}
     if definitive_failure and not result.get("error"):
@@ -363,6 +374,8 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
                                         result.get("http_status") == 429 or
                                         isinstance(result.get("http_status"), int) and result["http_status"] >= 500):
         result = {**result, "error": "uncertain original simulation poll"}
+    await record_attempt("RESULT" if result.get("alpha_id") else
+                         "PENDING" if is_uncertain_result(result) else "FAILED")
     if result.get("alpha_id"):
         dataset = case.get("dataset_id")
         if not case.get("case_id") or not fields_by_dataset.get(dataset):
