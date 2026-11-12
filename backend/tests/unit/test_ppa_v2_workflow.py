@@ -906,6 +906,37 @@ async def test_reconcile_timeout_allows_full_original_poll_window(async_engine, 
 
 
 @pytest.mark.asyncio
+async def test_reconcile_rotates_unresolved_original_locations(async_engine, monkeypatch):
+    maker, tid, rid, _ = await setup(async_engine, monkeypatch)
+    class PendingBrain(Brain):
+        def __init__(self):
+            self.locations = []
+
+        async def poll_existing_simulation(self, location):
+            self.locations.append(location)
+            if len(self.locations) == 1:
+                raise asyncio.TimeoutError
+            return {"status": "PENDING"}
+
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        task.config = {**task.config, "research_protocol": "theme_ppa_v3", "continuous_mode": True}
+        for n in range(2):
+            db.add(ResearchCandidate(task_id=tid, run_id=rid, source="DISCOVERY",
+                family_id="theme_ppa_v3:nov", experiment_group=f"pending-{n}",
+                expression=f"rank(field_0_{n})", expression_hash=f"expr-{n}",
+                settings_hash="settings", settings={}, validation_status="VALID",
+                request_status="UNKNOWN", gate_failures=[], metrics={}, result_snapshot={
+                    "request": {"location": f"/simulations/original-{n}"}}))
+        await db.commit()
+        brain = PendingBrain()
+        for _ in range(2):
+            assert await workflow.reconcile_paused(db, task, run, brain, {}) == {
+                "resolved": 0, "pending": 2}
+        assert brain.locations == ["/simulations/original-0", "/simulations/original-1"]
+
+
+@pytest.mark.asyncio
 async def test_multisim_reconcile_allows_parent_poll_and_grace_window(async_engine, monkeypatch):
     maker, tid, rid, _ = await setup(async_engine, monkeypatch)
     observed = []

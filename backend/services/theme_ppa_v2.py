@@ -326,12 +326,21 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
     candidates = [row for row in rows if needs_reconciliation(row)]
     if not candidates:
         return {"resolved": 0, "pending": 0}
-    row = candidates[0]
+    # A long-running original request must not permanently starve later ones.
+    # Missing timestamps sort first so historical checkpoints need no migration.
+    def last_attempt(candidate):
+        value = (candidate.result_snapshot or {}).get("reconcile_last_attempt_at")
+        return value if isinstance(value, str) else ""
+
+    row = min(candidates, key=last_attempt)
     recovery_started = time.perf_counter()
     case = (row.result_snapshot or {}).get("research_case") or {}
     location = (row.result_snapshot or {}).get("request", {}).get("location")
     if row.request_status != "RESULT" and not location:
         raise ValueError("PPA_RECOVERY_LOCATION_MISSING")
+    row.result_snapshot = {**(row.result_snapshot or {}),
+                           "reconcile_last_attempt_at": datetime.now(timezone.utc).isoformat()}
+    await db.commit()
     if row.request_status == "RESULT":
         result = row.result_snapshot or {}
     else:
