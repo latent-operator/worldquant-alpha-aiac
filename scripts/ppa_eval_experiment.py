@@ -90,7 +90,7 @@ def validate_platform_evidence(evidence: dict, theme_id: str, now: datetime) -> 
 def validate_lab_environment(env: dict[str, str], *, require_brain: bool = True) -> bool:
     valid = (env.get("AIAC_EVAL_LAB") == "1"
              and env.get("POSTGRES_SERVER") in {"127.0.0.1", "localhost"}
-             and env.get("POSTGRES_PORT") == "55434"
+             and env.get("POSTGRES_PORT") in {"55434", "55834"}
              and env.get("POSTGRES_DB") == "aiac_eval_ppa"
              and env.get("POSTGRES_USER") == "aiac_eval"
              and bool(env.get("POSTGRES_PASSWORD"))
@@ -186,7 +186,7 @@ def _check_state(manifest: dict, args, evidence: dict | None = None) -> dict:
             state["platform_verified"] = False
     else:
         state["platform_verified"] = False
-    state.update(lab_database="aiac_eval_ppa", lab_port=55434,
+    state.update(lab_database="aiac_eval_ppa", lab_port=int(os.getenv("POSTGRES_PORT", "55434")),
                  theme_ends_at=manifest["base"]["ends_at"],
                  now=datetime.now(timezone.utc), existing_requests=0,
                  lab_unresolved=0, budget=manifest["budget"])
@@ -194,9 +194,11 @@ def _check_state(manifest: dict, args, evidence: dict | None = None) -> dict:
 
 
 def _run(args, manifest: dict) -> dict:
-    if _require_clean_commit() != manifest["prepare_commit"]:
-        raise ValueError("PREPARE_COMMIT_CHANGED")
+    runtime_commit = _require_clean_commit()
     validate_lab_environment(dict(os.environ))
+    if runtime_commit != manifest["prepare_commit"]:
+        if not args.resume_existing or not asyncio.run(_existing_lab_run_has_requests(manifest)):
+            raise ValueError("PREPARE_COMMIT_CHANGED")
     if manifest["budget"] != 80 or manifest["top_k"] != 20:
         raise ValueError("LIVE_EXPERIMENT_REQUIRES_FROZEN_80")
     evidence = json.loads(private_output_path(Path(args.platform_evidence)).read_text(encoding="utf-8"))
@@ -218,10 +220,26 @@ def _run(args, manifest: dict) -> dict:
         fallback = BrainAdapter(email=os.environ["BRAIN_EMAIL"], password=os.environ["BRAIN_PASSWORD"])
         async with MCPBrainAdapter(fallback=fallback) as brain:
             return await run_lab(manifest, maker=AsyncSessionLocal, brain=brain,
-                                 live_state=live_state, max_steps=args.max_steps)
+                                 live_state=live_state, max_steps=args.max_steps,
+                                 lab_port=int(os.environ["POSTGRES_PORT"]))
 
     with _exclusive_lock(Path(args.manifest).resolve().parent):
         return asyncio.run(execute())
+
+
+async def _existing_lab_run_has_requests(manifest: dict) -> bool:
+    from sqlalchemy import func, select
+    from backend.database import AsyncSessionLocal
+    from backend.models import ExperimentRun, ResearchCandidate
+    async with AsyncSessionLocal() as db:
+        runs = (await db.execute(select(ExperimentRun))).scalars().all()
+        matching = [run for run in runs if (run.checkpoint or {}).get("manifest_sha256") == manifest["manifest_sha256"]]
+        if len(matching) != 1:
+            return False
+        count = (await db.execute(select(func.count(ResearchCandidate.id)).where(
+            ResearchCandidate.run_id == matching[0].id,
+            ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN", "FAILED", "RESULT"))))).scalar_one()
+        return count > 0
 
 
 async def _lab_rows(manifest: dict) -> tuple[int, list[dict]]:
@@ -296,6 +314,8 @@ def main() -> int:
     run.add_argument("--platform-evidence", required=True)
     run.add_argument("--base-url", default=DEFAULT_API)
     run.add_argument("--max-steps", type=int, default=16)
+    run.add_argument("--resume-existing", action="store_true",
+                     help="Resume a populated frozen lab run after a CI-verified runtime-only change")
     report = sub.add_parser("report")
     report.add_argument("--manifest", required=True)
     report.add_argument("--output")

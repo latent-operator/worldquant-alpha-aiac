@@ -40,6 +40,7 @@ def test_lab_environment_rejects_production_targets():
             "POSTGRES_USER": "aiac_eval", "POSTGRES_PASSWORD": "lab-secret",
             "BRAIN_EMAIL": "operator", "BRAIN_PASSWORD": "private"}
     assert validate_lab_environment(good)
+    assert validate_lab_environment({**good, "POSTGRES_PORT": "55834"})
     for change in ({"POSTGRES_PORT": "55433"}, {"POSTGRES_DB": "alpha_gpt_local"},
                    {"AIAC_EVAL_LAB": "0"}, {"POSTGRES_SERVER": "example.com"},
                    {"BRAIN_PASSWORD": ""}):

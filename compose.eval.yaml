@@ -9,7 +9,7 @@ services:
       POSTGRES_DB: aiac_eval_ppa
       POSTGRES_PASSWORD: ${AIAC_EVAL_DB_PASSWORD:?Set a private lab database password}
     ports:
-      - "127.0.0.1:55434:5432"
+      - "127.0.0.1:${AIAC_EVAL_DB_HOST_PORT:-55434}:5432"
     volumes:
       - aiac_eval_postgres:/var/lib/postgresql/data
     healthcheck:

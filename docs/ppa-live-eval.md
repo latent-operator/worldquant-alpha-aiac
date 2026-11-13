@@ -41,6 +41,8 @@ python -m alembic -c backend/alembic.ini upgrade head
 
 The lab has its own named Postgres volume and loopback port. It has no API, worker, scheduler, or Redis. Do not point it at the production database. Set `BRAIN_EMAIL` and `BRAIN_PASSWORD` explicitly in the private operator shell only for `run`. The CLI refuses missing lab markers or the production DB name/port. Do not copy a production `.env` file into this worktree.
 
+On Windows, if port 55434 becomes OS-reserved, set `AIAC_EVAL_DB_HOST_PORT=55834` before Compose and `POSTGRES_PORT=55834` for the CLI. The alternate port still targets the same named lab volume. A populated run frozen under an older commit can be resumed with `--resume-existing` only after the replacement commit passes CI; the CLI checks that the original manifest hash already has persisted requests in the lab database.
+
 ## Commands
 
 ```powershell
