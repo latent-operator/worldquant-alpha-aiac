@@ -26,6 +26,7 @@ def command_plan() -> list[Check]:
         Check("staged git diff", ("git", "diff", "--cached", "--check"), ROOT),
         Check("repository hygiene", (sys.executable, "scripts/check_repo_hygiene.py"), ROOT),
         Check("backend unit tests", (sys.executable, "-m", "pytest", "backend/tests/unit", "-q", "--disable-warnings"), ROOT),
+        Check("offline evals", (sys.executable, "-m", "pytest", "backend/tests/evals", "-q", "--disable-warnings"), ROOT),
         Check("AIAC MCP tests", (sys.executable, "-m", "unittest", "discover", "-s", "integrations/aiac_mcp/tests", "-p", "test_*.py"), ROOT),
         Check("frontend tests", (npm, "test"), ROOT / "frontend"),
         Check("frontend lint", (npm, "run", "lint"), ROOT / "frontend"),
@@ -35,8 +36,12 @@ def command_plan() -> list[Check]:
 
 def offline_environment(source: dict[str, str]) -> dict[str, str]:
     env = dict(source)
-    for name in ("BRAIN_EMAIL", "BRAIN_PASSWORD", "OPENAI_API_KEY", "CREDENTIALS_SECRET"):
+    for name in ("BRAIN_EMAIL", "BRAIN_PASSWORD", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                 "AZURE_OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+                 "CONFIDENT_API_KEY", "DEEPEVAL_API_KEY", "CREDENTIALS_SECRET"):
         env[name] = ""
+    env["DEEPEVAL_DISABLE_DOTENV"] = "1"
+    env["DEEPEVAL_TELEMETRY_OPT_OUT"] = "1"
     env["POSTGRES_PORT"] = "1"
     env["REDIS_URL"] = "redis://127.0.0.1:1/0"
     env["AIAC_OFFLINE_CHECK"] = "1"

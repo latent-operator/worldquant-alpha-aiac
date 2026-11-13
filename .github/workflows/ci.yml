@@ -63,6 +63,8 @@ jobs:
       BRAIN_PASSWORD: ""
       OPENAI_API_KEY: ""
       CREDENTIALS_SECRET: ""
+      DEEPEVAL_DISABLE_DOTENV: "1"
+      DEEPEVAL_TELEMETRY_OPT_OUT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -74,7 +76,7 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt -r requirements-eval.txt
       - run: npm ci
         working-directory: frontend
       - name: Offline preflight
@@ -92,6 +94,8 @@ jobs:
       BRAIN_PASSWORD: ""
       OPENAI_API_KEY: ""
       CREDENTIALS_SECRET: ""
+      DEEPEVAL_DISABLE_DOTENV: "1"
+      DEEPEVAL_TELEMETRY_OPT_OUT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -103,7 +107,7 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt -r requirements-eval.txt
       - run: npm ci
         working-directory: frontend
       - name: Offline preflight
