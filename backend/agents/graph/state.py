@@ -3,10 +3,9 @@ LangGraph State Definitions
 Strongly typed state using Pydantic for the mining workflow
 """
 
-from typing import List, Dict, Optional, Any, Annotated
+from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
-from operator import add
 
 
 # =============================================================================

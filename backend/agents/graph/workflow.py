@@ -4,7 +4,7 @@ Orchestrates the complete alpha mining state graph
 """
 
 import json
-from typing import Dict, List, Optional, Any, Annotated
+from typing import Dict, List, Optional, Any
 from functools import partial
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
