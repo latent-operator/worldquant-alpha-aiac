@@ -1,0 +1,4 @@
+# Development and CI only. Install together with requirements.txt.
+deepeval==4.3.4
+# DeepEval's click<8.4 and newer huggingface-hub's click>=8.4 conflict.
+huggingface-hub==0.36.2

@@ -1,0 +1,2028 @@
+{
+  "schema_version": 1,
+  "source": "AIAC read-only research report and paginated candidate list",
+  "runs": [
+    {
+      "case_id": "task14-run18",
+      "source_observed_at": "2026-11-13T10:08:16.532156+00:00",
+      "source_commit": null,
+      "agentsview_session_id": null,
+      "task_id": 14,
+      "run_id": 18,
+      "run_status": "PAUSED",
+      "batch_cursor": null,
+      "generated": 225,
+      "saved_results": 212,
+      "quality_pass": 0,
+      "quality_counts": {
+        "OPTIMIZE": 212
+      },
+      "request_counts": {
+        "RESULT": 212,
+        "CACHED": 9,
+        "FAILED": 2,
+        "NOT_REQUESTED": 2
+      },
+      "best_sharpe": 1.67,
+      "timing": {
+        "completed_requests": 212,
+        "timed_requests": 205,
+        "recovered_requests": 7,
+        "wq_wall_method": "INTERVAL_UNION",
+        "scope": "CAMPAIGN_PROGRESS_WALL__RUN_RESULT_COUNT",
+        "wq_wall_seconds": 41348.532707,
+        "actual_parent_peak": 2,
+        "pause_seconds_by_reason": {
+          "UNATTRIBUTED": 14841.871543,
+          "PPA_RATE_LIMIT": 2325.218647,
+          "AWAITING_RESEARCH_BATCH": 90838.10167000002,
+          "PPA_QUALIFICATION_EVIDENCE_PENDING": 10698.477438,
+          "PPA_REQUEST_RECONCILIATION_PENDING": 700.758659
+        }
+      },
+      "candidates": [
+        {
+          "candidate_id": 766,
+          "case_id": "P05_R2",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 767,
+          "case_id": "P05_R3",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 768,
+          "case_id": "P05_R4",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 769,
+          "case_id": "P05_R5",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 770,
+          "case_id": "P07_CONTROL",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 771,
+          "case_id": "P07_TREATMENT_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 772,
+          "case_id": "P07_TREATMENT_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 773,
+          "case_id": "P07_TREATMENT_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 774,
+          "case_id": "P08_CONTROL",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 775,
+          "case_id": "P08_TREATMENT_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 776,
+          "case_id": "P08_TREATMENT_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 777,
+          "case_id": "P08_TREATMENT_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 778,
+          "case_id": "P09_CONTROL",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 779,
+          "case_id": "P09_TREATMENT_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 780,
+          "case_id": "P09_TREATMENT_2",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 781,
+          "case_id": "P09_TREATMENT_3",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 782,
+          "case_id": "P10_CONTROL",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 783,
+          "case_id": "P10_TREATMENT_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 784,
+          "case_id": "P10_TREATMENT_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 785,
+          "case_id": "P10_TREATMENT_3",
+          "request_status": "CACHED",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 786,
+          "case_id": "R1_MEAN_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 787,
+          "case_id": "R1_MEAN_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 788,
+          "case_id": "R1_MEAN_4",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 789,
+          "case_id": "R1_MEAN_7",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 790,
+          "case_id": "P05_DELTA_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 791,
+          "case_id": "P05_DELTA_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 792,
+          "case_id": "P05_DELTA_5",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 793,
+          "case_id": "P05_DELTA_10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 794,
+          "case_id": "P05_RANK_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 795,
+          "case_id": "P05_RANK_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 796,
+          "case_id": "P05_RANK_5",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 797,
+          "case_id": "P05_RANK_10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 798,
+          "case_id": "P05_RANK_20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 799,
+          "case_id": "P05_RANK_40",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 800,
+          "case_id": "P05_RANK_60",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 801,
+          "case_id": "P05_RANK_126",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 802,
+          "case_id": "P05_R126_SMOOTH2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 803,
+          "case_id": "P05_R126_SMOOTH5",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 804,
+          "case_id": "P05_R126_SMOOTH10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 805,
+          "case_id": "P05_R126_SMOOTH20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 806,
+          "case_id": "P05_DLT20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 807,
+          "case_id": "P05_DLT40",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 808,
+          "case_id": "P05_DLT60",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 809,
+          "case_id": "P05_DLT90",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 810,
+          "case_id": "P05_SEED801_TRANK2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 811,
+          "case_id": "P05_SEED801_TRANK5",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 812,
+          "case_id": "P05_SEED801_TRANK10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 813,
+          "case_id": "P05_SEED801_TRANK20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 814,
+          "case_id": "P05_SEED801_PREMEAN20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 815,
+          "case_id": "REF802_LIQW",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 816,
+          "case_id": "REF803_LIQW",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 817,
+          "case_id": "P05_SMOOTH3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 818,
+          "case_id": "P05_SMOOTH8",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 819,
+          "case_id": "P05_SMOOTH15",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 820,
+          "case_id": "P05_SMOOTH3_REFINE_4",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 821,
+          "case_id": "P05_SMOOTH3_REFINE_6",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 822,
+          "case_id": "REF801_TRANK3_RANK",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 823,
+          "case_id": "REF801_TRANK4_RANK",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 824,
+          "case_id": "REF801_TRANK8_RANK",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 825,
+          "case_id": "REF801_TRANK15_RANK",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 826,
+          "case_id": "REF817_DELTA5",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 827,
+          "case_id": "REF817_DELTA10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 828,
+          "case_id": "REF817_DELTA20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 829,
+          "case_id": "REF817_DELTA40",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 830,
+          "case_id": "REF802_TSDELTA15",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 831,
+          "case_id": "REF802_DELTA3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 832,
+          "case_id": "REF802_DELTA8",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 833,
+          "case_id": "REF802_TSMEAN10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 834,
+          "case_id": "REFINE_R126_100",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 835,
+          "case_id": "REFINE_R126_150",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 836,
+          "case_id": "REFINE_R126_180",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 837,
+          "case_id": "REFINE_R126_252",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 838,
+          "case_id": "REFINE817_DELTA15",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 839,
+          "case_id": "REFINE817_DELTA2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 840,
+          "case_id": "REFINE817_DELTA30",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 841,
+          "case_id": "REFINE817_DELTA3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 842,
+          "case_id": "REFINE801_RANK110",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 843,
+          "case_id": "REFINE801_RANK140",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 844,
+          "case_id": "REFINE801_RANK160",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 845,
+          "case_id": "REFINE801_RANK200",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 846,
+          "case_id": "REF_SMOOTH3_TSRANK_5",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 847,
+          "case_id": "REF_SMOOTH3_TSRANK_20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 848,
+          "case_id": "REF_SMOOTH3_TSRANK_10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 849,
+          "case_id": "REF_SMOOTH3_TSRANK_40",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 850,
+          "case_id": "REF817_MEANDELTA",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 851,
+          "case_id": "REF817_REVDELTA_A",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 852,
+          "case_id": "REF817_RANKDELTA",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 853,
+          "case_id": "REF817_REVDELTA_B",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 854,
+          "case_id": "REF837_DELTA20_V1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 855,
+          "case_id": "REF820_DELTA7_V1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 856,
+          "case_id": "REF837_MEAN15_V1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 857,
+          "case_id": "REF820_TSRANK12_V1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 858,
+          "case_id": "RFX_SR_901",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 859,
+          "case_id": "RFX_SR_903",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 860,
+          "case_id": "RFX_SR_902",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 861,
+          "case_id": "RFX_SR_904",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 862,
+          "case_id": "REF801_ADVMEAN10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 863,
+          "case_id": "REF801_ADVMEAN60",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 864,
+          "case_id": "REF801_ADVMEAN30",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 865,
+          "case_id": "REF801_ADVMEAN120",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 866,
+          "case_id": "REF817_ADVMEAN10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 867,
+          "case_id": "REF817_ADVMEAN30",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 868,
+          "case_id": "REF817_ADVMEAN60",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 869,
+          "case_id": "REF817_ADVMEAN120",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 870,
+          "case_id": "REFRESH_REV_001",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 871,
+          "case_id": "REFRESH_REV_003",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 872,
+          "case_id": "REFRESH_REV_002",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 873,
+          "case_id": "REFRESH_REV_004",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 874,
+          "case_id": "REF817_RANKDELTA_01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 875,
+          "case_id": "REF817_RANKDELTA_03",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 876,
+          "case_id": "REF817_RANKDELTA_02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 877,
+          "case_id": "REF817_RANKDELTA_04",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 878,
+          "case_id": "REF_SMOOTH3_INNER30",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 879,
+          "case_id": "REF_SMOOTH3_INNER75",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 880,
+          "case_id": "REF_SMOOTH3_INNER45",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 881,
+          "case_id": "REF_SMOOTH3_INNER110",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 882,
+          "case_id": "REF_SMOOTH3_INNER15",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 883,
+          "case_id": "REF_SMOOTH3_INNER40",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 884,
+          "case_id": "REF_SMOOTH3_INNER25",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 885,
+          "case_id": "REF_SMOOTH3_INNER60",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 886,
+          "case_id": "REF_SR_TRENDDELTA_01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 887,
+          "case_id": "REF_SR_RANKMEAN_01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 888,
+          "case_id": "REF_SR_TRENDDELTA_02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 889,
+          "case_id": "REF_SR_RANKMEAN_02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 890,
+          "case_id": "REF_SR_DAILYRANK_M3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 891,
+          "case_id": "REF_SR_DAILYRANK_M8",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 892,
+          "case_id": "REF_SR_DAILYRANK_M5",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 893,
+          "case_id": "REF_SR_DAILYRANK_M15",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 894,
+          "case_id": "RF817_REVMEAN10D5",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 895,
+          "case_id": "RF817_REVDELTA_MEAN10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 896,
+          "case_id": "RF817_REVMEAN20D10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 897,
+          "case_id": "RF817_REVDELTA_MEAN20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 898,
+          "case_id": "REF820_SUM4_A",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 899,
+          "case_id": "REF837_SUM252_A",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 900,
+          "case_id": "REF_SR_INNER10_M3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 901,
+          "case_id": "REF_SR_INNER120_M3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 902,
+          "case_id": "REF_SR_ALT_003",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 903,
+          "case_id": "REF_SR_ALT_001",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 904,
+          "case_id": "REF_SR_ALT_004",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 905,
+          "case_id": "REF_SR_ALT_002",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 906,
+          "case_id": "RFX_P05_INNER105",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 907,
+          "case_id": "RFX_P05_INNER130",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 908,
+          "case_id": "RFX_P05_INNER115",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 909,
+          "case_id": "RFX_P05_INNER145",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 910,
+          "case_id": "REF817_DELTARET_5_60",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 911,
+          "case_id": "REF817_DELTARET_5_90",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 912,
+          "case_id": "REF817_DELTARET_10_60",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 913,
+          "case_id": "REF817_DELTARET_10_90",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 914,
+          "case_id": "REF_SR_SUMRET_A01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 915,
+          "case_id": "REF_SR_SUMRET_A03",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 916,
+          "case_id": "REF_SR_SUMRET_A02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 917,
+          "case_id": "REF_SR_DELTA_SUMRET_A04",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 918,
+          "case_id": "RF_P05S3_RANKDELTA_20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 919,
+          "case_id": "RF_P05S3_TSDELTA_126_10",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 920,
+          "case_id": "RF_P05S3_RANKDELTA_40",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 921,
+          "case_id": "RF_P05S3_TSDELTA_126_20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 922,
+          "case_id": "RFX817_DRET3_RANK20",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 923,
+          "case_id": "RFX817_DRET10_RANK30",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 924,
+          "case_id": "RFX817_DRET5_RANK30",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 925,
+          "case_id": "RFX817_DRET3_RANK45",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 926,
+          "case_id": "REF817_INNER117",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 927,
+          "case_id": "REF817_INNER132",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 928,
+          "case_id": "REF817_INNER123",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 929,
+          "case_id": "REF817_INNER138",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 930,
+          "case_id": "REF817_MOMENTUMSMOOTH_03",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 931,
+          "case_id": "REF817_MOMENTUMSMOOTH_01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 932,
+          "case_id": "REF817_MOMENTUMSMOOTH_04",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 933,
+          "case_id": "REF817_MOMENTUMSMOOTH_02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 934,
+          "case_id": "REF_P05S3_INNER99",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 935,
+          "case_id": "REF_P05S3_INNER108",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 936,
+          "case_id": "REF_P05S3_INNER101",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 937,
+          "case_id": "REF_P05S3_INNER112",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 938,
+          "case_id": "REFINE_P05SMOOTH3_RDELTA_A",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 939,
+          "case_id": "REFINE_P05SMOOTH3_RDELTA_C",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 940,
+          "case_id": "REFINE_P05SMOOTH3_RDELTA_B",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 941,
+          "case_id": "REFINE_P05SMOOTH3_RDELTA_D",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 942,
+          "case_id": "REF817_SR_SUMRANK_A",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 943,
+          "case_id": "REF817_SR_DELTA_RSUM",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 944,
+          "case_id": "REF817_SR_SUMRANK_B",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 945,
+          "case_id": "REF817_SR_RANKSUM_DELTA",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 946,
+          "case_id": "REF817_REV_ACTIVITY_001",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 947,
+          "case_id": "REF_P05_INNER180_C",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 948,
+          "case_id": "REF_P05_INNER150_A",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 949,
+          "case_id": "REF_P05_INNER160_B",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 950,
+          "case_id": "RFX_P05_200",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 951,
+          "case_id": "RFX_P05_220",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 952,
+          "case_id": "RFX_P05_210",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 953,
+          "case_id": "RFX_P05_240",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 954,
+          "case_id": "RF_AMER_P05_240_002",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 955,
+          "case_id": "RF_AMER_P05_001",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 956,
+          "case_id": "RF_AMER_P05_003",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 957,
+          "case_id": "RF_AMER_ACTIVITY_002",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 958,
+          "case_id": "RF_AMER_INNER123_002",
+          "request_status": "FAILED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 959,
+          "case_id": "RF_AMER_P05_002",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 960,
+          "case_id": "RF_AMER_INNER123_001",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 961,
+          "case_id": "RF_AMER_P05_240_001",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 962,
+          "case_id": "RF_AMER_ACTIVITY_001",
+          "request_status": "FAILED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 963,
+          "case_id": "REF_AMER_ACTIVITY_D6",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 964,
+          "case_id": "REF_AMER_ACTIVITY_D2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 965,
+          "case_id": "REF_AMER_ACTIVITY_D4",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 966,
+          "case_id": "REF964_ACTIVITY_OUTER15",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 967,
+          "case_id": "REF964_ACTIVITY_OUTER30",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 968,
+          "case_id": "REF964_ACTIVITY_OUTER25",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 969,
+          "case_id": "REF964_ACTIVITY_OUTER40",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 970,
+          "case_id": "REF964_RETWIN100",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 971,
+          "case_id": "REF964_RETWIN110",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 972,
+          "case_id": "REF964_RETWIN140",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 973,
+          "case_id": "REF964_RETWIN160",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 974,
+          "case_id": "REF957_RETWIN100",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 975,
+          "case_id": "REF957_RETWIN110",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 976,
+          "case_id": "REF957_RETWIN140",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 977,
+          "case_id": "REF957_RETWIN160",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 978,
+          "case_id": "RF964_RETWIN090",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 979,
+          "case_id": "RF964_RETWIN080",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 980,
+          "case_id": "RF964_RETWIN130",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 981,
+          "case_id": "RF964_RETWIN150",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 982,
+          "case_id": "RF_NEXT_980_OUTER18",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 983,
+          "case_id": "RF_NEXT_980_OUTER22",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 984,
+          "case_id": "RF_NEXT_980_OUTER28",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 985,
+          "case_id": "RF_NEXT_980_OUTER35",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 986,
+          "case_id": "RF_NEXT_964_RET120",
+          "request_status": "NOT_REQUESTED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 987,
+          "case_id": "RF_NEXT_964_RET125",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 988,
+          "case_id": "RF_NEXT_964_RET120",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 989,
+          "case_id": "RF_NEXT_964_RET135",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 990,
+          "case_id": "RF_NEXT_964_RET145",
+          "request_status": "NOT_REQUESTED",
+          "quality_status": null
+        }
+      ]
+    },
+    {
+      "case_id": "task14-run25",
+      "source_observed_at": "2026-11-13T10:08:18.040912+00:00",
+      "source_commit": null,
+      "agentsview_session_id": null,
+      "task_id": 14,
+      "run_id": 25,
+      "run_status": "STOPPED",
+      "batch_cursor": null,
+      "generated": 21,
+      "saved_results": 16,
+      "quality_pass": 0,
+      "quality_counts": {
+        "OPTIMIZE": 16
+      },
+      "request_counts": {
+        "FAILED": 5,
+        "RESULT": 16
+      },
+      "best_sharpe": 0.91,
+      "timing": {
+        "completed_requests": 16,
+        "timed_requests": 15,
+        "recovered_requests": 1,
+        "wq_wall_method": "INTERVAL_UNION",
+        "scope": "CAMPAIGN_PROGRESS_WALL__RUN_RESULT_COUNT",
+        "wq_wall_seconds": 2542.298089,
+        "actual_parent_peak": null,
+        "pause_seconds_by_reason": {
+          "PPA_RATE_LIMIT": 24581.900561,
+          "PPA_FIRST_BATCH_REVIEW": 34786.597534,
+          "AWAITING_RESEARCH_BATCH": 346.554493
+        }
+      },
+      "candidates": [
+        {
+          "candidate_id": 1698,
+          "case_id": "D_ab17ec83c73647_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1699,
+          "case_id": "D_ab17ec83c73647_0",
+          "request_status": "FAILED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 1700,
+          "case_id": "D_ab17ec83c73647_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1701,
+          "case_id": "D_cef3fe31e28bc0_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1702,
+          "case_id": "D_ab17ec83c73647_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1703,
+          "case_id": "D_cef3fe31e28bc0_0",
+          "request_status": "FAILED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 1704,
+          "case_id": "D_cef3fe31e28bc0_3",
+          "request_status": "FAILED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 1705,
+          "case_id": "D_cef3fe31e28bc0_2",
+          "request_status": "FAILED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 1706,
+          "case_id": "D_ab17ec83c73647_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1707,
+          "case_id": "D_cef3fe31e28bc0_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1708,
+          "case_id": "D_cef3fe31e28bc0_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1709,
+          "case_id": "D_cef3fe31e28bc0_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1710,
+          "case_id": "D_7ed90f1b416df2_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1711,
+          "case_id": "D_7ed90f1b416df2_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1712,
+          "case_id": "D_7ed90f1b416df2_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1713,
+          "case_id": "D_7ed90f1b416df2_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1714,
+          "case_id": "D_56040a027b3a81_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1715,
+          "case_id": "D_56040a027b3a81_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1716,
+          "case_id": "D_56040a027b3a81_2",
+          "request_status": "FAILED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 1717,
+          "case_id": "D_56040a027b3a81_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1718,
+          "case_id": "D_56040a027b3a81_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        }
+      ]
+    },
+    {
+      "case_id": "task14-run26",
+      "source_observed_at": "2026-11-13T10:08:18.928720+00:00",
+      "source_commit": null,
+      "agentsview_session_id": null,
+      "task_id": 14,
+      "run_id": 26,
+      "run_status": "STOPPED",
+      "batch_cursor": null,
+      "generated": 21,
+      "saved_results": 20,
+      "quality_pass": 0,
+      "quality_counts": {
+        "OPTIMIZE": 20
+      },
+      "request_counts": {
+        "NOT_REQUESTED": 1,
+        "RESULT": 20
+      },
+      "best_sharpe": 1,
+      "timing": {
+        "completed_requests": 20,
+        "timed_requests": 18,
+        "recovered_requests": 2,
+        "wq_wall_method": "INTERVAL_UNION",
+        "scope": "CAMPAIGN_PROGRESS_WALL__RUN_RESULT_COUNT",
+        "wq_wall_seconds": 4429.493956,
+        "actual_parent_peak": 2,
+        "pause_seconds_by_reason": {
+          "PPA_FIRST_BATCH_REVIEW": 10.635861,
+          "AWAITING_RESEARCH_BATCH": 2337.953922
+        }
+      },
+      "candidates": [
+        {
+          "candidate_id": 1719,
+          "case_id": "D_3dc6a3a6743441_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1720,
+          "case_id": "D_3dc6a3a6743441_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1721,
+          "case_id": "D_3dc6a3a6743441_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1722,
+          "case_id": "D_3dc6a3a6743441_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1723,
+          "case_id": "D_fa7639a3567b89_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1724,
+          "case_id": "D_fa7639a3567b89_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1725,
+          "case_id": "D_fa7639a3567b89_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1726,
+          "case_id": "D_fa7639a3567b89_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1727,
+          "case_id": "D_72845e5f4999e8_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1728,
+          "case_id": "D_72845e5f4999e8_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1729,
+          "case_id": "D_72845e5f4999e8_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1730,
+          "case_id": "D_72845e5f4999e8_3",
+          "request_status": "NOT_REQUESTED",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 1731,
+          "case_id": "D_72845e5f4999e8_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1732,
+          "case_id": "D_de06a953370b95_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1733,
+          "case_id": "D_de06a953370b95_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1734,
+          "case_id": "D_de06a953370b95_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1735,
+          "case_id": "D_de06a953370b95_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1736,
+          "case_id": "RF_1722_QGATE_20261111_A01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1737,
+          "case_id": "RF_1722_QGATE_20261111_A02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1738,
+          "case_id": "RF_1722_QGATE_20261111_A03",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1739,
+          "case_id": "RF_1722_QGATE_20261111_A04",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        }
+      ]
+    },
+    {
+      "case_id": "task14-run27",
+      "source_observed_at": "2026-11-13T10:08:19.927949+00:00",
+      "source_commit": null,
+      "agentsview_session_id": null,
+      "task_id": 14,
+      "run_id": 27,
+      "run_status": "STOPPED",
+      "batch_cursor": null,
+      "generated": 28,
+      "saved_results": 28,
+      "quality_pass": 0,
+      "quality_counts": {
+        "OPTIMIZE": 28
+      },
+      "request_counts": {
+        "RESULT": 28
+      },
+      "best_sharpe": 1.6,
+      "timing": {
+        "completed_requests": 28,
+        "timed_requests": 27,
+        "recovered_requests": 1,
+        "wq_wall_method": "INTERVAL_UNION",
+        "scope": "CAMPAIGN_PROGRESS_WALL__RUN_RESULT_COUNT",
+        "wq_wall_seconds": 3623.966586999999,
+        "actual_parent_peak": 0,
+        "pause_seconds_by_reason": {
+          "PPA_FIRST_BATCH_REVIEW": 1.829726,
+          "AWAITING_RESEARCH_BATCH": 647.1913139999999,
+          "PPA_REQUEST_RECONCILIATION_PENDING": 20148.840322
+        }
+      },
+      "candidates": [
+        {
+          "candidate_id": 1740,
+          "case_id": "D_6e791624b09d48_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1741,
+          "case_id": "D_6e791624b09d48_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1742,
+          "case_id": "D_6e791624b09d48_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1743,
+          "case_id": "D_6e791624b09d48_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1744,
+          "case_id": "D_ec0c08c2bd9fcc_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1745,
+          "case_id": "D_ec0c08c2bd9fcc_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1746,
+          "case_id": "D_ec0c08c2bd9fcc_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1747,
+          "case_id": "D_ec0c08c2bd9fcc_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1748,
+          "case_id": "D_05fa9d3574f236_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1749,
+          "case_id": "D_05fa9d3574f236_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1750,
+          "case_id": "D_05fa9d3574f236_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1751,
+          "case_id": "D_05fa9d3574f236_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1752,
+          "case_id": "D_dd6ebc8badc294_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1753,
+          "case_id": "D_dd6ebc8badc294_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1754,
+          "case_id": "D_dd6ebc8badc294_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1755,
+          "case_id": "D_dd6ebc8badc294_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1756,
+          "case_id": "RF_1737_QCHANGE_20261112_B02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1757,
+          "case_id": "RF_1736_QCHANGE_20261112_B01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1758,
+          "case_id": "RF_1739_QCHANGE_20261112_B03",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1759,
+          "case_id": "RF_1736_QSTATE_20261112_B04",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1760,
+          "case_id": "RF_1739_QSTRUCT_20261111_B01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1761,
+          "case_id": "RF_1737_QSTRUCT_20261111_B02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1762,
+          "case_id": "RF_1737_QSTRUCT_20261111_B03",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1763,
+          "case_id": "RF_1737_QSTRUCT_20261111_B04",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1764,
+          "case_id": "RF_1736_QGATE_20261111_B01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1765,
+          "case_id": "RF_1736_QGATE_20261111_B02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1766,
+          "case_id": "RF_1739_GATEOP_20261111_C01",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1767,
+          "case_id": "RF_1739_GATEOP_20261111_C02",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        }
+      ]
+    },
+    {
+      "case_id": "task14-run28",
+      "source_observed_at": "2026-11-13T10:08:20.783592+00:00",
+      "source_commit": null,
+      "agentsview_session_id": null,
+      "task_id": 14,
+      "run_id": 28,
+      "run_status": "PAUSED",
+      "batch_cursor": null,
+      "generated": 11,
+      "saved_results": 9,
+      "quality_pass": 0,
+      "quality_counts": {
+        "OPTIMIZE": 9
+      },
+      "request_counts": {
+        "RESULT": 9,
+        "UNKNOWN": 2
+      },
+      "best_sharpe": 1.22,
+      "timing": {
+        "completed_requests": 9,
+        "timed_requests": 7,
+        "recovered_requests": 2,
+        "wq_wall_method": "INTERVAL_UNION",
+        "scope": "CAMPAIGN_PROGRESS_WALL__RUN_RESULT_COUNT",
+        "wq_wall_seconds": 2398.6124130000003,
+        "actual_parent_peak": 2,
+        "pause_seconds_by_reason": {
+          "AWAITING_RESEARCH_BATCH": 135.715891,
+          "PPA_REQUEST_RECONCILIATION_PENDING": 74506.653989
+        }
+      },
+      "candidates": [
+        {
+          "candidate_id": 1768,
+          "case_id": "D_e851dfc478d718_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1769,
+          "case_id": "D_e851dfc478d718_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1770,
+          "case_id": "D_e851dfc478d718_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1771,
+          "case_id": "D_e851dfc478d718_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1772,
+          "case_id": "D_79d376dfdeea57_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1773,
+          "case_id": "D_79d376dfdeea57_1",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1774,
+          "case_id": "D_79d376dfdeea57_2",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1775,
+          "case_id": "D_79d376dfdeea57_3",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1776,
+          "case_id": "D_486bc2f6ec93e1_0",
+          "request_status": "RESULT",
+          "quality_status": "OPTIMIZE"
+        },
+        {
+          "candidate_id": 1777,
+          "case_id": "D_486bc2f6ec93e1_1",
+          "request_status": "UNKNOWN",
+          "quality_status": null
+        },
+        {
+          "candidate_id": 1778,
+          "case_id": "D_486bc2f6ec93e1_2",
+          "request_status": "UNKNOWN",
+          "quality_status": null
+        }
+      ]
+    }
+  ]
+}
