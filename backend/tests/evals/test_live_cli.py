@@ -18,13 +18,20 @@ def test_platform_evidence_requires_current_matching_account_check():
     now = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
     good = {"theme_id": "theme", "verified_at": "2026-11-13T11:00:00Z",
             "power_pool_access": True, "source_url": "https://platform.worldquantbrain.com/theme",
-            "quota_remaining": 20}
+            "quota_remaining": 80}
     assert validate_platform_evidence(good, "theme", now)
     for change in ({"theme_id": "other"}, {"verified_at": "2026-11-11T00:00:00Z"},
                    {"power_pool_access": False}, {"quota_remaining": 0},
                    {"source_url": "https://example.com/theme"}):
         with pytest.raises(ValueError, match="PLATFORM_UNVERIFIED"):
             validate_platform_evidence({**good, **change}, "theme", now)
+
+    # The existing PPA contract permits the account owner's no-cap policy.
+    no_cap = {**good, "quota_remaining": None, "quota_mode": "NO_FIXED_LIMIT",
+              "quota_source": "account_owner"}
+    assert validate_platform_evidence(no_cap, "theme", now)
+    with pytest.raises(ValueError, match="PLATFORM_UNVERIFIED"):
+        validate_platform_evidence({**no_cap, "quota_source": "inferred"}, "theme", now)
 
 
 def test_lab_environment_rejects_production_targets():

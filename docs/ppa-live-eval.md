@@ -17,11 +17,12 @@ The platform evidence file format is:
   "verified_at": "2026-11-13T12:00:00Z",
   "source_url": "https://platform.worldquantbrain.com/",
   "power_pool_access": true,
-  "quota_remaining": 80
+  "quota_mode": "NO_FIXED_LIMIT",
+  "quota_source": "account_owner"
 }
 ```
 
-Record values actually observed in the official account. The check must be less than 24 hours old. The CLI validates the shape and freshness, but an operator must verify the facts. If access, limit, or theme eligibility cannot be confirmed, stop without sending.
+The existing PPA contract accepts either a confirmed balance of at least 80 or the account owner's prior `NO_FIXED_LIMIT` report. The latter is an owner assertion, not a platform API rule; the 80-request experiment cap still applies. Record the current authenticated account check and the preserved owner assertion separately. The check must be less than 24 hours old. If access or theme eligibility cannot be confirmed, stop without sending.
 
 ## Independent lab database
 

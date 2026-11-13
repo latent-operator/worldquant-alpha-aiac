@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from backend.evals.live_ppa import dispatch_gate, freeze_experiment
 from backend.services.ppa_feedback import digest
+from backend.services.theme_ppa import account_quota_verified
 
 
 DEFAULT_API = "http://127.0.0.1:8003/api/v1"
@@ -78,8 +79,7 @@ def validate_platform_evidence(evidence: dict, theme_id: str, now: datetime) -> 
                  and evidence.get("theme_id") == theme_id
                  and evidence.get("power_pool_access") is True
                  and url.scheme == "https" and url.hostname == "platform.worldquantbrain.com"
-                 and type(evidence.get("quota_remaining")) is int
-                 and evidence["quota_remaining"] > 0)
+                 and account_quota_verified(evidence))
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
