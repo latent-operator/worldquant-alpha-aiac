@@ -1,0 +1,22 @@
+name: aiac-ppa-eval
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aiac_eval
+      POSTGRES_DB: aiac_eval_ppa
+      POSTGRES_PASSWORD: ${AIAC_EVAL_DB_PASSWORD:?Set a private lab database password}
+    ports:
+      - "127.0.0.1:55434:5432"
+    volumes:
+      - aiac_eval_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiac_eval -d aiac_eval_ppa"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  aiac_eval_postgres:
