@@ -324,10 +324,6 @@ def _run(args) -> dict:
         return {"status": "BLOCKED", "reason": "OLD_UNKNOWN_24H_WAIT",
                 "not_before": quarantine_until.isoformat(), "sent": 0}
     platform = _read_private(args.platform_evidence)
-    state = _state(campaign, args.base_url, platform)
-    if not state["platform_verified"] or state["source_unresolved"] or state["other_active_work"] or not state["source_run_current"]:
-        return {"status": "BLOCKED", "reason": "SOURCE_OR_PLATFORM_GATE", "sent": 0,
-                "state": state}
     from backend.adapters.brain_adapter import BrainAdapter
     from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
     from backend.database import AsyncSessionLocal
@@ -338,6 +334,11 @@ def _run(args) -> dict:
             inventory = await _old_inventory(fallback, AsyncSessionLocal, campaign)
             # The Alpha inventory is evidence of account activity, not proof that
             # the 45 locationless requests failed. Keep them sealed in old run 1.
+            state = _state(campaign, args.base_url, platform)
+            if (not state["platform_verified"] or state["source_unresolved"]
+                    or state["other_active_work"] or not state["source_run_current"]):
+                return {"status": "BLOCKED", "reason": "SOURCE_OR_PLATFORM_GATE",
+                        "sent": 0, "old_inventory": inventory, "state": state}
             completed = await _completed_batches(AsyncSessionLocal, campaign["campaign_id"])
             batch = next((item for item in batches if item["batch_sha256"] not in completed),
                          batches[-1] if batches else None)
