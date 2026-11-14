@@ -1,0 +1,17 @@
+services:
+  goal-tools:
+    build:
+      context: .
+      dockerfile: tools/goal-loop/Dockerfile
+    image: aiac-goal-tools:openspec-2.0.0-beads-1.3.4
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - ${AIAC_GIT_COMMON_DIR:-../worldquant-alpha-aiac/.git}:/git
+      - ${AIAC_BEADS_BACKUP_DIR:-../../backups/aiac-beads}:/backup
+    environment:
+      BD_NON_INTERACTIVE: "1"
+      OPENSPEC_TELEMETRY: "0"
+      GIT_DIR: ${AIAC_CONTAINER_GIT_DIR:-/git/worktrees/worldquant-alpha-aiac-goal-loop}
+      GIT_WORK_TREE: /workspace
+    command: ["sh", "-lc", "openspec --version && bd version"]
