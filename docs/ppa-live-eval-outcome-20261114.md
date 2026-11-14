@@ -1,0 +1,11 @@
+# First live PPA selector experiment: incomplete evidence
+
+The frozen manifest `60fcd8bb7f72a0ad96f143b547d32dce370eeda8194d180f4271a0cff79d492e` reserved all 80 distinct candidate slots in isolated lab run 1. It was prepared from production task 14, run 28. The production task remained paused; no Alpha submission was made.
+
+As observed on 2026-11-14, 35 slots had persisted WQ Alpha results with 35 distinct Alpha IDs. All 35 had AIAC `quality_status=OPTIMIZE`; none had `PASS` or final `PPA_READY`. The other 45 slots encountered consecutive `ConnectError` transport failures after the 35th result, from 03:34 to 03:37 UTC. No simulation location or HTTP status was received for those slots. The adapter log recorded 45 such errors, matching the 45 initially misclassified ledger rows. These rows were corrected in the isolated lab database to `UNKNOWN`, with `original_status=FAILED` and `reclassified_reason=CONNECT_ERROR_UNCERTAIN` audit fields. Lab run 1 is paused for reconciliation, with 35 `RESULT` and 45 `UNKNOWN`.
+
+A later read-only WQ `/users/self/alphas` listing returned the 35 known lab Alpha IDs among the 100 most recent visible entries; its newest visible Alpha preceded the error period. This supports the transport-failure diagnosis but does not settle the 45 requests without original simulation locations.
+
+The preregistered minimum was 76 usable results and zero `UNKNOWN`. Neither condition holds. The report outcome is `INCOMPLETE_RECONCILIATION`; this round does not establish improvement in the evidence-first ranking. The observed top-20 subsets had zero quality `PASS` and zero final `PPA_READY` in both rules, but many selected candidates lack results, so their proxy and Sharpe differences cannot be interpreted as a fair comparison. The private manifest and per-candidate lineage report remain outside the repository because they contain expressions.
+
+The incident exposed a request-classification defect: `is_uncertain_result` recognized the word `connection` but not the actual `ConnectError` exception name, allowing further POST attempts. The classifier now recognizes common transport exception names, and a lab-run regression test verifies that a `ConnectError` pauses after the first occupied slot. No additional request is permitted in this frozen 80-slot experiment.

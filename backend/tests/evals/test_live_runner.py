@@ -79,6 +79,7 @@ async def test_lab_run_persists_one_result_and_never_submits(async_engine, monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize("result,expected_reason", [
     ({"error": "uncertain network result"}, "EVAL_REQUEST_RECONCILIATION_PENDING"),
+    ({"error": "ConnectError: ConnectError('')"}, "EVAL_REQUEST_RECONCILIATION_PENDING"),
     ({"http_status": 429, "error": "rate limit"}, "EVAL_RATE_LIMIT"),
 ])
 async def test_lab_stops_after_uncertain_or_rate_limited_request(async_engine, monkeypatch,

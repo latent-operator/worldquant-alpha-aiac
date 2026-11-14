@@ -34,7 +34,9 @@ WINDOWS = (5, 10, 20, 30, 60)
 def is_uncertain_result(result: dict) -> bool:
     error = str(result.get("error") or "").lower()
     return not result.get("alpha_id") and any(word in error for word in (
-        "timeout", "timed out", "connection", "uncertain", "fewer results", "missing response"))
+        "timeout", "timed out", "connection", "connecterror", "readerror",
+        "writeerror", "networkerror", "remoteprotocolerror", "uncertain",
+        "fewer results", "missing response"))
 
 
 def paper_matrix() -> list[dict[str, Any]]:
