@@ -32,11 +32,16 @@ WINDOWS = (5, 10, 20, 30, 60)
 
 
 def is_uncertain_result(result: dict) -> bool:
-    error = str(result.get("error") or "").lower()
-    return not result.get("alpha_id") and any(word in error for word in (
-        "timeout", "timed out", "connection", "connecterror", "readerror",
-        "writeerror", "networkerror", "remoteprotocolerror", "uncertain",
-        "fewer results", "missing response"))
+    if result.get("alpha_id"):
+        return False
+    # A terminal status read back from the original simulation position is
+    # definitive. The same status on a fresh POST response has no such proof.
+    if (result.get("request_phase") == "POLL_ORIGINAL"
+            and str(result.get("status") or "").upper() in {"ERROR", "FAILED"}):
+        return False
+    status = result.get("http_status")
+    # Only an acknowledged client rejection proves that no Alpha was created.
+    return not (type(status) is int and 400 <= status < 500 and status != 408)
 
 
 def paper_matrix() -> list[dict[str, Any]]:
@@ -186,6 +191,14 @@ def safe_result(result: dict) -> dict:
             return None
         return text
 
+    error_code = result.get("error_code")
+    if not isinstance(error_code, str) or error_code not in {"TRANSPORT_UNCERTAIN", "SERVER_UNCERTAIN",
+                          "RATE_LIMITED", "CLIENT_REJECTED", "ACK_UNTRACKED"}:
+        error_code = None
+    request_phase = result.get("request_phase")
+    if not isinstance(request_phase, str) or request_phase not in {"CREATE_POST", "POLL_ORIGINAL"}:
+        request_phase = None
+
     classifications = []
     for item in (result.get("classifications") or [])[:20]:
         if not isinstance(item, dict):
@@ -218,6 +231,7 @@ def safe_result(result: dict) -> dict:
     return {
         "success": bool(result.get("success")), "alpha_id": result.get("alpha_id"),
         "http_status": http_status, "retry_after": retry_after,
+        "error_code": error_code, "request_phase": request_phase,
         "stage": result.get("stage") if result.get("stage") in {"IS", "OS"} else None,
         "status": result.get("status") if result.get("status") in {"UNSUBMITTED", "SUBMITTED"} else None,
         "classifications": classifications, "themes": themes,
