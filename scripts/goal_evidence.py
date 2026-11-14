@@ -22,7 +22,8 @@ def main() -> int:
         report = json.loads(args.report.read_text(encoding="utf-8"))
         result = evaluate_goal(report, source=args.source, claimed_status=args.claim)
         if args.require_ready:
-            require_goal_ready(report, source=args.source)
+            result = require_goal_ready(report, source=args.source)
+            result["claim_supported"] = args.claim is None or args.claim == result["status"]
     except (ValueError, OSError) as exc:
         print(json.dumps({"accepted": False, "error": str(exc)}))
         return 2

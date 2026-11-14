@@ -113,3 +113,18 @@ def test_closure_does_not_use_unrelated_partial_candidate_list():
         "candidates": [{"candidate_id": 99, "request_status": "RESULT",
            "wq_alpha_id": "unrelated", "quality_status": "PASS", "ppa_status": "PPA_READY"}]}
     with pytest.raises(ValueError): require_goal_ready(report, source="test")
+
+
+def test_acceptance_cli_reports_complete_population_not_top20_summary(tmp_path, monkeypatch, capsys):
+    import json
+    from scripts.goal_evidence import main
+    report = {"run_id": 2, "manifest_sha256": "a" * 64,
+        "analysis": {"result_count": 1, "unknown_count": 0, "pending_count": 0,
+                     "evidence": {"quality_pass": 0, "ppa_ready": 0}},
+        "candidate_lineage": [{"candidate_id": 1, "request_status": "RESULT",
+           "wq_alpha_id": "actual", "quality_status": "PASS", "ppa_status": "PPA_READY"}]}
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(report))
+    monkeypatch.setattr("sys.argv", ["goal_evidence", str(path), "--source", "test", "--require-ready"])
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "PPA_READY_OBSERVED"
