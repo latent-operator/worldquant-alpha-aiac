@@ -80,6 +80,21 @@ def test_transport_errors_are_uncertain_even_without_location(error):
     assert is_uncertain_result({"success": False, "error": error})
 
 
+def test_request_result_is_fail_closed_and_snapshot_retains_safe_error_code():
+    assert is_uncertain_result({"success": False, "error": "unrecognized adapter failure"})
+    assert is_uncertain_result({"success": False, "http_status": 503,
+                                "error_code": "SERVER_UNCERTAIN"})
+    assert not is_uncertain_result({"success": False, "http_status": 400,
+                                    "error_code": "CLIENT_REJECTED"})
+    assert not is_uncertain_result({"success": False, "http_status": 429,
+                                    "error_code": "RATE_LIMITED"})
+    snapshot = safe_result({"error_code": "TRANSPORT_UNCERTAIN",
+                            "request_phase": "CREATE_POST", "error": "secret body"})
+    assert snapshot["error_code"] == "TRANSPORT_UNCERTAIN"
+    assert snapshot["request_phase"] == "CREATE_POST"
+    assert "secret body" not in str(snapshot)
+
+
 def test_seed_requires_complete_metrics_and_both_paired_gains():
     rows = [
         {"arm": "CONTROL", "pair_id": "window_5", "group": "event_sentiment",

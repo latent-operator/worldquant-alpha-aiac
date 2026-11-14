@@ -368,6 +368,8 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
             await record_attempt("TIMEOUT")
             return {"resolved": 0, "pending": len(candidates)}
     definitive_failure = str(result.get("status") or "").upper() in {"ERROR", "FAILED"}
+    if definitive_failure:
+        result = {**result, "request_phase": "POLL_ORIGINAL"}
     if definitive_failure and not result.get("error"):
         result = {**result, "error": "original simulation failed"}
     if not result.get("alpha_id") and ((not result.get("error") and not definitive_failure) or
