@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.models import MiningTask, ExperimentRun
 import backend.services.research_audit as audit_module
-from backend.services.research_audit import ResearchBudgetBrain, paper_matrix, paired_improvements, constrained_mutations, safe_result
+from backend.services.research_audit import ResearchBudgetBrain, paper_matrix, paired_improvements, constrained_mutations, safe_result, is_uncertain_result
 from backend.services.paper_experiment import APPROVED_FIELDS, validate_protocol_task
 from backend.services.paper_experiment import run_paper_dispatch
 from backend.services.research_report import paired_deltas, research_report
@@ -68,6 +68,16 @@ async def test_budget_wrapper_sends_only_reserved_candidates_and_never_retries_u
     assert result[0]["error"] == "DUPLICATE"
     assert result[1]["success"] is False
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("error", [
+    "ConnectError: ConnectError('')",
+    "ReadError: ReadError('')",
+    "WriteError: WriteError('')",
+    "RemoteProtocolError: server disconnected",
+])
+def test_transport_errors_are_uncertain_even_without_location(error):
+    assert is_uncertain_result({"success": False, "error": error})
 
 
 def test_seed_requires_complete_metrics_and_both_paired_gains():
