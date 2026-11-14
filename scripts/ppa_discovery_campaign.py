@@ -61,10 +61,10 @@ async def _old_ledger(maker, old_manifest: dict) -> dict:
 async def _live_catalog(brain) -> tuple[list[dict], dict[str, list[dict]]]:
     """Page the account's actual WQ catalog; an empty or partial page fails closed."""
     datasets = []
-    for offset in range(0, 10000, 100):
+    for offset in range(0, 10000, 50):
         response = await brain._safe_api_call("GET", "/data-sets", params={
             "region": "GLB", "delay": 1, "universe": "TOP3000",
-            "instrumentType": "EQUITY", "limit": 100, "offset": offset})
+            "instrumentType": "EQUITY", "limit": 50, "offset": offset})
         if response.status_code != 200:
             raise ValueError("LIVE_DATASET_QUERY_FAILED")
         payload = response.json()
@@ -72,7 +72,7 @@ async def _live_catalog(brain) -> tuple[list[dict], dict[str, list[dict]]]:
         if not isinstance(page, list):
             raise ValueError("LIVE_DATASET_QUERY_FAILED")
         datasets.extend(page)
-        if len(page) < 100:
+        if len(page) < 50:
             break
     else:
         raise ValueError("LIVE_DATASET_QUERY_UNBOUNDED")

@@ -44,6 +44,7 @@ async def test_live_catalog_skips_unusable_preferred_dataset():
     assert selected["dataset_id"] == "news76"
     assert brain.calls[0]["region"] == "GLB"
     assert brain.calls[0]["universe"] == "TOP3000"
+    assert brain.calls[0]["limit"] == 50
 
 
 def test_new_base_and_evidence_exclude_old_expressions():
