@@ -8,6 +8,7 @@ services:
     volumes:
       - .:/workspace
       - ${AIAC_GIT_COMMON_DIR:-../worldquant-alpha-aiac/.git}:/git
+      - ${AIAC_BEADS_BACKUP_DIR:-../../backups/aiac-beads}:/backup
     environment:
       BD_NON_INTERACTIVE: "1"
       OPENSPEC_TELEMETRY: "0"

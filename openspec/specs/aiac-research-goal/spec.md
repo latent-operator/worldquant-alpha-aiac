@@ -41,3 +41,14 @@ New work SHALL link an OpenSpec goal requirement to a Beads issue and record its
 #### Scenario: CI succeeds but research does not
 - **WHEN** an implementation passes CI and the WQ ledger still has zero quality `PASS`
 - **THEN** the implementation issue may close, while `AIAC-PPA-QUALIFIED-ALPHA` remains open.
+
+### Requirement: Validated goal closure
+The common local workflow SHALL reject research goal closure without reconciled complete lineage, explicit request states, unique candidate/Alpha identities and a manifest reference. It SHALL record the report hash, code commit and session reference before closing the goal.
+
+#### Scenario: Contradictory report
+- **WHEN** request summary counts disagree with complete lineage or declared request status counts
+- **THEN** acceptance fails and no goal-close command is issued.
+
+#### Scenario: Cross-worktree recovery
+- **WHEN** an AIAC session starts in another local worktree
+- **THEN** the shared workspace entry loads the goal specification, Beads memories and ready queue.

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import argparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,14 +50,25 @@ def offline_environment(source: dict[str, str]) -> dict[str, str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--docs-only", action="store_true")
+    args = parser.parse_args()
+    checks = command_plan()
+    if args.docs_only:
+        sys.path.insert(0, str(ROOT))
+        from scripts.check_scope import changed_paths, docs_only
+        if not docs_only(changed_paths()):
+            print("Docs-only checks refused: changes include code, policy or unknown scope.")
+            return 2
+        checks = checks[:3]
     env = offline_environment(os.environ)
-    for check in command_plan():
+    for check in checks:
         print(f"Running {check.label}...", flush=True)
         result = subprocess.run(check.argv, cwd=check.cwd, env=env, check=False)
         if result.returncode:
             print(f"Failed: {check.label} (exit {result.returncode})", file=sys.stderr)
             return result.returncode
-    print("AIAC offline preflight passed.")
+    print("AIAC documentation checks passed." if args.docs_only else "AIAC offline preflight passed.")
     return 0
 
 
