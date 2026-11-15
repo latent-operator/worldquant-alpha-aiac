@@ -13,7 +13,8 @@ from sqlalchemy import select
 from backend.alpha_semantic_validator import AlphaSemanticValidator, compute_expression_hash
 from backend.models import Alpha, ResearchCandidate, TraceStep
 from backend.services.ppa_eligibility import evaluate_ppa_candidate
-from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger, safe_result
+from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger, safe_result, signature
+from backend.services.request_lifecycle import classify_record, classify_result
 
 
 PHASE_LIMITS = {"discovery": 24, "refinement": 40, "confirmation": 16}
@@ -344,6 +345,12 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
     rows = (await db.execute(select(ResearchCandidate).where(
         ResearchCandidate.run_id == run.id,
     ))).scalars().all()
+    if any(classify_record(row.request_status, row.result_snapshot, row.wq_alpha_id).needs_reconciliation
+           for row in rows):
+        task.status = run.status = "PAUSED"
+        run.block_reason = "PPA_REQUEST_RECONCILIATION_PENDING"
+        await db.commit()
+        return {"done": True, "reason": run.block_reason, "phase": phase, "cursor": cursor, "ready": 0}
     if checkpoint.get("ppa_first_batch_review_pending"):
         # A deliberate resume acknowledges the first-batch inspection. Recheck
         # persisted platform evidence without issuing another simulation request.
@@ -415,6 +422,7 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
     results = []
     rejected = 0
     rate_limited = False
+    request_pending = False
     processed_cursor = cursor + len(batch)
     for case in selected:
         expression = case["expression"]
@@ -440,12 +448,23 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
                     "pair_id": case.get("pair_id"),
                     "parent_candidate_id": parent.id if parent else None}
         audited_brain.register(expression, **metadata)
-        with audited_brain.source(phase.upper()):
-            result = await audited_brain.simulate_alpha(expression, **settings)
+        case_signature = signature(expression, settings)
+        prior_failure = next((row for row in rows
+            if row.experiment_group == case["case_id"] and row.request_status == "FAILED"
+            and (row.expression_hash, row.settings_hash) == case_signature
+            and classify_record(row.request_status, row.result_snapshot, row.wq_alpha_id).kind
+                in {"CLIENT_REJECTED", "TERMINAL_FAILURE"}), None)
+        if prior_failure is not None:
+            result = dict(prior_failure.result_snapshot)
+        else:
+            with audited_brain.source(phase.upper()):
+                result = await audited_brain.simulate_alpha(expression, **settings)
         results.append((case, settings, fields, result))
-        if result.get("http_status") == 429:
-            rate_limited = True
-            processed_cursor = cursor + batch.index(case) + 1
+        evidence = classify_result(result)
+        if evidence.retryable_after_wait or evidence.needs_reconciliation:
+            rate_limited = evidence.retryable_after_wait
+            request_pending = evidence.needs_reconciliation
+            processed_cursor = cursor + batch.index(case)
             break
 
     trace = TraceStep(
@@ -531,7 +550,7 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
     first_batch_finished = phase == "discovery" and cursor == 0 and processed_cursor == 5
     cursor = processed_cursor
     review_reason = None
-    if first_batch_finished and not rate_limited:
+    if first_batch_finished and not rate_limited and not request_pending:
         await db.flush()
         first_ids = {case["case_id"] for case in manifest["discovery"][:5]}
         first_rows = (await db.execute(select(ResearchCandidate).where(
@@ -542,7 +561,11 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
         checkpoint["ppa_first_batch_review_pending"] = True
     task.progress_current += ready
     run.checkpoint = {**checkpoint, "ppa_phase": phase, "ppa_cursor": cursor}
-    if ready:
+    if request_pending:
+        task.status = run.status = "PAUSED"
+        run.block_reason = "PPA_REQUEST_RECONCILIATION_PENDING"
+        run.checkpoint = {**run.checkpoint, "ppa_stop_reason": run.block_reason}
+    elif ready:
         task.status = run.status = "COMPLETED"
         run.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
         run.checkpoint = {**run.checkpoint, "ppa_stop_reason": "PPA_READY"}
@@ -551,6 +574,7 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
         run.block_reason = "PPA_RATE_LIMIT" if rate_limited else review_reason
         run.checkpoint = {**run.checkpoint, "ppa_stop_reason": run.block_reason}
     await db.commit()
-    reason = "PPA_READY" if ready else "PPA_RATE_LIMIT" if rate_limited else review_reason
-    return {"done": bool(ready or rate_limited or review_reason), "reason": reason,
+    reason = ("PPA_REQUEST_RECONCILIATION_PENDING" if request_pending else
+              "PPA_READY" if ready else "PPA_RATE_LIMIT" if rate_limited else review_reason)
+    return {"done": bool(request_pending or ready or rate_limited or review_reason), "reason": reason,
             "phase": phase, "cursor": cursor, "ready": ready}

@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from backend.models import Alpha, ExperimentRun, ResearchCandidate
 from backend.services.credentials_service import CredentialsService
+from backend.services.request_lifecycle import classify_record
 
 
 def candidate_public(row: ResearchCandidate) -> dict:
@@ -21,6 +22,11 @@ def candidate_public(row: ResearchCandidate) -> dict:
         "validation_status": row.validation_status,
         "rejection_stage": row.rejection_stage, "rejection_reason": row.rejection_reason,
         "request_status": row.request_status, "wq_alpha_id": row.wq_alpha_id,
+        "request_phase": (row.result_snapshot or {}).get("request_phase"),
+        "http_status": (row.result_snapshot or {}).get("http_status"),
+        "simulation_status": (row.result_snapshot or {}).get("simulation_status") or (
+            (row.result_snapshot or {}).get("status")
+            if (row.result_snapshot or {}).get("status") in {"ERROR", "FAILED"} else None),
         "quality_status": row.quality_status, "gate_failures": row.gate_failures or [],
         "ppa_evaluation": (row.result_snapshot or {}).get("ppa_evaluation"),
         "platform_ppa_evaluation": (row.result_snapshot or {}).get("platform_ppa_evaluation"),
@@ -86,6 +92,17 @@ async def research_report(db, run_id: int) -> dict:
         .group_by(ResearchCandidate.request_status)
     )).all()))
     total = sum(statuses.values())
+    pending_reasons = Counter()
+    ambiguous_failed = 0
+    evidence_rows = await db.stream(select(
+        ResearchCandidate.request_status, ResearchCandidate.result_snapshot,
+        ResearchCandidate.wq_alpha_id).where(ResearchCandidate.run_id == run_id)
+        .execution_options(yield_per=500))
+    async for status, snapshot, alpha_id in evidence_rows:
+        evidence = classify_record(status, snapshot, alpha_id)
+        if evidence.needs_reconciliation:
+            pending_reasons[f"{status}:{evidence.kind}"] += 1
+            ambiguous_failed += status == "FAILED"
     valid = (await db.execute(select(func.count(ResearchCandidate.id)).where(
         ResearchCandidate.run_id == run_id, ResearchCandidate.validation_status == "VALID",
     ))).scalar_one()
@@ -182,6 +199,9 @@ async def research_report(db, run_id: int) -> dict:
         "robustness_reviews": robustness_reviews,
         "ppa_phase_counts": ppa_phase_counts,
         "request_counts": dict(statuses),
+        "evidence_pending_count": sum(pending_reasons.values()),
+        "ambiguous_failed_count": ambiguous_failed,
+        "evidence_pending_reasons": dict(pending_reasons),
         "rejection_counts": dict(rejections),
         "genetic_funnel": {
             "generated": sum(genetic.values()),

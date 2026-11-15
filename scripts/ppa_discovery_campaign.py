@@ -449,6 +449,11 @@ def _report(args) -> dict:
             return run, [{"batch": by_case.get(row.experiment_group),
                           "case_id": row.experiment_group, "candidate_id": row.id,
                           "request_status": row.request_status, "wq_alpha_id": row.wq_alpha_id,
+                          "request_phase": (row.result_snapshot or {}).get("request_phase"),
+                          "simulation_status": (row.result_snapshot or {}).get("simulation_status") or (
+                              (row.result_snapshot or {}).get("status")
+                              if (row.result_snapshot or {}).get("status") in {"ERROR", "FAILED"} else None),
+                          "http_status": (row.result_snapshot or {}).get("http_status"),
                           "fitness": (row.metrics or {}).get("fitness"),
                           "margin": (row.metrics or {}).get("margin"),
                           "quality_status": row.quality_status,

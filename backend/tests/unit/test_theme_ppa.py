@@ -390,7 +390,7 @@ async def test_confirmation_upgrades_parent_only_after_both_platform_ready_probe
             task_id=task_row.id, run_id=run.id, family_id="theme", source="REFINEMENT",
             experiment_group="r1", expression="rank(rank(field_0_1))",
             expression_hash="parent", settings_hash="parent", settings={},
-            validation_status="VALID", request_status="RESULT", gate_failures=[],
+            validation_status="VALID", request_status="RESULT", wq_alpha_id="parent-alpha", gate_failures=[],
             metrics=metrics, result_snapshot={
                 "platform_ppa_evaluation": {"status": "PPA_READY", "reasons": []},
                 "ppa_evaluation": {"status": "PPA_PENDING", "reasons": ["ROBUSTNESS_REVIEW_PENDING"]},
@@ -437,7 +437,14 @@ async def test_confirmation_upgrades_parent_only_after_both_platform_ready_probe
 
 
 @pytest.mark.asyncio
-async def test_theme_dispatch_pauses_after_one_rate_limited_request(async_engine, monkeypatch):
+@pytest.mark.parametrize("response,reason,state", [
+    ({"http_status": 429, "request_phase": "CREATE_POST"}, "PPA_RATE_LIMIT", "FAILED"),
+    ({"http_status": 429}, "PPA_REQUEST_RECONCILIATION_PENDING", "UNKNOWN"),
+    ({"http_status": 429, "request_phase": "POLL_ORIGINAL"}, "PPA_REQUEST_RECONCILIATION_PENDING", "UNKNOWN"),
+    ({"error": "timeout", "request_phase": "CREATE_POST"}, "PPA_REQUEST_RECONCILIATION_PENDING", "UNKNOWN"),
+])
+@pytest.mark.parametrize("stop_after", [1, 3])
+async def test_theme_dispatch_stops_unfinished_request_without_cursor_advance(async_engine, monkeypatch, response, reason, state, stop_after):
     from backend.services.theme_ppa import run_theme_dispatch
     from backend.services import research_audit as audit_module
     from backend.models import ResearchCandidate
@@ -466,21 +473,47 @@ async def test_theme_dispatch_pauses_after_one_rate_limited_request(async_engine
 
             async def simulate_single(self, _expression, **_settings):
                 self.calls += 1
-                return {"success": False, "http_status": 429,
-                        "error": "Creation failed: THROTTLED"}
+                if self.calls < stop_after:
+                    return {"success": False, "http_status": 400, "request_phase": "CREATE_POST"}
+                return {"success": False, **response}
 
         brain = RateLimitedBrain()
         fields = {"dataset1": [{"id": f, "type": "MATRIX"}
                                 for f in m["datasets"]["dataset1"]]}
         outcome = await run_theme_dispatch(db, brain, mining_task, run, fields)
         candidates = (await db.execute(select(ResearchCandidate))).scalars().all()
-        assert brain.calls == 1
-        assert len(candidates) == 1
-        assert candidates[0].request_status == "FAILED"
-        assert outcome == {"done": True, "reason": "PPA_RATE_LIMIT",
-                           "phase": "discovery", "cursor": 1, "ready": 0}
+        assert brain.calls == stop_after
+        assert len(candidates) == stop_after
+        assert candidates[-1].request_status == state
+        assert outcome == {"done": True, "reason": reason,
+                           "phase": "discovery", "cursor": stop_after - 1, "ready": 0}
         assert mining_task.status == run.status == "PAUSED"
-        assert run.checkpoint["ppa_cursor"] == 1
+        assert run.checkpoint["ppa_cursor"] == stop_after - 1
+        if state == "UNKNOWN":
+            # Reproduce historical bad FAILED classification on worker restart.
+            candidates[-1].request_status = "FAILED"
+            mining_task.status = run.status = "RUNNING"
+            await db.commit()
+            resumed = await run_theme_dispatch(db, brain, mining_task, run, fields)
+            assert resumed["reason"] == "PPA_REQUEST_RECONCILIATION_PENDING"
+            assert brain.calls == stop_after
+            assert run.checkpoint["ppa_cursor"] == stop_after - 1
+            ledger = audit_module.ResearchLedger(mining_task.id, run.id, 80)
+            await ledger.record_location(candidates[-1].id, "/simulations/legacy-terminal")
+            async def poll_original(location):
+                assert location == "/simulations/legacy-terminal"
+                return {"status": "ERROR"}
+            await ledger.reconcile(poll_original)
+            await db.refresh(candidates[-1])
+            mining_task.status = run.status = "RUNNING"
+            await db.commit()
+            resumed = await run_theme_dispatch(db, brain, mining_task, run, fields)
+            assert resumed["reason"] == "PPA_REQUEST_RECONCILIATION_PENDING"
+            assert brain.calls == stop_after + 1
+            assert run.checkpoint["ppa_cursor"] == stop_after
+            all_rows = (await db.execute(select(ResearchCandidate))).scalars().all()
+            assert len(all_rows) == stop_after + 1
+            assert candidates[-1].result_snapshot["simulation_status"] == "ERROR"
 
 
 @pytest.mark.asyncio
@@ -499,7 +532,7 @@ async def test_audited_single_simulation_reports_429_without_retry():
 def test_audit_snapshot_keeps_rate_limit_diagnostics():
     from backend.services.research_audit import safe_result
 
-    snapshot = safe_result({"success": False, "http_status": 429,
+    snapshot = safe_result({"success": False, "http_status": 429, "request_phase": "CREATE_POST",
                             "retry_after": 60.0, "error": "THROTTLED"})
     assert snapshot["http_status"] == 429
     assert snapshot["retry_after"] == 60.0

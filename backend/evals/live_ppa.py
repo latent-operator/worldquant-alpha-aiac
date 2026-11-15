@@ -1,7 +1,7 @@
 """Pre-register a bounded PPA selector comparison before any WQ result exists."""
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from math import ceil
 from random import Random
@@ -198,18 +198,27 @@ def analyze_results(manifest: dict, rows: list[dict]) -> dict:
     if set(outcomes) - set(cases):
         raise ValueError("RESULT_CASE_UNKNOWN")
     pending = set(cases) - set(outcomes)
+    from backend.services.request_lifecycle import classify_record
+    evidence_by_case = {case_id: classify_record(row.get("request_status"), row,
+                                                row.get("wq_alpha_id"))
+                        for case_id, row in outcomes.items()}
     pending.update(case_id for case_id, row in outcomes.items()
-                   if row.get("request_status") in {"RESERVED", "REQUESTED", "UNKNOWN"})
+                   if evidence_by_case[case_id].needs_reconciliation)
+    unoccupied = sum(item.kind == "NOT_SENT" for item in evidence_by_case.values())
+    terminal_count = sum(item.terminal for item in evidence_by_case.values())
+    result_evidence = {cid: row for cid, row in outcomes.items()
+                       if row.get("request_status") == "RESULT" and evidence_by_case[cid].terminal
+                       and evidence_by_case[cid].kind == "RESULT"}
 
     def summarize(order: list[str], limit: int) -> dict:
         chosen = order[:limit]
-        sharpe = [float(outcomes[cid]["test_sharpe"]) for cid in chosen
-                  if outcomes.get(cid, {}).get("request_status") == "RESULT"
-                  and outcomes[cid].get("test_sharpe") is not None]
+        sharpe = [float(result_evidence[cid]["test_sharpe"]) for cid in chosen
+                  if result_evidence.get(cid, {}).get("test_sharpe") is not None]
         return {"selected": len(chosen),
-                "quality_pass": sum(outcomes.get(cid, {}).get("quality_status") == "PASS" for cid in chosen),
-                "ppa_ready": sum(outcomes.get(cid, {}).get("ppa_status") == "PPA_READY" for cid in chosen),
-                "effective_improvement": sum(outcomes.get(cid, {}).get("effective_improvement") is True
+                "quality_pass": sum(result_evidence.get(cid, {}).get("quality_status") == "PASS" for cid in chosen),
+                "ppa_ready": sum(result_evidence.get(cid, {}).get("quality_status") == "PASS"
+                                 and result_evidence[cid].get("ppa_status") == "PPA_READY" for cid in chosen),
+                "effective_improvement": sum(result_evidence.get(cid, {}).get("effective_improvement") is True
                                              for cid in chosen),
                 "test_sharpe_count": len(sharpe),
                 "test_sharpe_mean": sum(sharpe) / len(sharpe) if sharpe else None}
@@ -220,6 +229,8 @@ def analyze_results(manifest: dict, rows: list[dict]) -> dict:
     result_count = sum(row.get("request_status") == "RESULT" for row in outcomes.values())
     if pending:
         outcome = "INCOMPLETE_RECONCILIATION"
+    elif terminal_count != len(cases):
+        outcome = "INCOMPLETE_REQUEST_OCCUPANCY"
     elif result_count < manifest.get("min_results", ceil(0.95 * manifest["budget"])):
         outcome = "INSUFFICIENT_RESULTS"
     elif (evidence["quality_pass"] >= baseline["quality_pass"]
@@ -261,17 +272,22 @@ def analyze_results(manifest: dict, rows: list[dict]) -> dict:
                        "effective_improvement": "effective_improvement"}[name]
                 wanted = {"quality_pass": "PASS", "ppa_ready": "PPA_READY",
                           "effective_improvement": True}[name]
+                def achieved(cid):
+                    row = result_evidence.get(cid, {})
+                    return row.get(key) == wanted and (name != "ppa_ready" or row.get("quality_status") == "PASS")
                 samples[name].append(sum(counts[parent] * sum(
-                    (cid in selected_evidence) * (outcomes.get(cid, {}).get(key) == wanted)
-                    - (cid in selected_baseline) * (outcomes.get(cid, {}).get(key) == wanted)
+                    (cid in selected_evidence) * achieved(cid)
+                    - (cid in selected_baseline) * achieved(cid)
                     for cid in cids) for parent, cids in by_parent.items()))
         for name in metric_names:
             ordered = sorted(samples[name])
             intervals[name] = [ordered[49], ordered[1949]]
     status_counts = {status: sum(row.get("request_status") == status for row in outcomes.values())
                      for status in ("RESULT", "FAILED", "UNKNOWN", "REQUESTED", "RESERVED")}
+    status_counts.update(Counter(row.get("request_status") for row in outcomes.values()))
     return {"outcome": outcome, "result_count": result_count,
             "unknown_count": status_counts["UNKNOWN"], "pending_count": len(pending),
+            "unoccupied_count": unoccupied, "terminal_count": terminal_count,
             "request_status_counts": status_counts, "difference": difference,
             "confidence_intervals": intervals, "confidence_method": "parent_cluster_bootstrap_2000",
             "baseline": baseline, "evidence": evidence, "sensitivity": sensitivity}

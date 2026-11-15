@@ -161,6 +161,25 @@ the release journal records its path. Runtime migrations, isolation transactions
 and services continue using RuntimeHome's Python and shared environment.
 Omitting the option retains the existing single-environment behavior.
 
+Full preflight also requires the pinned Import Linter and Semgrep tools in
+`requirements-governance.txt`. Install them in a separate virtual environment
+and set `AIAC_GOVERNANCE_BIN` to its `Scripts` directory (Windows) or `bin`
+directory (Linux) before preflight/deployment. Semgrep's Click and tracing
+dependencies conflict with DeepEval's versions, so do not combine these
+environments. CI creates this tool environment separately on both platforms.
+No additional service, model call, tool login or registry rule download is used.
+
+The architecture check enforces the request policy's dependency boundary and
+prevents direct release imports from the v2 runner or Agents. The existing
+theme-task configuration validator still lives in `theme_ppa`; its indirect
+dependencies remain outside this round's request-classification extraction.
+The check runs a forbidden-import
+fixture and its repaired counterpart, Semgrep positive/negative rule fixtures,
+and the source scan. The focused rules constrain direct request-state writes
+and known simulation POST entry points; they do not prove all possible dynamic
+dispatch safe. Existing cached-result and audited isolation writers have exact
+file exceptions. Runtime reservation/recovery tests remain necessary.
+
 The owner's 2026-11-15 exception applies only to task 14 / run 28. Normal
 completed-batch handoff remains the default. Isolation permits a software
 release while preserving unknown requests, not research restart. The old
@@ -203,3 +222,27 @@ They are never corrected, isolated or resumed by this handoff. In the local
 rehearsal, task 12 / run 15 contains 11 UNKNOWN records and candidate 352 is
 REQUESTED with no original location. All 12 remain unresolved and must be disclosed in any later
 account/research safety assessment; software release does not prove inactivity.
+
+## Request evidence shared by runtime and reports
+
+`backend/services/request_lifecycle.py` classifies evidence without network or
+database access. The ledger persists the decision; PPA batch completion and
+quality qualification remain separate checks.
+
+| Evidence | Request interpretation |
+| --- | --- |
+| Persisted RESULT with Alpha identity | Result exists; quality PASS still requires its own assessment |
+| Explicit CREATE_POST 4xx except 408/429 | Acknowledged client rejection |
+| Explicit CREATE_POST 429 | Charged rejected request; wait applies, planned case is not complete |
+| Original-position successful lookup with ERROR/FAILED | Terminal simulation failure |
+| Original-position 404/405/429/5xx, timeout or lost connection | Unresolved; stop new dispatch and reconcile only the original position |
+| Legacy FAILED without terminal evidence | Unresolved even though the raw stored label remains FAILED |
+| NOT_REQUESTED / NOT_SENT | No completed request; cannot satisfy a frozen comparison's request coverage |
+
+Stored RESERVED/REQUESTED/UNKNOWN records require transactional reconciliation
+before they can count as final, even if a snapshot contains an Alpha identity.
+Reports preserve raw status counts and separately expose evidence pending counts
+and ambiguous failures. A zero raw UNKNOWN count alone does not prove a safe
+boundary. Old reports remain readable, but unsupported completion claims are
+downgraded or rejected; historical fixtures are not rewritten to manufacture
+evidence.

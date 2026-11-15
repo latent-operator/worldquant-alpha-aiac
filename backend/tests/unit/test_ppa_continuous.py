@@ -382,7 +382,7 @@ async def test_epoch_advance_is_atomic_and_stale_retry_is_rejected(
                 family_id="theme_ppa_v3:nov", experiment_group=f"legacy{index}",
                 expression=f"rank(field_0_{index})", expression_hash=f"expr{index}",
                 settings_hash="settings", settings={}, validation_status="VALID",
-                request_status="RESULT", gate_failures=[], metrics={},
+                request_status="RESULT", wq_alpha_id=f"alpha{index}", gate_failures=[], metrics={},
                 result_snapshot={"research_case": {"epoch": 1},
                                  "ppa_evaluation": {"status": "PPA_REJECTED"}}))
         await db.commit()

@@ -20,6 +20,8 @@ def sanitize_snapshot(report: dict, candidates: list[dict]) -> dict:
         "quality_pass": funnel.get("quality_pass"),
         "quality_counts": dict(report.get("quality_counts") or {}),
         "request_counts": dict(report.get("request_counts") or {}),
+        "evidence_pending_count": report.get("evidence_pending_count"),
+        "ambiguous_failed_count": report.get("ambiguous_failed_count"),
         "best_sharpe": (report.get("best_sharpe_alpha") or {}).get("sharpe"),
         "timing": {
             "completed_requests": funnel.get("wq_results"),
@@ -36,6 +38,10 @@ def sanitize_snapshot(report: dict, candidates: list[dict]) -> dict:
             "case_id": row.get("experiment_group"),
             "request_status": row.get("request_status"),
             "quality_status": row.get("quality_status"),
+            "wq_alpha_id": row.get("wq_alpha_id"),
+            "request_phase": row.get("request_phase"),
+            "simulation_status": row.get("simulation_status"),
+            "http_status": row.get("http_status"),
         } for row in candidates],
     }
 

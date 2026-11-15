@@ -118,10 +118,11 @@ def production_state(client: httpx.Client, base_url: str, task_id: int, run_id: 
             break
     else:
         raise ValueError("ACTIVE_TASK_LIST_UNBOUNDED")
-    counts = report.json().get("request_counts") or {}
+    pending = report.json().get("evidence_pending_count")
+    if type(pending) is not int or pending < 0:
+        raise ValueError("SOURCE_REQUEST_EVIDENCE_MISSING")
     task = summary.json()
-    return {"source_unresolved": sum(int(counts.get(key, 0)) for key in
-                                     ("RESERVED", "REQUESTED", "UNKNOWN")),
+    return {"source_unresolved": pending,
             "other_active_work": bool(active),
             "source_run_current": task.get("latest_run_id") == run_id
                                   and task.get("status") in {"PAUSED", "STOPPED"}}
@@ -271,6 +272,11 @@ async def _lab_rows(manifest: dict) -> tuple[int, list[dict]]:
             rows.append({"case_id": candidate.experiment_group, "candidate_id": candidate.id,
                 "run_id": run.id, "parent_source_candidate_id": case["parent_source_candidate_id"],
                 "wq_alpha_id": candidate.wq_alpha_id, "request_status": candidate.request_status,
+                "request_phase": (candidate.result_snapshot or {}).get("request_phase"),
+                "simulation_status": (candidate.result_snapshot or {}).get("simulation_status") or (
+                    (candidate.result_snapshot or {}).get("status")
+                    if (candidate.result_snapshot or {}).get("status") in {"ERROR", "FAILED"} else None),
+                "http_status": (candidate.result_snapshot or {}).get("http_status"),
                 "quality_status": qualities.get(candidate.wq_alpha_id),
                 "ppa_status": (candidate.result_snapshot or {}).get("ppa_evaluation", {}).get("status"),
                 "platform_ppa_status": (candidate.result_snapshot or {}).get("platform_ppa_evaluation", {}).get("status"),

@@ -5,6 +5,25 @@ from sqlalchemy import select
 from backend.models import ExperimentRun, MiningTask, ResearchCandidate
 from backend.services import ppa_handoff
 from backend.tests.unit.test_ppa_v2_workflow import setup, discovery
+from types import SimpleNamespace
+
+
+@pytest.mark.parametrize("snapshot,accepted", [
+    ({"request_phase": "CREATE_POST", "http_status": 400}, True),
+    ({"request_phase": "POLL_ORIGINAL", "simulation_status": "ERROR"}, True),
+    ({"request_phase": "POLL_ORIGINAL", "http_status": 404}, False),
+    ({"request_phase": "POLL_ORIGINAL", "http_status": 429}, False),
+    ({"http_status": 400}, False),
+    ({"request_phase": "CREATE_POST", "http_status": 429}, False),
+])
+def test_handoff_uses_proven_request_evidence(snapshot, accepted):
+    checkpoint = {"ppa_batch": {"cases": [{"case_id": "one"}]}, "ppa_batch_cursor": 1}
+    row = SimpleNamespace(experiment_group="one", request_status="FAILED", result_snapshot=snapshot)
+    if accepted:
+        ppa_handoff.validate_boundary(checkpoint, [row])
+    else:
+        with pytest.raises(ValueError, match="PPA_HANDOFF_"):
+            ppa_handoff.validate_boundary(checkpoint, [row])
 
 
 async def prepared(maker, task_id, run_id, *, pending=False, incomplete=False):
@@ -21,7 +40,7 @@ async def prepared(maker, task_id, run_id, *, pending=False, incomplete=False):
                 experiment_group=case["case_id"], expression=case["expression"],
                 expression_hash=case["case_id"], settings_hash="s", settings={},
                 validation_status="VALID", request_status="UNKNOWN" if pending and i == 0 else "RESULT",
-                gate_failures=[], metrics={}, result_snapshot={"ppa_evaluation": {"status": "PPA_REJECTED"}}))
+                wq_alpha_id=f"alpha{i}", gate_failures=[], metrics={}, result_snapshot={"ppa_evaluation": {"status": "PPA_REJECTED"}}))
         await db.commit()
 
 
@@ -101,7 +120,8 @@ async def test_close_refuses_stale_run_and_429_only_case(async_engine, monkeypat
         row = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id == rid)
                                 .order_by(ResearchCandidate.id))).scalars().first()
         row.request_status = "FAILED"
-        row.result_snapshot = {"http_status": 429}
+        row.wq_alpha_id = None
+        row.result_snapshot = {"http_status": 429, "request_phase": "CREATE_POST"}
         await db.commit()
         with pytest.raises(ValueError, match="PPA_HANDOFF_BATCH_INCOMPLETE"):
             await ppa_handoff.close_ppa_run(db, tid, rid)
@@ -120,9 +140,10 @@ async def test_close_refuses_manual_pause_and_ambiguous_failure(async_engine, mo
         run.block_reason = "PPA_FIRST_BATCH_REVIEW"
         row = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id == rid))).scalars().first()
         row.request_status = "FAILED"
+        row.wq_alpha_id = None
         row.result_snapshot = {}
         await db.commit()
-        with pytest.raises(ValueError, match="PPA_HANDOFF_BATCH_INCOMPLETE"):
+        with pytest.raises(ValueError, match="PPA_HANDOFF_REQUEST_PENDING"):
             await ppa_handoff.close_ppa_run(db, tid, rid)
 
 

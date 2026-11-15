@@ -5,10 +5,16 @@ from __future__ import annotations
 from typing import Any
 from collections import Counter
 import re
+from backend.services.request_lifecycle import classify_record
+
+
+def _pending(rows: list[dict]) -> int:
+    return sum(classify_record(row.get("request_status"), row,
+                               row.get("wq_alpha_id")).needs_reconciliation for row in rows)
 
 
 GOAL_ID = "AIAC-PPA-QUALIFIED-ALPHA"
-REQUEST_STATES = {"RESULT", "FAILED", "UNKNOWN", "REQUESTED", "RESERVED"}
+REQUEST_STATES = {"RESULT", "FAILED", "UNKNOWN", "REQUESTED", "RESERVED", "NOT_REQUESTED", "NOT_SENT"}
 
 
 def _request_counts(counts: dict) -> tuple[int, int, int]:
@@ -57,11 +63,10 @@ def evaluate_goal(report: dict, *, source: str,
         raise ValueError("An experiment source is required")
     if analysis is None and isinstance(report.get("candidate_lineage"), list):
         rows = report["candidate_lineage"]
-        pending_statuses = {"UNKNOWN", "REQUESTED", "RESERVED"}
         analysis = {
             "result_count": sum(row.get("request_status") == "RESULT" for row in rows),
             "unknown_count": sum(row.get("request_status") == "UNKNOWN" for row in rows),
-            "pending_count": sum(row.get("request_status") in pending_statuses for row in rows),
+            "pending_count": _pending(rows),
             "evidence": {
                 "quality_pass": sum(row.get("request_status") == "RESULT"
                                     and row.get("quality_status") == "PASS" for row in rows),
@@ -79,6 +84,10 @@ def evaluate_goal(report: dict, *, source: str,
     results = _count(analysis.get("result_count"), "result_count")
     unknown = _count(analysis.get("unknown_count"), "unknown_count")
     pending = _count(analysis.get("pending_count", unknown), "pending_count")
+    unoccupied = _count(analysis.get("unoccupied_count", 0), "unoccupied_count")
+    lineage = report.get("candidate_lineage", report.get("candidates") or [])
+    unoccupied = max(unoccupied, sum(classify_record(row.get("request_status"), row,
+        row.get("wq_alpha_id")).kind == "NOT_SENT" for row in lineage))
     quality = _count(evidence.get("quality_pass"), "quality_pass")
     ready = _count(evidence.get("ppa_ready"), "ppa_ready")
     if quality > results or ready > quality:
@@ -87,11 +96,26 @@ def evaluate_goal(report: dict, *, source: str,
         raise ValueError("Inconsistent pending request count")
     expected_requests = (results, unknown, pending)
     if "request_status_counts" in analysis:
-        if _request_counts(analysis["request_status_counts"]) != expected_requests:
+        recorded = _request_counts(analysis["request_status_counts"])
+        unoccupied = max(unoccupied, sum(analysis["request_status_counts"].get(key, 0)
+                                        for key in ("NOT_REQUESTED", "NOT_SENT")))
+        if recorded[:2] != expected_requests[:2] or recorded[2] > pending:
             raise ValueError("Inconsistent request summary")
+        if ("candidate_lineage" not in report
+                and analysis["request_status_counts"].get("FAILED", 0)):
+            # A count alone cannot establish whether FAILED has terminal evidence.
+            pending = max(pending, recorded[2] + analysis["request_status_counts"]["FAILED"])
     if "candidate_lineage" in report:
         actual = Counter(row["request_status"] for row in report["candidate_lineage"])
-        if _request_counts(actual) != expected_requests:
+        derived_pending = _pending(report["candidate_lineage"])
+        # Old exports counted only UNKNOWN/REQUESTED/RESERVED. Reassess their
+        # evidence without rewriting the file or accepting its completion claim.
+        if pending == _request_counts(actual)[2]:
+            pending = max(pending, derived_pending)
+        if (_request_counts(actual)[:2] != expected_requests[:2]
+                or derived_pending != pending
+                or ("request_status_counts" in analysis
+                    and actual != Counter(analysis["request_status_counts"]))):
             raise ValueError("Inconsistent request lineage and summary")
         passed = [row for row in report["candidate_lineage"]
                   if row["request_status"] == "RESULT" and row.get("quality_status") == "PASS"]
@@ -109,7 +133,8 @@ def evaluate_goal(report: dict, *, source: str,
             proven_candidate = row
             break
 
-    if unknown or pending or results == 0 or analysis.get("outcome") == "INCOMPLETE_RECONCILIATION":
+    if (unknown or pending or unoccupied or results == 0
+            or analysis.get("outcome") in {"INCOMPLETE_RECONCILIATION", "INCOMPLETE_REQUEST_OCCUPANCY"}):
         status = "EVIDENCE_INSUFFICIENT"
     elif quality == 0:
         status = "NOT_PROVEN"
@@ -126,6 +151,7 @@ def evaluate_goal(report: dict, *, source: str,
             "status": status,
             "result_count": results, "unknown_requests": unknown,
             "pending_requests": pending, "quality_pass": quality,
+            "unoccupied_requests": unoccupied,
             "final_ppa_ready": ready,
             "historical_unknown_retained": _count(report.get("old_unknown_retained", 0),
                                                    "old_unknown_retained"),

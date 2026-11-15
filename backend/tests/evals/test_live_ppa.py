@@ -93,11 +93,11 @@ def test_result_analysis_uses_persisted_status_and_counts_missing_as_failure():
                 "candidates": [{"case_id": name, "parent_candidate_id": i}
                                for i, name in enumerate(("a", "b", "c"), 1)],
                 "budget": 3, "top_k": 2, "min_results": 2}
-    rows = [{"case_id": "a", "request_status": "RESULT", "quality_status": "OPTIMIZE",
+    rows = [{"case_id": "a", "request_status": "RESULT", "wq_alpha_id": "synthetic-a", "quality_status": "OPTIMIZE",
              "ppa_status": "PPA_REJECTED", "effective_improvement": False},
-            {"case_id": "b", "request_status": "RESULT", "quality_status": "PASS",
+            {"case_id": "b", "request_status": "RESULT", "wq_alpha_id": "synthetic-b", "quality_status": "PASS",
              "ppa_status": "PPA_PENDING", "effective_improvement": True},
-            {"case_id": "c", "request_status": "FAILED", "quality_status": None,
+            {"case_id": "c", "request_status": "FAILED", "request_phase": "CREATE_POST", "http_status": 400, "quality_status": None,
              "ppa_status": None, "effective_improvement": False}]
     result = analyze_results(manifest, rows)
     assert result["baseline"]["quality_pass"] == 1
@@ -117,7 +117,7 @@ def test_result_analysis_reports_differences_and_parent_uncertainty():
                                {"case_id": "c", "parent_candidate_id": 3}],
                 "budget": 3, "top_k": 2, "min_results": 3,
                 "manifest_sha256": "ab" * 32}
-    rows = [{"case_id": cid, "request_status": "RESULT", "quality_status": quality,
+    rows = [{"case_id": cid, "request_status": "RESULT", "wq_alpha_id": "synthetic-" + cid, "quality_status": quality,
              "ppa_status": ppa, "effective_improvement": proxy, "test_sharpe": sharpe}
             for cid, quality, ppa, proxy, sharpe in [
                 ("a", "OPTIMIZE", "PPA_REJECTED", False, -0.1),

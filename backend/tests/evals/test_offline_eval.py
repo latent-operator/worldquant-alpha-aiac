@@ -34,7 +34,7 @@ def boundary(status="RESULT", *, cursor=1, latest_run_id=28, http_status=None):
             "batch_cursor": cursor, "batch_cases": [{"case_id": "c1"}],
             "candidates": [{"candidate_id": 1777, "case_id": "c1", "request_status": status,
                             "ppa_evaluation": "PPA_REJECTED" if status == "RESULT" else None,
-                            "http_status": http_status}]}
+                            "http_status": http_status, "wq_alpha_id": "synthetic-result" if status == "RESULT" else None}]}
 
 
 @pytest.mark.parametrize("change", [
@@ -128,7 +128,9 @@ def test_sanitizer_allows_only_evidence_fields_and_diff_detects_change():
     serialized = json.dumps(snap)
     assert "secret" not in serialized
     assert snap["candidates"] == [{"candidate_id": 11, "request_status": "RESULT",
-                                   "quality_status": "OPTIMIZE", "case_id": "c1"}]
+                                   "quality_status": "OPTIMIZE", "case_id": "c1",
+                                   "wq_alpha_id": None, "request_phase": None,
+                                   "simulation_status": None, "http_status": None}]
     changed = copy.deepcopy(snap)
     changed["quality_pass"] = 1
     assert compare_snapshot(snap, changed) == {"quality_pass": {"saved": 0, "current": 1}}
