@@ -188,8 +188,8 @@ async def run_campaign_batch(campaign: dict, batch: dict, *, maker, brain, live_
                 return {"status": "PAUSED", "reason": "EVAL_RATE_LIMIT", "sent": 0,
                         "task_id": task_id, "run_id": run_id}
         if quality_evaluator is None:
-            from backend.agents.mining_agent import MiningAgent
-            quality_evaluator = MiningAgent(db, wrapped)._quality_status_for_optimization_result
+            from backend.services.alpha_quality_evaluation import evaluator_for
+            quality_evaluator = evaluator_for(wrapped)
         async def qualify_unfinished():
             for row in await _rows(db, run_id):
                 if row.request_status != "RESULT" or (row.result_snapshot or {}).get("ppa_evaluation"):

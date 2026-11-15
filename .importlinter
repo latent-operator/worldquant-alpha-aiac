@@ -24,3 +24,30 @@ forbidden_modules =
     backend.services.theme_ppa_v2
     backend.agents
 allow_indirect_imports = True
+
+[importlinter:contract:quality-policy]
+name = Alpha quality policy has no runtime dependencies
+type = forbidden
+source_modules = backend.services.alpha_quality_policy
+forbidden_modules =
+    backend.database
+    backend.models
+    backend.config
+    backend.adapters
+    backend.agents
+    sqlalchemy
+    httpx
+    requests
+    aiohttp
+
+[importlinter:contract:quality-consumers]
+name = Research quality consumers do not construct MiningAgent
+type = forbidden
+source_modules =
+    backend.services.alpha_quality_evaluation
+    backend.services.theme_ppa
+    backend.services.theme_ppa_v2
+    backend.services.paper_experiment
+    backend.evals.live_runner
+    backend.evals.discovery_campaign
+forbidden_modules = backend.agents.mining_agent

@@ -65,7 +65,7 @@ def select_active_seeds(rows, exhausted, *, limit):
 
 def select_local_seeds(rows, base, *, max_operators, parent_total_counts, exhausted, limit):
     """Prefer measured parents that can still pass hard gates and have child budget."""
-    from backend.agents.graph.nodes.evaluation import _operator_call_count
+    from backend.services.alpha_quality_policy import operator_call_count as _operator_call_count
     eligible = [row for row in rows
                 if row.get("mechanism_id") in base.get("mechanisms", {})
                 and row.get("dataset_id") in base.get("datasets", {})
@@ -236,7 +236,7 @@ def freeze_batch(base, evidence, proposal):
             if re.search(r"\b" + re.escape(name) + r"\b", remainder, flags=re.IGNORECASE):
                 raise ValueError("PPA_VECTOR_AGGREGATION_REQUIRED")
         result = AlphaSemanticValidator(fields=fields, strict_field_check=True).validate(expression)
-        from backend.agents.graph.nodes.evaluation import _operator_call_count
+        from backend.services.alpha_quality_policy import operator_call_count as _operator_call_count
         if (evidence.get("strict_max_operator_count") is not None
                 and _operator_call_count(case["expression"]) > evidence["strict_max_operator_count"]):
             raise ValueError("PPA_STRICT_OPERATOR_LIMIT")

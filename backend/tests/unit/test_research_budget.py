@@ -320,17 +320,18 @@ async def test_paper_dispatch_keeps_one_run_and_saves_audited_wq_results(async_e
     maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(audit_module, "AsyncSessionLocal", maker)
 
-    class FakeAgent:
-        def __init__(self, db, brain):
-            pass
-
-        async def _quality_status_for_optimization_result(self, **kwargs):
-            assert kwargs["metrics"]["stage"] == "IS"
-            assert kwargs["metrics"]["status"] == "UNSUBMITTED"
-            kwargs["metrics"]["_strict_gate_failures"] = ["LOW_SHARPE"]
-            return "OPTIMIZE"
-
-    monkeypatch.setattr(mining_module, "MiningAgent", FakeAgent)
+    from backend.services import alpha_quality_evaluation
+    quality_calls = []
+    async def quality(**kwargs):
+        quality_calls.append(kwargs)
+        assert kwargs["metrics"]["stage"] == "IS"
+        assert kwargs["metrics"]["status"] == "UNSUBMITTED"
+        kwargs["metrics"]["_strict_gate_failures"] = ["LOW_SHARPE"]
+        return "OPTIMIZE"
+    def forbidden_agent(*_args, **_kwargs):
+        pytest.fail("Paper quality must not construct MiningAgent")
+    monkeypatch.setattr(mining_module, "MiningAgent", forbidden_agent)
+    monkeypatch.setattr(alpha_quality_evaluation, "evaluate_alpha_quality", quality)
 
     class FakeBrain:
         calls = 0
@@ -361,6 +362,7 @@ async def test_paper_dispatch_keeps_one_run_and_saves_audited_wq_results(async_e
         second = await run_paper_dispatch(db, brain, task, run, fields)
         assert first["cursor"] == 5 and second["cursor"] == 10
         assert brain.calls == 10
+        assert len(quality_calls) == 10
         assert run.id == first.get("run_id", run.id)
         assert (await db.execute(select(func.count(Alpha.id)))).scalar_one() == 10
         assert (await db.execute(select(func.count(ResearchCandidate.id)).where(

@@ -416,9 +416,8 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
         dedup_task_ids=(task.config or {}).get("dedup_task_ids", []),
     )
     audited_brain = brain if isinstance(brain, ResearchBudgetBrain) else ResearchBudgetBrain(brain, ledger)
-    from backend.agents.graph.nodes.evaluation import _operator_call_count
-    from backend.agents.mining_agent import MiningAgent
-    agent = MiningAgent(db, audited_brain)
+    from backend.services.alpha_quality_policy import operator_call_count as _operator_call_count
+    from backend.services.alpha_quality_evaluation import evaluate_alpha_quality
     results = []
     rejected = 0
     rate_limited = False
@@ -498,7 +497,8 @@ async def run_theme_dispatch(db, brain, task, run, fields_by_dataset: dict) -> d
         metrics.update({"checks": result.get("checks") or [],
                         "can_submit": result.get("can_submit", False),
                         "stage": result.get("stage"), "status": result.get("status")})
-        strict_status = await agent._quality_status_for_optimization_result(
+        strict_status = await evaluate_alpha_quality(
+            brain=audited_brain,
             task=task, expression=case["expression"], metrics=metrics,
             fields=fields, alpha_id=alpha_id,
         )

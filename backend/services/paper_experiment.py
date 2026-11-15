@@ -162,8 +162,7 @@ async def run_paper_dispatch(db, brain, task, run, fields: list[dict]) -> dict:
     db.add(trace)
     await db.flush()
 
-    from backend.agents.mining_agent import MiningAgent
-    agent = MiningAgent(db, audited_brain)
+    from backend.services.alpha_quality_evaluation import evaluate_alpha_quality
     pass_count = 0
     for case, result in zip(valid_cases, results):
         alpha_id = result.get("alpha_id")
@@ -179,7 +178,8 @@ async def run_paper_dispatch(db, brain, task, run, fields: list[dict]) -> dict:
             "_paper_vendor_proxy": True,
             "_paper_family": FAMILY_ID,
         })
-        strict_status = await agent._quality_status_for_optimization_result(
+        strict_status = await evaluate_alpha_quality(
+            brain=audited_brain,
             task=task, expression=case["expression"], metrics=metrics,
             fields=fields, alpha_id=alpha_id,
         )

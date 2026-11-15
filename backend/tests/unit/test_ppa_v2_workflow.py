@@ -70,6 +70,30 @@ class Brain:
 
 
 @pytest.mark.asyncio
+async def test_default_quality_evaluator_does_not_construct_mining_agent(async_engine, monkeypatch):
+    from backend.agents import mining_agent
+    def forbidden_agent(*_args, **_kwargs):
+        pytest.fail("PPA must use the standalone quality evaluator")
+    monkeypatch.setattr(mining_agent, 'MiningAgent', forbidden_agent)
+    maker, tid, rid, base = await setup(async_engine, monkeypatch)
+    brain = Brain()
+    async with maker() as db:
+        task, run = await db.get(MiningTask, tid), await db.get(ExperimentRun, rid)
+        context = await workflow.feedback_context(db, task, run)
+        await workflow.import_batch(db, task, run, freeze_batch(base, context, discovery()))
+        task.status = run.status = 'RUNNING'
+        await db.commit()
+        fields = {'dataset1': [{'id': name, 'type': 'MATRIX'} for name in base['datasets']['dataset1']]}
+        result = await workflow.run_theme_v2(db, brain, task, run, fields)
+        assert result['reason'] == 'PPA_FIRST_BATCH_REVIEW'
+        assert brain.calls == 4
+        rows = (await db.execute(select(ResearchCandidate).where(ResearchCandidate.run_id == rid))).scalars().all()
+        assert len(rows) == 4
+        assert all(row.quality_status == 'OPTIMIZE' for row in rows)
+        assert all(row.gate_failures for row in rows)
+
+
+@pytest.mark.asyncio
 async def test_worker_pause_does_not_replace_manual_pause(async_engine, monkeypatch):
     maker, tid, rid, _ = await setup(async_engine, monkeypatch)
     async with maker() as db:

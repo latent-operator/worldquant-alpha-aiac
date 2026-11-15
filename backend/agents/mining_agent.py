@@ -3522,102 +3522,11 @@ class MiningAgent:
         fields: List[Dict],
         alpha_id: Optional[str],
     ) -> str:
-        """Apply the same strict deliverable gates to optimization-chain output."""
-        from backend.alpha_scoring import evaluate_with_brain_checks
-        from backend.agents.graph.nodes.evaluation import _strict_gate_failures
+        """Compatibility wrapper around the shared quality evaluator."""
+        from backend.services.alpha_quality_evaluation import evaluate_alpha_quality
+        return await evaluate_alpha_quality(brain=self.brain, task=task, expression=expression,
+                                            metrics=metrics, fields=fields, alpha_id=alpha_id)
 
-        config = task.config or {}
-        thresholds = {
-            "sharpe_min": float(config.get("sharpe_min", 1.58)),
-            "two_year_sharpe_min": float(config.get("two_year_sharpe_min", 1.6)),
-            "fitness_min": float(config.get("fitness_min", 1.0)),
-            "rn_sharpe_min": float(config.get("rn_sharpe_min", 1.58)),
-            "rn_fitness_min": float(config.get("rn_fitness_min", 1.0)),
-            "margin_min": float(config.get("margin_min", 0.001)),
-            "turnover_min": float(config.get("turnover_min", 0.05)),
-            "turnover_max": float(config.get("turnover_max", 0.30)),
-            "prod_corr_max": float(config.get("prod_corr_max", 0.7)),
-            "self_corr_max": float(config.get("self_corr_max", 0.5)),
-            "ra_fails_max": int(config.get("ra_fails_max", 0)),
-            "max_operator_count": int(config.get("max_operator_count", 5)),
-        }
-        sim_result = {
-            "is": {
-                "sharpe": metrics.get("sharpe", 0),
-                "fitness": metrics.get("fitness", 0),
-                "turnover": metrics.get("turnover", 0),
-                "drawdown": metrics.get("drawdown", 0),
-                "margin": metrics.get("margin", 0),
-                "checks": metrics.get("checks", []),
-            },
-            "riskNeutralized": metrics.get("riskNeutralized", {}),
-            "investabilityConstrained": metrics.get("investabilityConstrained", {}),
-            "checks": metrics.get("checks", []),
-            "can_submit": metrics.get("can_submit", False),
-        }
-        brain_eval = evaluate_with_brain_checks(sim_result)
-        prod_corr = None
-        self_corr = None
-
-        local_failures = _strict_gate_failures(
-            metrics=metrics,
-            brain_failed_checks=brain_eval.get("failed_checks", []),
-            prod_corr=0.0,
-            self_corr=0.0,
-            thresholds=thresholds,
-            expression=expression,
-            fields=fields,
-        )
-        local_failures = [
-            failure
-            for failure in local_failures
-            if failure not in {"PROD_CORR_MISSING", "SELF_CORR_MISSING"}
-            and not failure.startswith("HIGH_PROD_CORR")
-            and not failure.startswith("HIGH_SELF_CORR")
-        ]
-        if local_failures or not alpha_id:
-            metrics.update({
-                "_strict_gate_failures": local_failures,
-                "_hard_pass": False,
-                "_corr_checked": False,
-            })
-            return "OPTIMIZE"
-
-        try:
-            self_corr_result = await self.brain.check_correlation(alpha_id, check_type="SELF")
-            if isinstance(self_corr_result, dict) and self_corr_result.get("max") is not None:
-                self_corr = float(self_corr_result["max"])
-        except Exception as exc:
-            logger.warning(f"[MiningAgent] Optimization SELF correlation failed for {alpha_id}: {exc}")
-
-        if self_corr is not None and self_corr < thresholds["self_corr_max"]:
-            try:
-                prod_corr_result = await self.brain.check_correlation(alpha_id, check_type="PROD")
-                if isinstance(prod_corr_result, dict) and prod_corr_result.get("max") is not None:
-                    prod_corr = float(prod_corr_result["max"])
-            except Exception as exc:
-                logger.warning(f"[MiningAgent] Optimization PROD correlation failed for {alpha_id}: {exc}")
-
-        strict_failures = _strict_gate_failures(
-            metrics=metrics,
-            brain_failed_checks=brain_eval.get("failed_checks", []),
-            prod_corr=prod_corr,
-            self_corr=self_corr,
-            thresholds=thresholds,
-            expression=expression,
-            fields=fields,
-        )
-        metrics.update({
-            "_prod_corr": round(prod_corr, 4) if prod_corr is not None else None,
-            "_self_corr": round(self_corr, 4) if self_corr is not None else None,
-            "_corr_checked": True,
-            "_strict_gate_failures": strict_failures,
-            "_hard_pass": not strict_failures,
-            "_brain_failed_checks": brain_eval.get("failed_checks", []),
-            "_brain_pending_checks": brain_eval.get("pending_checks", []),
-        })
-        return "PASS" if not strict_failures else "OPTIMIZE"
-    
     @property
     def workflow(self) -> MiningWorkflow:
         """Access the underlying LangGraph workflow."""
