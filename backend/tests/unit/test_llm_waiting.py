@@ -273,13 +273,14 @@ async def test_resuming_ppa_run_records_paused_time(monkeypatch):
                           celery_task_id="old")
     task = SimpleNamespace(id=14, status="PAUSED", config={"research_protocol": "theme_ppa_v3"})
     db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
-        scalar_one_or_none=lambda: run)), commit=AsyncMock(), rollback=AsyncMock())
+        scalar_one_or_none=lambda: run)), commit=AsyncMock(), rollback=AsyncMock(), refresh=AsyncMock())
     service = TaskService(db)
     service.task_repo.get_by_id = AsyncMock(return_value=task)
     service.task_repo.update_status = AsyncMock()
     monkeypatch.setattr("backend.tasks.run_mining_task.delay",
                         Mock(return_value=SimpleNamespace(id="new")))
     await service.intervene_task(14, "RESUME")
+    db.refresh.assert_awaited_once_with(task, with_for_update=True)
     assert 65 <= run.checkpoint["ppa_pause_seconds"] < 70
     assert "ppa_pause_started_at" not in run.checkpoint
     assert run.checkpoint["ppa_stop_reason"] is None

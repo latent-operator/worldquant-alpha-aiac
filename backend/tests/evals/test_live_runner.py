@@ -8,7 +8,7 @@ from backend.models import Alpha, ExperimentRun, MiningTask, ResearchCandidate
 from backend.services import research_audit
 from backend.evals.live_runner import run_lab
 from backend.evals.live_ppa import freeze_experiment
-from backend.tests.evals.test_live_ppa import feedback
+from backend.tests.evals.test_live_ppa import feedback, empty_exclusions
 
 
 class FakeBrain:
@@ -51,7 +51,7 @@ async def quality_evaluator(**kwargs):
 
 def clear_state():
     return {"source_unresolved": 0, "other_active_work": False,
-            "platform_verified": True}
+            "platform_verified": True, "isolation_exclusions": empty_exclusions()}
 
 
 @pytest.mark.asyncio

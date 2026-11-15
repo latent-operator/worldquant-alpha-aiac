@@ -28,7 +28,24 @@ AIAC SHALL preserve unresolved request positions and report evidence as insuffic
 - **WHEN** an experiment has a result subset and unresolved requests
 - **THEN** it cannot claim a completed comparison or a business outcome improvement.
 
+### Requirement: Audited one-time isolation
+
+The owner-authorized software handoff for task 14 / run 28 SHALL preserve uncertainty, the incomplete batch and request identities, bind its private manifest to the CI-passing commit and persisted state, verify backup restoration before mutation, retain an audit journal, and block resume and replay. Isolation SHALL NOT complete the batch, resolve UNKNOWN or automatically restart research.
+
+#### Scenario: Historical ambiguous failure
+- **WHEN** an authorized isolation encounters a FAILED request without definitive rejection or terminal failure evidence
+- **THEN** it records UNKNOWN and preserves the original snapshot with correction provenance; a missing original location response alone cannot prove failure.
+
+#### Scenario: Changed isolation evidence
+- **WHEN** the batch, candidate state, active work or manifest changes before apply
+- **THEN** the isolation refuses mutation and software release reports the blocker.
+
+#### Scenario: Isolated batch replay
+- **WHEN** an old isolated run is resumed or a new task or experiment proposes a frozen signature from it
+- **THEN** the operation is blocked before any simulation POST, including after process restart.
+
 ### Requirement: Hypothesis to feedback loop
+
 Each new research batch SHALL record an economic hypothesis, frozen candidate and settings signatures, experiment run, WQ outcome, feedback and a next action. The loop structure is inspired by RD-Agent; AIAC's WQ ledger is the authority for outcomes.
 
 #### Scenario: Repeated weak family

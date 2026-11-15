@@ -20,6 +20,7 @@ from backend.evals.discovery_campaign import (
 )
 from backend.services.ppa_feedback import behavioral_signature, case_settings, digest, prepare_batch
 from backend.services.research_audit import signature
+from backend.evals.isolation_exclusions import validate_exclusions
 from scripts.ppa_eval_experiment import (
     DEFAULT_API, _exclusive_lock, _loopback_base, _require_clean_commit,
     _write_private, private_output_path, production_state, validate_lab_environment,
@@ -135,6 +136,7 @@ def _history(source_feedback: dict, old_manifest: dict, previous_batches: list[d
 
 
 def _evidence(source: dict, old_manifest: dict, batches: list[dict], base: dict) -> dict:
+    exclusions = validate_exclusions(source.get('isolation_exclusions'))
     historical, behavioral = _history(source, old_manifest, batches, base)
     previous = [case for batch in batches for case in batch["cases"]]
     evidence = {"next_phase": "discovery", "phase_limit": 16,
@@ -145,8 +147,10 @@ def _evidence(source: dict, old_manifest: dict, batches: list[dict], base: dict)
                 "exhausted_templates": [], "strict_max_operator_count": 5,
                 "proposed_avoid_expressions": [case["expression"] for case in previous[-16:]],
                 "stopped_families": []}
+    evidence['isolation_exclusions'] = exclusions
     evidence["evidence_hash"] = digest({"source": source.get("evidence_hash"),
                                         "history": historical, "behavioral": behavioral,
+                                        "isolation_exclusions": exclusions,
                                         "previous_batches": [batch["batch_sha256"] for batch in batches]})
     return evidence
 
@@ -260,6 +264,9 @@ def _state(campaign: dict, base_url: str, platform: dict) -> dict:
         response.raise_for_status()
     if response.json().get("evidence_hash") != campaign["source_evidence_hash"]:
         state["source_run_current"] = False
+    # Dispatch validates this evidence; absence must not by itself prevent
+    # read-only original-position reconciliation of a historical manifest.
+    state['isolation_exclusions'] = response.json().get('isolation_exclusions')
     try:
         validate_platform_evidence(platform, campaign["base"]["theme_id"], datetime.now(timezone.utc))
         state["platform_verified"] = True

@@ -10,6 +10,7 @@ from backend.services.ppa_feedback import digest
 from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger
 from backend.services.theme_ppa_v2 import persist_result
 from backend.evals.live_ppa import dispatch_gate
+from backend.evals.isolation_exclusions import exclusion_gate
 
 
 async def _set_state(db, task, run, status: str, reason: str | None) -> None:
@@ -153,7 +154,11 @@ async def run_lab(manifest: dict, *, maker, brain, live_state,
                          lab_unresolved=sum(row.request_status in {"RESERVED", "REQUESTED", "UNKNOWN"}
                                             for row in rows),
                          now=state.get("now") or datetime.now(timezone.utc))
-            reason = dispatch_gate(state)
+            case = cases[case_id]
+            reason = exclusion_gate(manifest.get('isolation_exclusions'), state.get('isolation_exclusions'),
+                                    case['expression'], case['settings'])
+            if reason == 'READY':
+                reason = dispatch_gate(state)
             if reason != "READY":
                 await _set_state(db, task, run, "PAUSED", reason)
                 break
