@@ -1,0 +1,27 @@
+rules:
+  - id: aiac-request-state-owner
+    message: Persist request state through the audited ledger, cached-result writer or one-time isolation transaction.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $ROW.request_status = $VALUE
+      - pattern: setattr($ROW, "request_status", $VALUE)
+      - pattern: ResearchCandidate(..., request_status=$VALUE, ...)
+    paths:
+      exclude:
+        - backend/tests/**
+        - backend/services/research_audit.py
+        - backend/services/theme_ppa_v2.py
+        - backend/services/ppa_isolation.py
+  - id: aiac-direct-simulation-post
+    message: Direct simulation POSTs belong only in the audited single-request adapter.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $CLIENT._safe_api_call("POST", "/simulations", ...)
+      - pattern: $CLIENT.post("/simulations", ...)
+      - pattern: $CLIENT._simulate_single_once(...)
+    paths:
+      exclude:
+        - backend/tests/**
+        - backend/adapters/brain_adapter.py

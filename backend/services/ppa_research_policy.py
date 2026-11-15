@@ -1,4 +1,5 @@
 """Local research decisions, deliberately separate from platform eligibility."""
+from backend.services.request_lifecycle import classify_record
 from collections import defaultdict
 from math import isfinite, sqrt
 
@@ -116,3 +117,26 @@ def daily_correlation(left, right, min_samples=50):
     if denom:
         result["correlation"] = max(-1, min(1, sum((v-mx)*(w-my) for v, w in zip(x, y)) / denom))
     return result
+
+
+def new_fields_have_evidence(base, historical):
+    previous = historical.get("datasets") or {}
+    metadata = base.get("field_metadata") or {}
+    return all(metadata.get(dataset, {}).get(name)
+               for dataset, fields in (base.get("datasets") or {}).items()
+               for name in fields if name not in previous.get(dataset, []))
+
+
+def request_evaluation_pending(row):
+    """PPA requires both final request evidence and its independent evaluation."""
+    evidence = classify_record(row.request_status, row.result_snapshot, getattr(row, "wq_alpha_id", None))
+    return (evidence.needs_reconciliation or
+            evidence.kind == "RESULT" and not (row.result_snapshot or {}).get("ppa_evaluation"))
+
+
+def request_case_complete(row):
+    """A rejected POST429 is charged but does not complete its planned case."""
+    evidence = classify_record(row.request_status, row.result_snapshot, getattr(row, "wq_alpha_id", None))
+    return (evidence.terminal and not evidence.needs_reconciliation and
+            not evidence.retryable_after_wait and
+            (evidence.kind != "RESULT" or bool((row.result_snapshot or {}).get("ppa_evaluation"))))

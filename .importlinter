@@ -1,0 +1,26 @@
+[importlinter]
+root_package = backend
+include_external_packages = True
+
+[importlinter:contract:request-policy]
+name = Request evidence policy has no runtime dependencies
+type = forbidden
+source_modules = backend.services.request_lifecycle
+forbidden_modules =
+    backend.database
+    backend.models
+    backend.adapters
+    backend.agents
+    sqlalchemy
+    httpx
+    requests
+    aiohttp
+
+[importlinter:contract:release-boundary]
+name = Release boundary has no direct request-runner or Agent imports
+type = forbidden
+source_modules = backend.services.ppa_handoff
+forbidden_modules =
+    backend.services.theme_ppa_v2
+    backend.agents
+allow_indirect_imports = True

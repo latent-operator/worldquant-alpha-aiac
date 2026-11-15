@@ -6,17 +6,17 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from backend.alpha_semantic_validator import AlphaSemanticValidator
-from backend.evals.live_runner import _fields, _rows, _set_state
+from backend.evals.live_runner import _fields, _rows, _set_state, needs_reconciliation, not_sent, terminal_coverage
 from backend.evals.isolation_exclusions import blocked, exclusion_gate, validate_exclusions
 from backend.models import ExperimentRun, MiningTask, ResearchCandidate
 from backend.services.ppa_feedback import case_settings, digest, freeze_batch
 from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger
+from backend.services.request_lifecycle import classify_result
 from backend.services.theme_ppa_v2 import persist_result
 
 
 PREFERRED_DATASETS = ("sentiment26", "news76", "analyst10")
 CATEGORY_ORDER = ("sentiment", "news", "analyst", "fundamental", "earnings")
-PENDING = frozenset({"RESERVED", "REQUESTED", "UNKNOWN"})
 
 
 def choose_dataset(datasets: list[dict], fields_by_id: dict[str, list[dict]],
@@ -166,10 +166,17 @@ async def run_campaign_batch(campaign: dict, batch: dict, *, maker, brain, live_
     sent = 0
     async with maker() as db:
         task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
+        rows = await _rows(db, run_id)
+        if any(not_sent(row) for row in rows):
+            await _set_state(db, task, run, "PAUSED", "EVAL_CANDIDATE_NOT_SENT")
+            return {"status": "PAUSED", "reason": run.block_reason, "sent": 0,
+                    "task_id": task_id, "run_id": run_id}
         if run.block_reason in {"QUALITY_PASS_REVIEW", "EVAL_RATE_LIMIT_REVIEW"}:
             return {"status": "PAUSED", "reason": run.block_reason, "sent": 0,
                     "task_id": task_id, "run_id": run_id}
-        if batch["batch_sha256"] in (run.checkpoint or {}).get("completed_batches", []):
+        if (batch["batch_sha256"] in (run.checkpoint or {}).get("completed_batches", [])
+                and not any(needs_reconciliation(row) for row in rows)
+                and terminal_coverage([row for row in rows if row.experiment_group in cases], cases)):
             return {"status": "COMPLETE", "reason": "EVAL_BATCH_COMPLETE", "sent": 0,
                     "task_id": task_id, "run_id": run_id}
         active = (run.checkpoint or {}).get("active_batch")
@@ -195,19 +202,14 @@ async def run_campaign_batch(campaign: dict, batch: dict, *, maker, brain, live_
                                      case_settings(campaign["base"], {}), result,
                                      "discovery", quality_evaluator,
                                      _fields({"base": campaign["base"]}, case))
-        pending = [row for row in await _rows(db, run_id) if row.request_status in PENDING]
+        pending = [row for row in await _rows(db, run_id) if needs_reconciliation(row)]
         if pending:
             async def poll(location):
                 result = await brain.poll_existing_simulation(location)
-                if result.get("alpha_id"):
-                    return result
-                if str(result.get("status") or "").upper() in {"ERROR", "FAILED"}:
-                    return {**result, "request_phase": "POLL_ORIGINAL",
-                            "error": "original simulation failed"}
-                return {"error": "uncertain original pending"}
+                return {**result, "request_phase": "POLL_ORIGINAL"}
             await ledger.reconcile(poll)
             await qualify_unfinished()
-            if any(row.request_status in PENDING for row in await _rows(db, run_id)):
+            if any(needs_reconciliation(row) for row in await _rows(db, run_id)):
                 await _set_state(db, task, run, "PAUSED", "EVAL_REQUEST_RECONCILIATION_PENDING")
                 return {"status": "PAUSED", "reason": run.block_reason, "sent": 0,
                         "task_id": task_id, "run_id": run_id}
@@ -220,6 +222,9 @@ async def run_campaign_batch(campaign: dict, batch: dict, *, maker, brain, live_
         await _set_state(db, task, run, "RUNNING", None)
         for case_id in batch["send_order"]:
             rows = await _rows(db, run_id)
+            if any(not_sent(row) for row in rows):
+                await _set_state(db, task, run, "PAUSED", "EVAL_CANDIDATE_NOT_SENT")
+                break
             prior = next((row for row in reversed(rows) if row.experiment_group == case_id), None)
             if prior and prior.request_status == "RESULT":
                 continue
@@ -257,13 +262,13 @@ async def run_campaign_batch(campaign: dict, batch: dict, *, maker, brain, live_
                     raise
             row = next((item for item in reversed(await _rows(db, run_id))
                         if item.experiment_group == case_id), None)
-            if row is None or row.request_status == "NOT_REQUESTED":
+            if row is None or not_sent(row):
                 await _set_state(db, task, run, "PAUSED", "EVAL_CANDIDATE_NOT_SENT")
                 break
-            if row.request_status in PENDING:
+            if needs_reconciliation(row):
                 await _set_state(db, task, run, "PAUSED", "EVAL_REQUEST_RECONCILIATION_PENDING")
                 break
-            if result.get("http_status") == 429:
+            if classify_result(result).retryable_after_wait:
                 streak = int((run.checkpoint or {}).get("rate_limit_streak", 0)) + 1
                 run.checkpoint = {**run.checkpoint, "rate_limit_streak": streak}
                 wait = result.get("retry_after")

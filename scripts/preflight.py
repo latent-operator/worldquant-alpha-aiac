@@ -32,6 +32,7 @@ def command_plan() -> list[Check]:
         Check("frontend tests", (npm, "test"), ROOT / "frontend"),
         Check("frontend lint", (npm, "run", "lint"), ROOT / "frontend"),
         Check("frontend build", (npm, "run", "build"), ROOT / "frontend"),
+        Check("architecture boundaries", (sys.executable, "scripts/check_architecture.py"), ROOT),
     ]
 
 

@@ -121,6 +121,12 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: python -m pip install -r requirements.txt -r requirements-eval.txt
+      - name: Install isolated architecture tools
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/aiac-architecture"
+          "$RUNNER_TEMP/aiac-architecture/bin/python" -m pip install -r requirements-governance.txt
+          echo "AIAC_GOVERNANCE_BIN=$RUNNER_TEMP/aiac-architecture/bin" >> "$GITHUB_ENV"
       - run: npm ci
         working-directory: frontend
       - name: Offline preflight
@@ -154,6 +160,15 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: python -m pip install -r requirements.txt -r requirements-eval.txt
+      - name: Install isolated architecture tools
+        shell: pwsh
+        run: |
+          $governanceHome = Join-Path $env:RUNNER_TEMP 'aiac-architecture'
+          python -m venv $governanceHome
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $governanceHome 'Scripts/python.exe') -m pip install -r requirements-governance.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "AIAC_GOVERNANCE_BIN=$(Join-Path $governanceHome 'Scripts')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: npm ci
         working-directory: frontend
       - name: Offline preflight

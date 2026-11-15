@@ -404,7 +404,7 @@ class BrainAdapter:
                     logger.warning("Simulation quota metadata could not be persisted")
             request_phase = "POLL_ORIGINAL"
             result = await self._wait_for_simulation(location)
-            return {**result, "rate_limit": rate_limit}
+            return {**result, "rate_limit": rate_limit, "request_phase": request_phase}
         except Exception as e:
             error = _format_exception(e)
             logger.error(f"Simulate error: {error}")

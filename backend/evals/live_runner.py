@@ -11,6 +11,21 @@ from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger
 from backend.services.theme_ppa_v2 import persist_result
 from backend.evals.live_ppa import dispatch_gate
 from backend.evals.isolation_exclusions import exclusion_gate
+from backend.services.request_lifecycle import classify_record, classify_result
+
+
+def needs_reconciliation(row) -> bool:
+    return classify_record(row.request_status, row.result_snapshot, row.wq_alpha_id).needs_reconciliation
+
+
+def not_sent(row) -> bool:
+    return classify_record(row.request_status, row.result_snapshot, row.wq_alpha_id).kind == "NOT_SENT"
+
+
+def terminal_coverage(rows, case_ids) -> bool:
+    return (set(case_ids) == {row.experiment_group for row in rows}
+            and all(classify_record(row.request_status, row.result_snapshot,
+                                    row.wq_alpha_id).terminal for row in rows))
 
 
 async def _set_state(db, task, run, status: str, reason: str | None) -> None:
@@ -88,8 +103,15 @@ async def run_lab(manifest: dict, *, maker, brain, live_state,
 
     async with maker() as db:
         task, run = await db.get(MiningTask, task_id), await db.get(ExperimentRun, run_id)
-        if run.status == "STOPPED":
-            return {"status": "COMPLETE", "reason": run.block_reason, "sent": 0,
+        rows = await _rows(db, run_id)
+        if any(not_sent(row) for row in rows):
+            await _set_state(db, task, run, "PAUSED", "EVAL_CANDIDATE_NOT_SENT")
+            return {"status": "BLOCKED", "reason": run.block_reason, "sent": 0,
+                    "task_id": task_id, "run_id": run_id}
+        if run.status == "STOPPED" and not any(needs_reconciliation(row) for row in rows):
+            complete = terminal_coverage(rows, cases)
+            return {"status": "COMPLETE" if complete else "BLOCKED",
+                    "reason": run.block_reason if complete else "EVAL_REQUEST_OCCUPANCY_INCOMPLETE", "sent": 0,
                     "task_id": task_id, "run_id": run_id}
         if run.block_reason == "EVAL_RATE_LIMIT" and run.next_retry_at is not None:
             retry_at = run.next_retry_at
@@ -115,17 +137,16 @@ async def run_lab(manifest: dict, *, maker, brain, live_state,
                                      "refinement", quality_evaluator, _fields(manifest, case))
 
         pending = [row for row in await _rows(db, run_id)
-                   if row.request_status in {"RESERVED", "REQUESTED", "UNKNOWN"}]
+                   if needs_reconciliation(row)]
         if pending:
             async def poll_original(location):
                 result = await brain.poll_existing_simulation(location)
                 # A transport error or absent Alpha is not proof that the POST failed.
-                return result if result.get("alpha_id") else {
-                    "error": "uncertain original simulation still pending"}
+                return {**result, "request_phase": "POLL_ORIGINAL"}
 
             await ledger.reconcile(poll_original)
             await qualify_unfinished()
-            if any(row.request_status in {"RESERVED", "REQUESTED", "UNKNOWN"}
+            if any(needs_reconciliation(row)
                    for row in await _rows(db, run_id)):
                 await _set_state(db, task, run, "PAUSED", "EVAL_REQUEST_RECONCILIATION_PENDING")
                 return {"status": "BLOCKED", "reason": run.block_reason, "sent": 0,
@@ -136,6 +157,9 @@ async def run_lab(manifest: dict, *, maker, brain, live_state,
 
         for case_id in manifest["send_order"]:
             rows = await _rows(db, run_id)
+            if any(not_sent(row) for row in rows):
+                await _set_state(db, task, run, "PAUSED", "EVAL_CANDIDATE_NOT_SENT")
+                break
             existing = {row.experiment_group: row for row in rows}
             if case_id in existing:
                 continue
@@ -151,7 +175,7 @@ async def run_lab(manifest: dict, *, maker, brain, live_state,
                          theme_ends_at=manifest["base"]["ends_at"],
                          existing_requests=sum(row.request_status in {
                              "RESERVED", "REQUESTED", "UNKNOWN", "FAILED", "RESULT"} for row in rows),
-                         lab_unresolved=sum(row.request_status in {"RESERVED", "REQUESTED", "UNKNOWN"}
+                         lab_unresolved=sum(needs_reconciliation(row)
                                             for row in rows),
                          now=state.get("now") or datetime.now(timezone.utc))
             case = cases[case_id]
@@ -182,10 +206,13 @@ async def run_lab(manifest: dict, *, maker, brain, live_state,
             if row is None:
                 await _set_state(db, task, run, "PAUSED", "EVAL_LEDGER_ROW_MISSING")
                 break
-            if row.request_status in {"RESERVED", "REQUESTED", "UNKNOWN"}:
+            if not_sent(row):
+                await _set_state(db, task, run, "PAUSED", "EVAL_CANDIDATE_NOT_SENT")
+                break
+            if needs_reconciliation(row):
                 await _set_state(db, task, run, "PAUSED", "EVAL_REQUEST_RECONCILIATION_PENDING")
                 break
-            if result.get("http_status") == 429:
+            if classify_result(result).retryable_after_wait:
                 wait = result.get("retry_after")
                 if not isinstance(wait, (int, float)) or not 0 <= wait <= 86400:
                     wait = 60
@@ -194,8 +221,10 @@ async def run_lab(manifest: dict, *, maker, brain, live_state,
                 break
         else:
             rows = await _rows(db, run_id)
-            if len({row.experiment_group for row in rows}) == manifest["budget"]:
+            if terminal_coverage(rows, cases):
                 await _set_state(db, task, run, "STOPPED", "EVAL_COMPLETED")
+            else:
+                await _set_state(db, task, run, "PAUSED", "EVAL_REQUEST_OCCUPANCY_INCOMPLETE")
         return {"status": run.status, "reason": run.block_reason, "sent": sent,
                 "task_id": task_id, "run_id": run_id}
 

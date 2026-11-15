@@ -73,11 +73,9 @@ def _state(task, run, rows):
 
 
 def _definitive_failure(snapshot):
-    phase = snapshot.get('request_phase')
-    if phase == 'POLL_ORIGINAL' and str(snapshot.get('status') or '').upper() in {'ERROR', 'FAILED'}:
-        return True
-    status = snapshot.get('http_status')
-    return phase == 'CREATE_POST' and type(status) is int and 400 <= status < 500 and status != 408
+    from backend.services.request_lifecycle import classify_result
+    evidence = classify_result(snapshot)
+    return evidence.terminal and evidence.kind != "RESULT"
 
 
 def _plan(task, run, rows):

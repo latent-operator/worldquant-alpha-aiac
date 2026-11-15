@@ -56,6 +56,20 @@ async def test_location_is_saved_before_polling():
 
 
 @pytest.mark.asyncio
+async def test_initial_poll_terminal_failure_keeps_provenance_through_snapshot():
+    from backend.services.request_lifecycle import classify_result
+    brain = BrainAdapter()
+    brain._safe_api_call = AsyncMock(return_value=httpx.Response(
+        201, headers={"Location": "/simulations/terminal"}))
+    brain._wait_for_simulation = AsyncMock(return_value={"status": "ERROR"})
+    result = await brain.simulate_alpha("rank(a)", retry_post=False)
+    assert result["request_phase"] == "POLL_ORIGINAL"
+    assert classify_result(audit.safe_result(result)).kind == "TERMINAL_FAILURE"
+    brain._safe_api_call.assert_awaited_once()
+    brain._wait_for_simulation.assert_awaited_once_with("/simulations/terminal")
+
+
+@pytest.mark.asyncio
 async def test_quota_headers_are_saved_before_polling():
     brain = BrainAdapter()
     brain._safe_api_call = AsyncMock(return_value=httpx.Response(201, headers={
@@ -102,14 +116,14 @@ async def test_continuous_ledger_preserves_429_and_allows_later_retry(async_engi
     first, reason = await ledger.reserve("rank(a)", {}, "DISCOVERY")
     assert first and reason is None
     await ledger.mark_requested(first)
-    await ledger.finish(first, {"success": False, "http_status": 429, "error": "rate limited"})
+    await ledger.finish(first, {"success": False, "http_status": 429, "request_phase": "CREATE_POST", "error": "rate limited"})
     retry, reason = await ledger.reserve("rank(a)", {}, "DISCOVERY")
     assert retry and retry != first and reason is None
     async with maker() as db:
         assert (await db.get(ResearchCandidate, first)).request_status == "FAILED"
         assert (await db.get(ResearchCandidate, first)).result_snapshot["http_status"] == 429
     other, _ = await ledger.reserve("rank(b)", {}, "DISCOVERY")
-    await ledger.finish(other, {"success": False, "http_status": 400, "error": "bad request"})
+    await ledger.finish(other, {"success": False, "http_status": 400, "request_phase": "CREATE_POST", "error": "bad request"})
     assert (await ledger.reserve("rank(b)", {}, "DISCOVERY"))[1] == "DUPLICATE"
 
 
@@ -263,4 +277,54 @@ async def test_unlocatable_request_remains_charged_unknown(async_engine, monkeyp
     await ledger.reconcile(poll)
     async with maker() as db:
         assert (await db.get(ResearchCandidate, cid)).request_status == "UNKNOWN"
+    assert (await ledger.reserve("rank(a)", {}, "DISCOVERY"))[1] == "DUPLICATE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", [None, "POLL_ORIGINAL"])
+async def test_ambiguous_429_cannot_bypass_continuous_dedup(async_engine, monkeypatch, phase):
+    maker, tasks, runs = await campaign(async_engine, monkeypatch)
+    async with maker() as db:
+        task = await db.get(MiningTask, tasks[0])
+        task.config = {"research_protocol": "theme_ppa_v3"}
+        await db.commit()
+    ledger = audit.ResearchLedger(tasks[0], runs[0], None)
+    cid, _ = await ledger.reserve("rank(a)", {}, "DISCOVERY")
+    async with maker() as db:
+        row = await db.get(ResearchCandidate, cid)
+        row.request_status = "FAILED"  # Reproduce the legacy classifier's bad state.
+        row.result_snapshot = {"http_status": 429, "request_phase": phase}
+        await db.commit()
+    assert (await ledger.reserve("rank(a)", {}, "DISCOVERY"))[1] == "DUPLICATE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("poll_result,expected", [
+    ({"http_status": 404}, "UNKNOWN"),
+    ({"status": "ERROR"}, "FAILED"),
+    ({"alpha_id": "recovered"}, "RESULT"),
+])
+async def test_historical_failed_reconciles_only_original_location(async_engine, monkeypatch, poll_result, expected):
+    maker, tasks, runs = await campaign(async_engine, monkeypatch)
+    ledger = audit.ResearchLedger(tasks[0], runs[0], 80)
+    cid, _ = await ledger.reserve("rank(a)", {}, "DISCOVERY")
+    await ledger.record_location(cid, "/simulations/original")
+    async with maker() as db:
+        row = await db.get(ResearchCandidate, cid)
+        row.request_status = "FAILED"
+        row.result_snapshot = {**row.result_snapshot, "http_status": 404}
+        await db.commit()
+    calls = []
+    async def poll(location):
+        calls.append(location)
+        return poll_result
+    await ledger.reconcile(poll)
+    async with maker() as db:
+        row = await db.get(ResearchCandidate, cid)
+        assert row.request_status == expected
+        assert row.result_snapshot["request_phase"] == "POLL_ORIGINAL"
+        assert row.result_snapshot["request"]["location"] == "/simulations/original"
+        if expected == "FAILED":
+            assert row.result_snapshot["simulation_status"] == "ERROR"
+    assert calls == ["/simulations/original"]
     assert (await ledger.reserve("rank(a)", {}, "DISCOVERY"))[1] == "DUPLICATE"

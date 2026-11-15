@@ -9,11 +9,11 @@ def test_preflight_runs_backend_and_frontend_checks():
     assert labels == [
         "git diff", "staged git diff", "repository hygiene", "backend unit tests",
         "offline evals", "AIAC MCP tests",
-        "frontend tests", "frontend lint", "frontend build",
+        "frontend tests", "frontend lint", "frontend build", "architecture boundaries",
     ]
     assert all("brain" not in " ".join(item.argv).lower() for item in commands)
     if preflight.os.name == "nt":
-        assert all(item.argv[0] == "npm.cmd" for item in commands[6:])
+        assert all(item.argv[0] == "npm.cmd" for item in commands if item.label.startswith('frontend'))
 
 
 def test_preflight_clears_live_credentials_and_network_targets():

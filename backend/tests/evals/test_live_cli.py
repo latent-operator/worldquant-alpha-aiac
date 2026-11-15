@@ -59,7 +59,7 @@ def test_production_gate_uses_only_get_and_counts_pending():
     def respond(request):
         calls.append(request.method)
         if request.url.path.endswith("research-report"):
-            return httpx.Response(200, json={"request_counts": {"UNKNOWN": 2}})
+            return httpx.Response(200, json={"request_counts": {"UNKNOWN": 2}, "evidence_pending_count": 2})
         if request.url.path.endswith("tasks/14/summary"):
             return httpx.Response(200, json={"latest_run_id": 28, "status": "PAUSED"})
         return httpx.Response(200, json=[])
@@ -68,6 +68,20 @@ def test_production_gate_uses_only_get_and_counts_pending():
     assert state == {"source_unresolved": 2, "other_active_work": False,
                      "source_run_current": True}
     assert calls and set(calls) == {"GET"}
+
+
+@pytest.mark.parametrize("pending", [None, False, -1, "0"])
+def test_production_gate_rejects_missing_or_invalid_derived_evidence(pending):
+    def respond(request):
+        if request.url.path.endswith("research-report"):
+            return httpx.Response(200, json={"request_counts": {"FAILED": 1},
+                                            "evidence_pending_count": pending})
+        if request.url.path.endswith("summary"):
+            return httpx.Response(200, json={"latest_run_id": 28, "status": "PAUSED"})
+        return httpx.Response(200, json=[])
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(ValueError, match="SOURCE_REQUEST_EVIDENCE_MISSING"):
+            production_state(client, "http://127.0.0.1:8003/api/v1", 14, 28)
 
 
 def test_cli_starts_from_repository_root_without_pythonpath():

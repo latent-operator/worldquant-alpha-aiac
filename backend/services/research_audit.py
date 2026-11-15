@@ -16,6 +16,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from backend.services.request_lifecycle import classify_record, classify_result
 from backend.database import AsyncSessionLocal
 from backend.models import Alpha, ExperimentRun, MiningTask, ResearchCandidate
 
@@ -32,16 +33,8 @@ WINDOWS = (5, 10, 20, 30, 60)
 
 
 def is_uncertain_result(result: dict) -> bool:
-    if result.get("alpha_id"):
-        return False
-    # A terminal status read back from the original simulation position is
-    # definitive. The same status on a fresh POST response has no such proof.
-    if (result.get("request_phase") == "POLL_ORIGINAL"
-            and str(result.get("status") or "").upper() in {"ERROR", "FAILED"}):
-        return False
-    status = result.get("http_status")
-    # Only an acknowledged client rejection proves that no Alpha was created.
-    return not (type(status) is int and 400 <= status < 500 and status != 408)
+    """Compatibility entry point for callers migrating to request evidence."""
+    return classify_result(result).needs_reconciliation
 
 
 def paper_matrix() -> list[dict[str, Any]]:
@@ -234,6 +227,8 @@ def safe_result(result: dict) -> dict:
         "error_code": error_code, "request_phase": request_phase,
         "stage": result.get("stage") if result.get("stage") in {"IS", "OS"} else None,
         "status": result.get("status") if result.get("status") in {"UNSUBMITTED", "SUBMITTED"} else None,
+        "simulation_status": (result.get("simulation_status") or result.get("status"))
+        if (result.get("simulation_status") or result.get("status")) in {"ERROR", "FAILED", "COMPLETE", "PENDING", "RUNNING"} else None,
         "classifications": classifications, "themes": themes,
         "metrics": safe_metrics(result), "checks": checks,
         "can_submit": bool(result.get("can_submit")),
@@ -296,28 +291,35 @@ class ResearchLedger:
                 if isolation:
                     return None, isolation
                 dedup_status = ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN"))
-                if self.max_requests is None and (getattr(task, "config", None) or {}).get("research_protocol") == "theme_ppa_v3":
-                    dedup_status &= (ResearchCandidate.request_status != "FAILED") | ResearchCandidate.result_snapshot["http_status"].as_integer().is_distinct_from(429)
-                existing = (await db.execute(
-                    select(ResearchCandidate.id).where(
+                allow_rate_limit_retry = (self.max_requests is None and
+                    (getattr(task, "config", None) or {}).get("research_protocol") == "theme_ppa_v3")
+
+                def blocks_duplicate(row):
+                    return not (allow_rate_limit_retry and classify_record(
+                        row.request_status, row.result_snapshot, row.wq_alpha_id).retryable_after_wait)
+
+                prior_rows = (await db.execute(
+                    select(ResearchCandidate).where(
                         ResearchCandidate.run_id.in_(scope),
                         ResearchCandidate.expression_hash == expr_hash,
                         ResearchCandidate.settings_hash == settings_hash,
                         dedup_status,
-                    ).limit(1)
-                )).scalar_one_or_none()
+                    )
+                )).scalars().all()
+                existing = any(blocks_duplicate(row) for row in prior_rows)
                 prior_duplicate = False
                 if not existing and len(self.dedup_task_ids) > 1:
                     identity = wq_settings_identity(settings, region=task.region, universe=task.universe)
                     prior_candidates = (await db.execute(
-                        select(ResearchCandidate.settings).where(
+                        select(ResearchCandidate).where(
                             ResearchCandidate.task_id.in_(self.dedup_task_ids),
                             ResearchCandidate.expression_hash == expr_hash,
                             dedup_status,
                         )
                     )).scalars().all()
                     prior_duplicate = any(
-                        wq_settings_identity(previous, region=task.region, universe=task.universe) == identity
+                        blocks_duplicate(previous) and
+                        wq_settings_identity(previous.settings, region=task.region, universe=task.universe) == identity
                         for previous in prior_candidates
                     )
                     if not prior_duplicate:
@@ -403,11 +405,9 @@ class ResearchLedger:
             candidate = await db.get(ResearchCandidate, candidate_id)
             if candidate is None:
                 return
-            candidate.request_status = (
-                "RESULT" if result.get("alpha_id") else
-                "UNKNOWN" if is_uncertain_result(result) else
-                "FAILED"
-            )
+            evidence = classify_result(result)
+            candidate.request_status = ("RESULT" if evidence.kind == "RESULT" else
+                                        "UNKNOWN" if evidence.needs_reconciliation else "FAILED")
             candidate.wq_alpha_id = result.get("alpha_id")
             candidate.metrics = safe_metrics(result)
             candidate.result_snapshot = {**(candidate.result_snapshot or {}), **safe_result(result)}
@@ -468,11 +468,16 @@ class ResearchLedger:
         async with AsyncSessionLocal() as db:
             rows = (await db.execute(select(ResearchCandidate).where(
                 ResearchCandidate.run_id == self.run_id,
-                ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN")),
+                ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN", "FAILED")),
             ))).scalars().all()
-            pending = [(row.id, (row.result_snapshot or {}).get("request", {}).get("location")) for row in rows]
-        for candidate_id, location in pending:
-            result = await poll(location) if location else {"error": "uncertain request without location"}
+            pending = [(row.id, row.request_status, (row.result_snapshot or {}).get("request", {}).get("location"))
+                       for row in rows if classify_record(row.request_status, row.result_snapshot, row.wq_alpha_id).needs_reconciliation]
+        for candidate_id, request_status, location in pending:
+            if not location:
+                if request_status in {"RESERVED", "REQUESTED"}:
+                    await self.finish(candidate_id, {"error": "uncertain request without location"})
+                continue  # Do not rewrite historical FAILED rows without original evidence.
+            result = {**await poll(location), "request_phase": "POLL_ORIGINAL"}
             if not result.get("alpha_id") and not result.get("error"):
                 result = {**result, "error": "uncertain simulation still pending"}
             await self.finish(candidate_id, result)

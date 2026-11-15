@@ -11,28 +11,19 @@ from backend.alpha_semantic_validator import compute_expression_hash
 from backend.services.ppa_feedback import (behavioral_signature, build_feedback, digest, freeze_batch,
                                            research_row, select_local_seeds, verify_batch_generation)
 from backend.services.ppa_eligibility import evaluate_ppa_candidate
-from backend.services.ppa_research_policy import evidence_metrics, seed_decision
+from backend.services.ppa_research_policy import evidence_metrics, seed_decision, new_fields_have_evidence
 from backend.services.research_audit import (ResearchLedger, ResearchBudgetBrain, safe_result, signature,
                                              is_uncertain_result)
+
+from backend.services.request_lifecycle import classify_result
+from backend.services.ppa_research_policy import (request_evaluation_pending as needs_reconciliation,
+                                                  request_case_complete as completed_case)
 
 CHARGED = {"RESERVED", "REQUESTED", "UNKNOWN", "FAILED", "RESULT"}
 ACCEPTED = CHARGED | {"CACHED"}
 PPA_RECONCILE_TIMEOUT_SECONDS = 1200
 PPA_MULTISIM_RECONCILE_TIMEOUT_SECONDS = 1500
 logger = logging.getLogger(__name__)
-
-
-def needs_reconciliation(row):
-    return (row.request_status in {"RESERVED", "REQUESTED", "UNKNOWN"}
-            or row.request_status == "RESULT" and not (row.result_snapshot or {}).get("ppa_evaluation"))
-
-
-def new_fields_have_evidence(base, historical):
-    previous = historical.get("datasets") or {}
-    metadata = base.get("field_metadata") or {}
-    return all(metadata.get(dataset, {}).get(name)
-               for dataset, fields in (base.get("datasets") or {}).items()
-               for name in fields if name not in previous.get(dataset, []))
 
 
 def runtime_fields_match(base, fields_by_dataset):
@@ -352,7 +343,12 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
     recovery_started = time.perf_counter()
     case = (row.result_snapshot or {}).get("research_case") or {}
     location = (row.result_snapshot or {}).get("request", {}).get("location")
-    if row.request_status != "RESULT" and not location:
+    saved_result = {**(row.result_snapshot or {})}
+    if row.wq_alpha_id:
+        saved_result["alpha_id"] = row.wq_alpha_id
+    reuse_persisted = (row.request_status in {"RESULT", "CACHED"}
+                       and classify_result(saved_result).kind == "RESULT")
+    if not reuse_persisted and not location:
         raise ValueError("PPA_RECOVERY_LOCATION_MISSING")
     row.result_snapshot = {**(row.result_snapshot or {}),
                            "reconcile_last_attempt_at": datetime.now(timezone.utc).isoformat()}
@@ -367,8 +363,8 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
         row.result_snapshot = {**snapshot, "reconcile_attempts": attempts}
         await db.commit()
 
-    if row.request_status == "RESULT":
-        result = row.result_snapshot or {}
+    if reuse_persisted:
+        result = saved_result
     else:
         try:
             if (row.result_snapshot or {}).get("request", {}).get("transport") == "paired_multi":
@@ -383,22 +379,15 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
         except asyncio.TimeoutError:
             await record_attempt("TIMEOUT")
             return {"resolved": 0, "pending": len(candidates)}
-    definitive_failure = str(result.get("status") or "").upper() in {"ERROR", "FAILED"}
-    if definitive_failure:
+    if not reuse_persisted:
         result = {**result, "request_phase": "POLL_ORIGINAL"}
-    if definitive_failure and not result.get("error"):
-        result = {**result, "error": "original simulation failed"}
-    if not result.get("alpha_id") and ((not result.get("error") and not definitive_failure) or
-                                        result.get("http_status") == 429 or
-                                        isinstance(result.get("http_status"), int) and result["http_status"] >= 500):
-        result = {**result, "error": "uncertain original simulation poll"}
     await record_attempt("RESULT" if result.get("alpha_id") else
                          "PENDING" if is_uncertain_result(result) else "FAILED")
     if result.get("alpha_id"):
         dataset = case.get("dataset_id")
         if not case.get("case_id") or not fields_by_dataset.get(dataset):
             raise ValueError("PPA_RECOVERY_CASE_OR_FIELDS_MISSING")
-    if row.request_status != "RESULT":
+    if not reuse_persisted:
         ledger = ResearchLedger(task.id, run.id,
                                 None if task.config.get("research_protocol") == "theme_ppa_v3" else 80,
                                 budget_root_run_id=task.config["budget_root_run_id"])
@@ -413,20 +402,18 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
     await db.refresh(row)
     if result.get("alpha_id"):
         row.result_snapshot = {**(row.result_snapshot or {}), "recovery": {
-            "source": "original_location", "duration_seconds": round(time.perf_counter() - recovery_started, 3),
+            "source": "persisted_result" if reuse_persisted else "original_location",
+            "duration_seconds": round(time.perf_counter() - recovery_started, 3),
             "observed_at": datetime.now(timezone.utc).isoformat()}}
         await db.commit()
-    resolved = int(row.request_status in {"RESULT", "FAILED"}
-                   and bool((row.result_snapshot or {}).get("ppa_evaluation") or
-                            row.request_status == "FAILED"))
+    resolved = int(completed_case(row))
     remaining = len(candidates) - resolved
     if not remaining and run.block_reason == "PPA_REQUEST_RECONCILIATION_PENDING":
         batch_cases = ((run.checkpoint or {}).get("ppa_batch") or {}).get("cases") or []
         current = {item.experiment_group: item for item in rows}
         unfinished = any(
             not current.get(case["case_id"])
-            or needs_reconciliation(current[case["case_id"]])
-            or current[case["case_id"]].request_status not in {"RESULT", "CACHED", "FAILED"}
+            or not completed_case(current[case["case_id"]])
             for case in batch_cases
         )
         needs_batch_close = (run.checkpoint or {}).get("ppa_batch_cursor", 0) < len(batch_cases)
@@ -591,9 +578,9 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
         ResearchCandidate.run_id == run.id,
         ResearchCandidate.experiment_group.in_([case["case_id"] for case in cases]),
     ))).scalars().all()
-    finished = {row.experiment_group for row in existing if
-                row.request_status == "FAILED" and (row.result_snapshot or {}).get("http_status") != 429 or
-                row.request_status in {"RESULT", "CACHED"} and (row.result_snapshot or {}).get("ppa_evaluation")}
+    if any(needs_reconciliation(row) for row in existing):
+        return await pause(db, task, run, "PPA_REQUEST_RECONCILIATION_PENDING")
+    finished = {row.experiment_group for row in existing if completed_case(row)}
     first_review = (batch["phase"] == "discovery" and not checkpoint.get("ppa_first_batch_reviewed"))
     pending = []
     for index, case in enumerate(cases):
@@ -635,7 +622,7 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
 
     def review_result(result):
         nonlocal retry_wait
-        if result.get("http_status") == 429 or result.get("error") in {
+        if classify_result(result).retryable_after_wait or result.get("error") in {
             "BUDGET_EXHAUSTED", "TASK_NOT_RUNNING",
         } or is_uncertain_result(result):
             stop_dispatch.set()
@@ -714,15 +701,16 @@ async def run_parallel_batch(db, brain, task, run, batch, base, fields_by_datase
                 await db.refresh(run, with_for_update=True)
                 if task.status != "RUNNING":
                     stop_dispatch.set()
-                if result.get("http_status") != 429 and not is_uncertain_result(result):
+                evidence = classify_result(result)
+                if (row and completed_case(row) or evidence.kind in {"CLIENT_REJECTED", "TERMINAL_FAILURE"}):
                     finished.add(case["case_id"])
                 done_indices = {i for i, item in enumerate(cases) if item["case_id"] in finished}
                 cursor = next((i for i in range(len(cases)) if i not in done_indices), len(cases))
                 run.checkpoint = {**(run.checkpoint or {}), "ppa_batch_cursor": cursor,
                                   "ppa_batch_completed": sorted(done_indices)}
                 await db.commit()
-                if result.get("http_status") == 429:
-                    block_reason = "PPA_RATE_LIMIT"
+                if classify_result(result).retryable_after_wait:
+                    block_reason = block_reason or "PPA_RATE_LIMIT"
                 elif is_uncertain_result(result):
                     block_reason = "PPA_REQUEST_RECONCILIATION_PENDING"
     finally:
@@ -845,7 +833,7 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
                             budget_root_run_id=task.config["budget_root_run_id"])
     pending = (await db.execute(select(ResearchCandidate).where(
         ResearchCandidate.run_id == run.id,
-        ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN", "RESULT", "FAILED"))
+        ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN", "RESULT", "FAILED", "CACHED"))
     ))).scalars().all()
     if any(needs_reconciliation(row) for row in pending):
         return await pause(db, task, run, "PPA_REQUEST_RECONCILIATION_PENDING")
@@ -873,7 +861,15 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
             return await pause(db, task, run, "PPA_CASE_INVALID")
         wrapped.register(case["expression"], group=case["case_id"], arm=case.get("arm"),
                          pair_id=case.get("pair_id"), parent_candidate_id=case.get("parent_candidate_id"), research_case=case)
-        result = await ledger.recover(case["expression"], settings)
+        case_signature = signature(case["expression"], settings)
+        prior_failure = next((item for item in pending
+            if item.experiment_group == case["case_id"] and item.request_status == "FAILED"
+            and (item.expression_hash, item.settings_hash) == case_signature and completed_case(item)), None)
+        # An original-position reconciliation can finish the current case while
+        # leaving its cursor behind. Reuse that evidence without reserving again;
+        # the ordinary review and confirmation checks below still run.
+        result = (dict(prior_failure.result_snapshot) if prior_failure is not None else
+                  await ledger.recover(case["expression"], settings))
         if not result:
             with wrapped.source(batch["phase"].upper()):
                 result = await wrapped.simulate_alpha(case["expression"], **settings)
@@ -885,11 +881,13 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
                 await ledger.reserve(case["expression"], settings, batch["phase"].upper(), wrapped.metadata[case["expression"]])
         row = await persist_result(db, wrapped, task, run, case, settings, result, batch["phase"], quality_evaluator,
                                    fields_by_dataset[case["dataset_id"]])
-        run.checkpoint = {**(run.checkpoint or {}), "ppa_batch_cursor": index + 1}
-        await db.commit()
+        evidence = classify_result(result)
+        if (row and completed_case(row) or evidence.kind in {"CLIENT_REJECTED", "TERMINAL_FAILURE"}):
+            run.checkpoint = {**(run.checkpoint or {}), "ppa_batch_cursor": index + 1}
+            await db.commit()
         if row and batch["phase"] == "confirmation" and await finish_confirmation(db, task, run, batch):
             return {"done": True, "reason": "PPA_READY"}
-        if result.get("http_status") == 429 or (not result.get("alpha_id") and result.get("error") == "BUDGET_EXHAUSTED"):
+        if classify_result(result).retryable_after_wait or (not result.get("alpha_id") and result.get("error") == "BUDGET_EXHAUSTED"):
             reset_at = getattr(ledger.quota_window, "reset_at", None)
             wait_seconds = (max(0, reset_at - time.monotonic()) if reset_at is not None
                             else max(0, float(result.get("retry_after") or 0)))
@@ -898,6 +896,8 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
             return await pause(db, task, run, "PPA_RATE_LIMIT")
         if not result.get("alpha_id") and result.get("error") in {"DUPLICATE", "TASK_NOT_RUNNING"}:
             return await pause(db, task, run, result["error"])
+        if is_uncertain_result(result):
+            return await pause(db, task, run, "PPA_REQUEST_RECONCILIATION_PENDING")
         if row and (row.result_snapshot or {}).get("platform_ppa_evaluation", {}).get("status") == "PPA_PENDING" and (evidence_metrics(research_row(row)).get("amer_sharpe") is None or evidence_metrics(research_row(row))["amer_sharpe"] > 1):
             return await pause(db, task, run, "PPA_QUALIFICATION_EVIDENCE_PENDING")
         if (batch["phase"] == "discovery" and index + 1 == 4
@@ -907,7 +907,7 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
     if run.checkpoint["ppa_batch_cursor"] >= len(batch["cases"]):
         pending = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.run_id == run.id,
-            ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN", "RESULT"))
+            ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "UNKNOWN", "RESULT", "FAILED", "CACHED"))
         ))).scalars().all()
         if any(needs_reconciliation(row) for row in pending):
             return await pause(db, task, run, "PPA_REQUEST_RECONCILIATION_PENDING")

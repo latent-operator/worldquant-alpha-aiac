@@ -84,9 +84,9 @@ def test_request_result_is_fail_closed_and_snapshot_retains_safe_error_code():
     assert is_uncertain_result({"success": False, "error": "unrecognized adapter failure"})
     assert is_uncertain_result({"success": False, "http_status": 503,
                                 "error_code": "SERVER_UNCERTAIN"})
-    assert not is_uncertain_result({"success": False, "http_status": 400,
+    assert not is_uncertain_result({"success": False, "http_status": 400, "request_phase": "CREATE_POST",
                                     "error_code": "CLIENT_REJECTED"})
-    assert not is_uncertain_result({"success": False, "http_status": 429,
+    assert not is_uncertain_result({"success": False, "http_status": 429, "request_phase": "CREATE_POST",
                                     "error_code": "RATE_LIMITED"})
     snapshot = safe_result({"error_code": "TRANSPORT_UNCERTAIN",
                             "request_phase": "CREATE_POST", "error": "secret body"})

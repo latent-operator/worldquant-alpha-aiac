@@ -19,10 +19,13 @@ def lifecycle_decision(data: dict) -> str:
     rows = [SimpleNamespace(
         experiment_group=row.get("case_id"),
         request_status=row.get("request_status"),
+        wq_alpha_id=row.get("wq_alpha_id"),
         result_snapshot={key: value for key, value in {
             "ppa_evaluation": ({"status": row["ppa_evaluation"]}
                                if row.get("ppa_evaluation") else None),
             "http_status": row.get("http_status"),
+            "request_phase": row.get("request_phase"),
+            "simulation_status": row.get("simulation_status"),
         }.items() if value is not None},
     ) for row in data.get("candidates") or []]
     try:

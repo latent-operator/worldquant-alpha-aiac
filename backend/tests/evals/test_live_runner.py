@@ -49,6 +49,52 @@ async def quality_evaluator(**kwargs):
     return "OPTIMIZE"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_status", ["PAUSED", "STOPPED"])
+async def test_legacy_failed_blocks_resume_and_completion(async_engine, monkeypatch, run_status):
+    from backend.evals.live_runner import _open_lab_run
+    maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(research_audit, "AsyncSessionLocal", maker)
+    frozen = manifest()
+    task_id, run_id = await _open_lab_run(maker, frozen)
+    async with maker() as db:
+        run = await db.get(ExperimentRun, run_id)
+        run.status = run_status
+        db.add(ResearchCandidate(task_id=task_id, run_id=run_id, family_id="legacy",
+            source="EVAL_BACKTEST", expression="rank(a)", expression_hash="legacy",
+            settings_hash="s", settings={}, experiment_group=frozen["send_order"][0],
+            request_status="FAILED", result_snapshot={"http_status": 400}))
+        await db.commit()
+    brain = FakeBrain({"alpha_id": "should-not-be-posted"})
+    result = await run_lab(frozen, maker=maker, brain=brain,
+                          live_state=clear_state, quality_evaluator=quality_evaluator)
+    assert brain.posts == 0
+    assert result["reason"] == "EVAL_REQUEST_RECONCILIATION_PENDING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_status", ["PAUSED", "STOPPED"])
+async def test_unsent_frozen_case_blocks_posts_and_completion(async_engine, monkeypatch, run_status):
+    from backend.evals.live_runner import _open_lab_run
+    maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(research_audit, "AsyncSessionLocal", maker)
+    frozen = manifest()
+    task_id, run_id = await _open_lab_run(maker, frozen)
+    async with maker() as db:
+        run = await db.get(ExperimentRun, run_id)
+        run.status = run_status
+        db.add(ResearchCandidate(task_id=task_id, run_id=run_id, family_id="frozen",
+            source="EVAL_BACKTEST", expression="rank(a)", expression_hash="unsent",
+            settings_hash="s", settings={}, experiment_group=frozen["send_order"][0],
+            request_status="NOT_REQUESTED", result_snapshot={}))
+        await db.commit()
+    brain = FakeBrain({"alpha_id": "should-not-be-posted"})
+    result = await run_lab(frozen, maker=maker, brain=brain,
+                          live_state=clear_state, quality_evaluator=quality_evaluator)
+    assert brain.posts == 0
+    assert result["reason"] == "EVAL_CANDIDATE_NOT_SENT"
+
+
 def clear_state():
     return {"source_unresolved": 0, "other_active_work": False,
             "platform_verified": True, "isolation_exclusions": empty_exclusions()}
@@ -80,7 +126,7 @@ async def test_lab_run_persists_one_result_and_never_submits(async_engine, monke
 @pytest.mark.parametrize("result,expected_reason", [
     ({"error": "uncertain network result"}, "EVAL_REQUEST_RECONCILIATION_PENDING"),
     ({"error": "ConnectError: ConnectError('')"}, "EVAL_REQUEST_RECONCILIATION_PENDING"),
-    ({"http_status": 429, "error": "rate limit"}, "EVAL_RATE_LIMIT"),
+    ({"http_status": 429, "request_phase": "CREATE_POST", "error": "rate limit"}, "EVAL_RATE_LIMIT"),
 ])
 async def test_lab_stops_after_uncertain_or_rate_limited_request(async_engine, monkeypatch,
                                                                   result, expected_reason):

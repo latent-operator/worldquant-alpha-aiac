@@ -68,9 +68,35 @@ def test_batch_is_frozen_and_rejects_tampering():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status,reason", [
+    ("FAILED", "EVAL_REQUEST_RECONCILIATION_PENDING"),
+    ("NOT_REQUESTED", "EVAL_CANDIDATE_NOT_SENT"),
+])
+async def test_completed_campaign_marker_cannot_hide_ambiguous_failed(async_engine, monkeypatch, status, reason):
+    from backend.evals.discovery_campaign import _open_campaign_run
+    maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(research_audit, "AsyncSessionLocal", maker)
+    campaign, batch = campaign_and_batch()
+    task_id, run_id = await _open_campaign_run(maker, campaign)
+    async with maker() as db:
+        run = await db.get(ExperimentRun, run_id)
+        run.checkpoint = {**run.checkpoint, "completed_batches": [batch["batch_sha256"]]}
+        db.add(ResearchCandidate(task_id=task_id, run_id=run_id, family_id="legacy",
+            source="EVAL_BACKTEST", expression="rank(a)", expression_hash="legacy",
+            settings_hash="s", settings={}, experiment_group=batch["send_order"][0],
+            request_status=status, result_snapshot={"http_status": 404}))
+        await db.commit()
+    brain = FakeBrain({"alpha_id": "should-not-be-posted"})
+    output = await run_campaign_batch(campaign, batch, maker=maker, brain=brain,
+                                      live_state=clear_state, quality_evaluator=quality_evaluator)
+    assert brain.posts == 0
+    assert output["reason"] == reason
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("result,reason", [
     ({"success": False, "error_code": "TRANSPORT_UNCERTAIN"}, "EVAL_REQUEST_RECONCILIATION_PENDING"),
-    ({"success": False, "http_status": 429, "error_code": "RATE_LIMITED", "retry_after": 30}, "EVAL_RATE_LIMIT"),
+    ({"success": False, "http_status": 429, "request_phase": "CREATE_POST", "error_code": "RATE_LIMITED", "retry_after": 30}, "EVAL_RATE_LIMIT"),
 ])
 async def test_campaign_stops_after_first_uncertain_or_429(async_engine, monkeypatch, result, reason):
     maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
@@ -144,7 +170,7 @@ async def test_rate_limit_review_never_auto_resumes(async_engine, monkeypatch):
     maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(research_audit, "AsyncSessionLocal", maker)
     campaign, batch = campaign_and_batch()
-    brain = FakeBrain({"success": False, "http_status": 429, "error_code": "RATE_LIMITED",
+    brain = FakeBrain({"success": False, "http_status": 429, "request_phase": "CREATE_POST", "error_code": "RATE_LIMITED",
                        "retry_after": 1})
     for _ in range(3):
         result = await run_campaign_batch(campaign, batch, maker=maker, brain=brain,

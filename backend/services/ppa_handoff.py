@@ -7,7 +7,8 @@ from sqlalchemy import select
 
 from backend.models import ExperimentRun, MiningTask, ResearchCandidate
 from backend.services.ppa_progress import close_pause
-from backend.services.theme_ppa_v2 import needs_reconciliation, new_fields_have_evidence
+from backend.services.ppa_research_policy import (new_fields_have_evidence,
+    request_evaluation_pending as needs_reconciliation, request_case_complete)
 
 
 def validate_boundary(checkpoint, rows):
@@ -18,13 +19,7 @@ def validate_boundary(checkpoint, rows):
         raise ValueError("PPA_HANDOFF_BATCH_INCOMPLETE")
     if any(needs_reconciliation(row) for row in rows):
         raise ValueError("PPA_HANDOFF_REQUEST_PENDING")
-    completed = {row.experiment_group for row in rows
-                 if (row.request_status in {"RESULT", "CACHED"}
-                     and (row.result_snapshot or {}).get("ppa_evaluation"))
-                 or (row.request_status == "FAILED" and
-                     isinstance((row.result_snapshot or {}).get("http_status"), int) and
-                     400 <= row.result_snapshot["http_status"] < 500 and
-                     row.result_snapshot["http_status"] not in {408, 429})}
+    completed = {row.experiment_group for row in rows if request_case_complete(row)}
     if not set(ids).issubset(completed):
         raise ValueError("PPA_HANDOFF_BATCH_INCOMPLETE")
 
