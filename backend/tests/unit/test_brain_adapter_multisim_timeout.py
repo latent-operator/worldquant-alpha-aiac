@@ -1,8 +1,41 @@
 import asyncio
+import httpx
 import pytest
 
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.adapters.brain_adapter import match_audited_children
+
+
+@pytest.mark.asyncio
+async def test_single_post_connect_error_is_typed_and_not_retried():
+    class Broken(BrainAdapter):
+        calls = 0
+
+        async def _safe_api_call(self, method, endpoint, **kwargs):
+            self.calls += 1
+            assert method == "post" and endpoint == "/simulations"
+            assert kwargs["retry_writes"] is False
+            raise httpx.ConnectError("connection lost")
+
+    brain = Broken(email="unused", password="unused")
+    result = await brain.simulate_alpha("rank(close)", retry_post=False)
+    assert brain.calls == 1
+    assert result["error_code"] == "TRANSPORT_UNCERTAIN"
+    assert result["request_phase"] == "CREATE_POST"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,code", [(503, "SERVER_UNCERTAIN"),
+                                         (429, "RATE_LIMITED"), (400, "CLIENT_REJECTED")])
+async def test_single_post_http_failure_has_stable_error_code(status, code):
+    class Rejected(BrainAdapter):
+        async def _safe_api_call(self, method, endpoint, **kwargs):
+            return _Response({}, status_code=status, headers={}, text="private platform detail")
+
+    result = await Rejected(email="unused", password="unused").simulate_alpha(
+        "rank(close)", retry_post=False)
+    assert result["error_code"] == code
+    assert result["request_phase"] == "CREATE_POST"
 
 
 class _Response:

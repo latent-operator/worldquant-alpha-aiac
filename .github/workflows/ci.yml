@@ -11,7 +11,49 @@ permissions:
   contents: read
 
 jobs:
+  change-scope:
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - id: scope
+        shell: bash
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$PR_BASE" ]; then
+            python scripts/check_scope.py --base "$PR_BASE"
+          else
+            python scripts/check_scope.py
+          fi
+
+  documentation:
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: git diff --check HEAD^ HEAD
+      - run: python scripts/check_repo_hygiene.py
+      - run: npm install -g @fission-ai/openspec@2.0.0
+      - run: openspec validate --all --strict && openspec validate --archived --strict
+        env:
+          OPENSPEC_TELEMETRY: "0"
+
   governance-report:
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -38,6 +80,8 @@ jobs:
         run: python scripts/governance_report.py --knip "$RUNNER_TEMP/aiac-governance/node_modules/.bin/knip" --gitleaks "$RUNNER_TEMP/gitleaks"
 
   offline-ubuntu:
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -63,6 +107,8 @@ jobs:
       BRAIN_PASSWORD: ""
       OPENAI_API_KEY: ""
       CREDENTIALS_SECRET: ""
+      DEEPEVAL_DISABLE_DOTENV: "1"
+      DEEPEVAL_TELEMETRY_OPT_OUT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -74,7 +120,7 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt -r requirements-eval.txt
       - run: npm ci
         working-directory: frontend
       - name: Offline preflight
@@ -86,12 +132,16 @@ jobs:
           python -m alembic -c backend/alembic.ini current --check
 
   offline-windows:
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: windows-latest
     env:
       BRAIN_EMAIL: ""
       BRAIN_PASSWORD: ""
       OPENAI_API_KEY: ""
       CREDENTIALS_SECRET: ""
+      DEEPEVAL_DISABLE_DOTENV: "1"
+      DEEPEVAL_TELEMETRY_OPT_OUT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -103,7 +153,7 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt -r requirements-eval.txt
       - run: npm ci
         working-directory: frontend
       - name: Offline preflight

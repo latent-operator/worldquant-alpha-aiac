@@ -353,6 +353,7 @@ class BrainAdapter:
             "regular": expression
         }
         
+        request_phase = "CREATE_POST"
         try:
             response = await self._safe_api_call("post", "/simulations", json=sim_payload,
                                                  retry_writes=retry_post)
@@ -365,10 +366,14 @@ class BrainAdapter:
                         logger.warning("Simulation quota metadata could not be persisted")
                 if not retry_post and response.status_code >= 500:
                     return {"success": False, "error": "uncertain server error",
-                            "http_status": response.status_code, "rate_limit": rate_limit}
-                logger.error(f"Brain Simulation Failed [{response.status_code}] | Payload: {json.dumps(sim_payload)} | Response: {response.text}")
+                            "http_status": response.status_code, "rate_limit": rate_limit,
+                            "error_code": "SERVER_UNCERTAIN", "request_phase": request_phase}
+                logger.error(f"Brain Simulation Failed [{response.status_code}]")
                 failure = {"success": False, "error": f"Creation failed: {response.text}",
-                           "http_status": response.status_code, "rate_limit": rate_limit}
+                           "http_status": response.status_code, "rate_limit": rate_limit,
+                           "error_code": "RATE_LIMITED" if response.status_code == 429 else
+                                         "SERVER_UNCERTAIN" if response.status_code >= 500 or response.status_code == 408 else
+                                         "CLIENT_REJECTED", "request_phase": request_phase}
                 if response.status_code == 429:
                     try:
                         failure["retry_after"] = max(0, float(response.headers.get("Retry-After")))
@@ -381,7 +386,8 @@ class BrainAdapter:
                 sim_id = response.json().get("id")
                 if not sim_id:
                     return {"success": False, "error": "uncertain no location header",
-                            "http_status": response.status_code, "rate_limit": rate_limit}
+                            "http_status": response.status_code, "rate_limit": rate_limit,
+                            "error_code": "ACK_UNTRACKED", "request_phase": request_phase}
                 location = f"/simulations/{sim_id}"
                  
             logger.info(f"Simulation started | location={location}")
@@ -389,18 +395,22 @@ class BrainAdapter:
                 try:
                     await on_location(location)
                 except Exception:
-                    return {"success": False, "error": "uncertain request location persistence failed"}
+                    return {"success": False, "error": "uncertain request location persistence failed",
+                            "error_code": "ACK_UNTRACKED", "request_phase": request_phase}
             if on_rate_limit is not None and rate_limit:
                 try:
                     await on_rate_limit(rate_limit)
                 except Exception:
                     logger.warning("Simulation quota metadata could not be persisted")
+            request_phase = "POLL_ORIGINAL"
             result = await self._wait_for_simulation(location)
             return {**result, "rate_limit": rate_limit}
         except Exception as e:
             error = _format_exception(e)
             logger.error(f"Simulate error: {error}")
-            return {"success": False, "error": error}
+            return {"success": False, "error": error,
+                    "error_code": "TRANSPORT_UNCERTAIN",
+                    "request_phase": request_phase}
 
     async def simulate_batch(
         self,

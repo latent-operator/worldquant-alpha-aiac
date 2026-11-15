@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import argparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ def command_plan() -> list[Check]:
         Check("staged git diff", ("git", "diff", "--cached", "--check"), ROOT),
         Check("repository hygiene", (sys.executable, "scripts/check_repo_hygiene.py"), ROOT),
         Check("backend unit tests", (sys.executable, "-m", "pytest", "backend/tests/unit", "-q", "--disable-warnings"), ROOT),
+        Check("offline evals", (sys.executable, "-m", "pytest", "backend/tests/evals", "-q", "--disable-warnings"), ROOT),
         Check("AIAC MCP tests", (sys.executable, "-m", "unittest", "discover", "-s", "integrations/aiac_mcp/tests", "-p", "test_*.py"), ROOT),
         Check("frontend tests", (npm, "test"), ROOT / "frontend"),
         Check("frontend lint", (npm, "run", "lint"), ROOT / "frontend"),
@@ -35,8 +37,12 @@ def command_plan() -> list[Check]:
 
 def offline_environment(source: dict[str, str]) -> dict[str, str]:
     env = dict(source)
-    for name in ("BRAIN_EMAIL", "BRAIN_PASSWORD", "OPENAI_API_KEY", "CREDENTIALS_SECRET"):
+    for name in ("BRAIN_EMAIL", "BRAIN_PASSWORD", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                 "AZURE_OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+                 "CONFIDENT_API_KEY", "DEEPEVAL_API_KEY", "CREDENTIALS_SECRET"):
         env[name] = ""
+    env["DEEPEVAL_DISABLE_DOTENV"] = "1"
+    env["DEEPEVAL_TELEMETRY_OPT_OUT"] = "1"
     env["POSTGRES_PORT"] = "1"
     env["REDIS_URL"] = "redis://127.0.0.1:1/0"
     env["AIAC_OFFLINE_CHECK"] = "1"
@@ -44,14 +50,25 @@ def offline_environment(source: dict[str, str]) -> dict[str, str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--docs-only", action="store_true")
+    args = parser.parse_args()
+    checks = command_plan()
+    if args.docs_only:
+        sys.path.insert(0, str(ROOT))
+        from scripts.check_scope import changed_paths, docs_only
+        if not docs_only(changed_paths()):
+            print("Docs-only checks refused: changes include code, policy or unknown scope.")
+            return 2
+        checks = checks[:3]
     env = offline_environment(os.environ)
-    for check in command_plan():
+    for check in checks:
         print(f"Running {check.label}...", flush=True)
         result = subprocess.run(check.argv, cwd=check.cwd, env=env, check=False)
         if result.returncode:
             print(f"Failed: {check.label} (exit {result.returncode})", file=sys.stderr)
             return result.returncode
-    print("AIAC offline preflight passed.")
+    print("AIAC documentation checks passed." if args.docs_only else "AIAC offline preflight passed.")
     return 0
 
 

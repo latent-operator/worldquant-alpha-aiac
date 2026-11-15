@@ -1,0 +1,45 @@
+schema: spec-driven
+
+context: |
+  AIAC's durable research goal is AIAC-PPA-QUALIFIED-ALPHA.
+  Read openspec/specs/aiac-research-goal/spec.md and Beads epic aiac-r1e before proposing research work.
+  Persisted AIAC quality PASS and final PPA_READY are business evidence; HTTP success, CI, Sharpe and AgentsView session completion are not substitutes.
+  RD-Agent's hypothesis-experiment-feedback loop is a design reference only. AIAC ResearchLedger is authoritative for WQ outcomes.
+
+rules:
+  proposal:
+    - Name the linked Beads issue and the expected business evidence.
+    - Explain how the hypothesis changes the economic mechanism or data source.
+  tasks:
+    - Include a read-only check of persisted WQ request and quality outcomes.
+
+# Project context (optional)
+# Add only constraints that should guide OpenSpec artifacts and workflows.
+# Include constraints an agent cannot infer by reading the code.
+# Keep general project documentation and discoverable codebase facts out.
+# Example:
+#   context: |
+#     Designs and tasks must cover Windows, macOS, and Linux
+#     Write all artifacts in Spanish
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
