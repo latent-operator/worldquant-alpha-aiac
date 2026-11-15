@@ -153,6 +153,14 @@ report the blocker.
 
 ## One-time incomplete-batch isolation
 
+Use `-PreflightPython <absolute-check-environment-python>` when DeepEval is
+installed in a separate development/check environment. Install both
+`requirements.txt` and `requirements-eval.txt` there, preferably with the
+production Python version. The full offline preflight uses this interpreter;
+the release journal records its path. Runtime migrations, isolation transactions
+and services continue using RuntimeHome's Python and shared environment.
+Omitting the option retains the existing single-environment behavior.
+
 The owner's 2026-11-15 exception applies only to task 14 / run 28. Normal
 completed-batch handoff remains the default. Isolation permits a software
 release while preserving unknown requests, not research restart. The old

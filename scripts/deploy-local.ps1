@@ -6,6 +6,7 @@ param(
     [ValidateRange(1, [int]::MaxValue)][int]$HandoffRunId,
     [ValidateRange(1, [int]::MaxValue)][int]$EmptySuccessorRunId,
     [string]$IsolationManifest,
+    [string]$PreflightPython,
     [string]$RuntimeHome = (Join-Path $PSScriptRoot '..')
 )
 
@@ -13,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtimeHomePath = (Resolve-Path -LiteralPath $RuntimeHome).Path
 $python = Join-Path $runtimeHomePath '.venv\Scripts\python.exe'
+$checkPython = if ($PreflightPython) { (Resolve-Path -LiteralPath $PreflightPython).Path } else { $python }
 $runtimeRoot = [IO.Path]::GetFullPath((Join-Path $runtimeHomePath '..\..\runtime\aiac-ops'))
 $envFile = Join-Path $runtimeHomePath '.env'
 $manager = Join-Path $root 'scripts\manage-local.ps1'
@@ -62,6 +64,7 @@ function Write-ReleaseRecord([string]$outcome, [string]$detail) {
         task_snapshot = if (Test-Path -LiteralPath $snapshot) { $snapshot } else { $null }
         detail = $detail
         isolation_manifest = $IsolationManifest
+        preflight_python = $checkPython
         isolation_journal = if (Get-Variable isolationJournal -ErrorAction SilentlyContinue) { $isolationJournal } else { $null }
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordPath -Encoding utf8
 }
@@ -89,7 +92,7 @@ try {
     $ciText = & $python scripts/verify_release.py --commit $Commit --ci-run $CiRun
     Assert-Native 'Release gate'
     $ci = $ciText | ConvertFrom-Json
-    & $python scripts/preflight.py
+    & $checkPython scripts/preflight.py
     Assert-Native 'Offline preflight'
     if ($IsolationManifest) {
         & $python -m scripts.ppa_isolation check --manifest $IsolationManifest --env-file $envFile `

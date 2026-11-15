@@ -53,6 +53,14 @@ def test_release_isolation_is_checked_before_pause_and_applied_after_restore():
     assert script.index("Assert-Native 'Post-release isolation hold'") > script.index('Verify-Services $Commit', script.index('scripts.run_migrations'))
 
 
+def test_release_supports_separate_offline_check_environment():
+    script = (Path(__file__).resolve().parents[3] / 'scripts/deploy-local.ps1').read_text(encoding='utf-8-sig')
+    assert '[string]$PreflightPython' in script
+    assert '& $checkPython scripts/preflight.py' in script
+    assert '& $python -m scripts.ppa_isolation apply' in script
+    assert '& $python -m scripts.run_migrations' in script
+
+
 @pytest.mark.parametrize('failure', [None, 'database', 'environment'])
 def test_apply_preserves_audit_journal_on_success_or_uncertain_failure(tmp_path, monkeypatch, failure):
     module = cli()
