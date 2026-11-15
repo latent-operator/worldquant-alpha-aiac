@@ -161,7 +161,7 @@ the release journal records its path. Runtime migrations, isolation transactions
 and services continue using RuntimeHome's Python and shared environment.
 Omitting the option retains the existing single-environment behavior.
 
-Full preflight also requires the pinned Import Linter and Semgrep tools in
+Full preflight also requires the pinned Import Linter, Semgrep and Ruff tools in
 `requirements-governance.txt`. Install them in a separate virtual environment
 and set `AIAC_GOVERNANCE_BIN` to its `Scripts` directory (Windows) or `bin`
 directory (Linux) before preflight/deployment. Semgrep's Click and tracing
@@ -179,6 +179,14 @@ and the source scan. The focused rules constrain direct request-state writes
 and known simulation POST entry points; they do not prove all possible dynamic
 dispatch safe. Existing cached-result and audited isolation writers have exact
 file exceptions. Runtime reservation/recovery tests remain necessary.
+
+Ruff blocks F401/F811/F821 findings in the eleven explicitly reviewed
+lifecycle, adapter, quality and coordinator files listed in
+`scripts/check_architecture.py`. It uses isolated configuration and runs
+real violating and repaired fixtures before scanning those files. Two graph
+compatibility exports retain narrow, explained F401 exceptions. Other files
+remain in the advisory governance report; this is not a whole-repository
+cleanup or an automatic fix pass.
 
 The owner's 2026-11-15 exception applies only to task 14 / run 28. Normal
 completed-batch handoff remains the default. Isolation permits a software

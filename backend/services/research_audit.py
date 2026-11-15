@@ -191,6 +191,9 @@ def safe_result(result: dict) -> dict:
     request_phase = result.get("request_phase")
     if not isinstance(request_phase, str) or request_phase not in {"CREATE_POST", "POLL_ORIGINAL"}:
         request_phase = None
+    simulation_status = str(result.get("simulation_status") or result.get("status") or "").upper()
+    if simulation_status not in {"ERROR", "FAILED", "COMPLETE", "PENDING", "RUNNING"}:
+        simulation_status = None
 
     classifications = []
     for item in (result.get("classifications") or [])[:20]:
@@ -227,8 +230,7 @@ def safe_result(result: dict) -> dict:
         "error_code": error_code, "request_phase": request_phase,
         "stage": result.get("stage") if result.get("stage") in {"IS", "OS"} else None,
         "status": result.get("status") if result.get("status") in {"UNSUBMITTED", "SUBMITTED"} else None,
-        "simulation_status": (result.get("simulation_status") or result.get("status"))
-        if (result.get("simulation_status") or result.get("status")) in {"ERROR", "FAILED", "COMPLETE", "PENDING", "RUNNING"} else None,
+        "simulation_status": simulation_status,
         "classifications": classifications, "themes": themes,
         "metrics": safe_metrics(result), "checks": checks,
         "can_submit": bool(result.get("can_submit")),

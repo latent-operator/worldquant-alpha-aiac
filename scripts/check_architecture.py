@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import re
 import shutil
@@ -10,7 +11,17 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSIONS = {'lint-imports': '2.15', 'semgrep': '1.185.0'}
+VERSIONS = {'lint-imports': '2.15', 'semgrep': '1.185.0', 'ruff': '0.17.4'}
+# Only the reviewed lifecycle/adapter/quality/coordinator scope is blocking.
+RUFF_TARGETS = (
+    'scripts/advance_theme_ppa.py', 'scripts/watch_theme_ppa.py',
+    'backend/adapters/mcp_brain_adapter.py', 'backend/adapters/brain_adapter.py',
+    'backend/agents/graph/nodes/evaluation.py',
+    'backend/services/alpha_quality_evaluation.py', 'backend/services/alpha_quality_policy.py',
+    'backend/services/theme_ppa_v2.py', 'backend/services/theme_ppa.py',
+    'backend/services/research_audit.py', 'backend/services/request_lifecycle.py',
+)
+RUFF_OPTIONS = ('check', '--isolated', '--no-cache', '--select', 'F401,F811,F821')
 
 
 def scanner_environment(source):
@@ -80,6 +91,32 @@ def verify_import_fixture(executable, env):
     print('Import contract positive/negative fixtures passed.')
 
 
+def verify_ruff_fixture(executable, env):
+    """Check all selected rules, then prove a narrow compatibility exception works."""
+    with tempfile.TemporaryDirectory(prefix='aiac-ruff-contract-') as folder:
+        root = Path(folder)
+        fixture = root / 'fixture.py'
+        fixture.write_text('import os\n'
+                           'def repeated():\n    return 1\n'
+                           'def repeated():\n    return 2\n'
+                           'VALUE = missing\n', encoding='utf-8')
+        argv = [executable, *RUFF_OPTIONS, '--output-format', 'json', str(fixture)]
+        broken = invoke(argv, cwd=root, env=env)
+        try:
+            codes = {item['code'] for item in json.loads(broken.stdout)}
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError('Ruff negative fixture produced no valid findings') from exc
+        if broken.returncode != 1 or codes != {'F401', 'F811', 'F821'}:
+            raise RuntimeError('Ruff negative fixture did not detect every selected violation')
+        fixture.write_text('import os  # noqa: F401 - compatibility export fixture\n'
+                           'def repeated():\n    return 2\n'
+                           'VALUE = repeated()\n', encoding='utf-8')
+        repaired = invoke(argv, cwd=root, env=env)
+        if repaired.returncode or repaired.stdout.strip() != '[]':
+            raise RuntimeError('Ruff repaired fixture did not pass')
+    print('Ruff F401/F811/F821 positive/negative fixtures passed.')
+
+
 def main():
     # Windows terminals may use GBK while scanner output contains Unicode glyphs.
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -95,6 +132,8 @@ def main():
     require_success([tools['semgrep'], 'scan', '--config', '.semgrep/request-boundaries.yml',
                      '--metrics=off', '--disable-version-check', '--error', '--strict',
                      '--exclude', 'backend/tests', 'backend', 'scripts'], env)
+    verify_ruff_fixture(tools['ruff'], env)
+    require_success([tools['ruff'], *RUFF_OPTIONS, '--output-format', 'concise', *RUFF_TARGETS], env)
     print('AIAC architecture boundaries passed; tools used local rules only.')
     return 0
 

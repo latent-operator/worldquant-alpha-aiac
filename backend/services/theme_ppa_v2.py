@@ -6,9 +6,9 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 
-from backend.models import MiningTask, ExperimentRun, ResearchCandidate, Alpha, TraceStep
+from backend.models import ExperimentRun, ResearchCandidate, Alpha, TraceStep
 from backend.alpha_semantic_validator import compute_expression_hash
-from backend.services.ppa_feedback import (behavioral_signature, build_feedback, digest, freeze_batch,
+from backend.services.ppa_feedback import (behavioral_signature, build_feedback, digest,
                                            research_row, select_local_seeds, verify_batch_generation)
 from backend.services.ppa_eligibility import evaluate_ppa_candidate
 from backend.services.ppa_research_policy import evidence_metrics, seed_decision, new_fields_have_evidence

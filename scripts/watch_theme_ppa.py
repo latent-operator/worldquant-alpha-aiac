@@ -9,7 +9,6 @@ from pathlib import Path
 import socket
 import subprocess
 import time
-from types import SimpleNamespace
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 

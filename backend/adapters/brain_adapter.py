@@ -10,16 +10,13 @@ Refactored based on ace_lib.py best practices:
 - Retry-After Handling
 """
 
-import os
 import asyncio
 import json
-from typing import Dict, List, Optional, Any, Union
-from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
 import httpx
 import redis.asyncio as redis
 from tenacity import retry, stop_after_attempt, wait_exponential
 from loguru import logger
-from sqlalchemy import select
 import logging
 
 # Suppress httpx interaction logs
@@ -28,10 +25,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from backend.config import settings
 from backend.database import AsyncSessionLocal
-from backend.models import BrainAuthToken
-
-# Import protocol for type checking (Protocol is runtime_checkable)
-from backend.protocols.brain_protocol import BrainProtocol
 
 # Singleton Client Storage (Loop-aware)
 _GLOBAL_CLIENT: Optional[httpx.AsyncClient] = None
