@@ -66,7 +66,14 @@ def verify_import_fixture(executable, env):
         broken = invoke(argv, cwd=root, env=local_env)
         if broken.returncode != 1 or '1 broken' not in broken.stdout or 'Policy fixture must stay pure' not in broken.stdout:
             raise RuntimeError('Import contract negative fixture did not detect the forbidden import')
-        policy.write_text('VALUE = 1\n', encoding='utf-8')
+        # Quality policy must also reject a side effect hidden behind a helper.
+        helper = package / 'helper.py'
+        helper.write_text('import archfixture.effects\n', encoding='utf-8')
+        policy.write_text('import archfixture.helper\n', encoding='utf-8')
+        indirect = invoke(argv, cwd=root, env=local_env)
+        if indirect.returncode != 1 or '1 broken' not in indirect.stdout:
+            raise RuntimeError('Import contract missed an indirect forbidden dependency')
+        helper.write_text('VALUE = 1\n', encoding='utf-8')
         repaired = invoke(argv, cwd=root, env=local_env)
         if repaired.returncode or '1 kept' not in repaired.stdout:
             raise RuntimeError('Import contract repaired fixture did not pass')

@@ -32,47 +32,13 @@ from backend.agents.prompts import (
 )
 
 
-def _expression_components(expression: str, fields: List[Dict]) -> Tuple[List[str], List[str]]:
-    """Extract field/operator usage for hard complexity gates."""
-    if not expression:
-        return [], []
-
-    try:
-        from backend.alpha_semantic_validator import AlphaSemanticValidator
-
-        validator = AlphaSemanticValidator(fields=fields, strict_field_check=False)
-        result = validator.validate(expression)
-        return sorted(result.used_fields), sorted(op.lower() for op in result.used_operators)
-    except Exception:
-        import re
-
-        ops = sorted({m.group(1).lower() for m in re.finditer(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", expression)})
-        field_ids = {str(f.get("id") or f.get("name") or "").lower() for f in fields}
-        used_fields = sorted(
-            {
-                token
-                for token in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", expression)
-                if token.lower() in field_ids
-            }
-        )
-        return used_fields, ops
-
-
-def _operator_call_count(expression: str) -> int:
-    """Count operator calls, not unique operator names, for hard complexity gates."""
-    if not expression:
-        return 0
-    import re
-
-    return len(re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\s*\(", expression))
-
-
-def _as_float(value, default: float = 0.0) -> float:
-    """Convert numeric API values defensively."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+from backend.services.alpha_quality_policy import (
+    operator_call_count as _operator_call_count, as_float as _as_float,
+    risk_neutralized_metrics as _risk_neutralized_metrics, check_value as _check_value,
+)
+from backend.services.alpha_quality_evaluation import (
+    expression_components as _expression_components, strict_gate_failures as _strict_gate_failures,
+)
 
 
 def _default_thresholds() -> Dict[str, Any]:
@@ -156,48 +122,6 @@ async def _load_thresholds(config: RunnableConfig = None) -> Dict[str, Any]:
     return thresholds
 
 
-def _risk_neutralized_metrics(metrics: Dict) -> Dict[str, Any]:
-    """Normalize nested and flat MCP/BRAIN risk-neutralized metric shapes."""
-    rn_metrics = metrics.get("riskNeutralized") or metrics.get("risk_neutralized") or {}
-    if not isinstance(rn_metrics, dict):
-        rn_metrics = {}
-
-    sharpe = (
-        rn_metrics.get("sharpe")
-        if rn_metrics.get("sharpe") is not None
-        else metrics.get("risk_neutralized_sharpe", metrics.get("rn_sharpe"))
-    )
-    fitness = (
-        rn_metrics.get("fitness")
-        if rn_metrics.get("fitness") is not None
-        else metrics.get("risk_neutralized_fitness", metrics.get("rn_fitness"))
-    )
-
-    normalized = dict(rn_metrics)
-    if sharpe is not None:
-        normalized["sharpe"] = sharpe
-    if fitness is not None:
-        normalized["fitness"] = fitness
-    if "sharpe" not in normalized or "fitness" not in normalized:
-        sim_settings = metrics.get("_settings") or metrics.get("settings") or {}
-        neutralization = str(sim_settings.get("neutralization") or "").upper()
-        if neutralization and neutralization != "NONE":
-            if "sharpe" not in normalized and metrics.get("sharpe") is not None:
-                normalized["sharpe"] = metrics.get("sharpe")
-            if "fitness" not in normalized and metrics.get("fitness") is not None:
-                normalized["fitness"] = metrics.get("fitness")
-            normalized.setdefault("_source", f"neutralized_setting:{neutralization}")
-    return normalized
-
-
-def _check_value(metrics: Dict, check_name: str) -> Any:
-    """Return a BRAIN check value when present."""
-    for check in metrics.get("checks") or []:
-        if isinstance(check, dict) and check.get("name") == check_name:
-            return check.get("value")
-    return None
-
-
 def _is_cancelled_sim_result(result: Dict[str, Any]) -> bool:
     """Detect children cancelled because a sibling expression broke the batch."""
     if result.get("success"):
@@ -212,87 +136,6 @@ def _is_cancelled_sim_result(result: Dict[str, Any]) -> bool:
 def _padding_expression() -> str:
     """Known simple expression used only to satisfy multi-sim's min batch size."""
     return "rank(close)"
-
-
-def _strict_gate_failures(
-    metrics: Dict,
-    brain_failed_checks: List[str],
-    prod_corr: Optional[float],
-    self_corr: Optional[float],
-    thresholds: Dict[str, Any],
-    expression: str = "",
-    fields: Optional[List[Dict]] = None,
-) -> List[str]:
-    """Production-quality gates requested for mined deliverables."""
-    sharpe = _as_float(metrics.get("sharpe"))
-    two_year_value = metrics.get("two_year_sharpe")
-    if two_year_value is None:
-        two_year_value = _check_value(metrics, "LOW_2Y_SHARPE")
-    two_year_sharpe = _as_float(two_year_value, sharpe)
-    fitness = _as_float(metrics.get("fitness"))
-    margin = _as_float(metrics.get("margin"))
-    turnover = _as_float(metrics.get("turnover"))
-    rn_metrics = _risk_neutralized_metrics(metrics)
-    rn_sharpe = _as_float(rn_metrics.get("sharpe"), default=None)
-    rn_fitness = _as_float(rn_metrics.get("fitness"), default=None)
-    ra_fails = len(brain_failed_checks or [])
-
-    sharpe_min = thresholds["sharpe_min"]
-    two_year_sharpe_min = thresholds["two_year_sharpe_min"]
-    fitness_min = thresholds["fitness_min"]
-    rn_sharpe_min = thresholds["rn_sharpe_min"]
-    rn_fitness_min = thresholds["rn_fitness_min"]
-    margin_min = thresholds["margin_min"]
-    turnover_min = thresholds["turnover_min"]
-    turnover_max = thresholds["turnover_max"]
-    prod_corr_max = thresholds["prod_corr_max"]
-    self_corr_max = thresholds["self_corr_max"]
-    ra_fails_max = thresholds["ra_fails_max"]
-    max_operator_count = int(thresholds.get("max_operator_count", 7))
-
-    failures = []
-    used_fields, used_ops = _expression_components(expression, fields or [])
-    stage = metrics.get("stage")
-    status = metrics.get("status")
-    if "trade_when" in {op.lower() for op in used_ops}:
-        failures.append("TRADE_WHEN_FORBIDDEN")
-    if len(used_fields) > 2:
-        failures.append(f"TOO_MANY_FIELDS (fields={len(used_fields)} > 2)")
-    operator_calls = _operator_call_count(expression)
-    if operator_calls > max_operator_count:
-        failures.append(f"TOO_MANY_OPERATORS (ops={operator_calls} > {max_operator_count})")
-    if stage != "IS":
-        failures.append(f"NOT_IS_STAGE (stage={stage if stage is not None else 'missing'})")
-    if status != "UNSUBMITTED":
-        failures.append(f"NOT_UNSUBMITTED (status={status if status is not None else 'missing'})")
-    if sharpe <= sharpe_min:
-        failures.append(f"LOW_SHARPE (is={sharpe:.2f} <= {sharpe_min:.2f})")
-    if two_year_sharpe <= two_year_sharpe_min:
-        failures.append(f"LOW_2Y_SHARPE (2y={two_year_sharpe:.2f} <= {two_year_sharpe_min:.2f})")
-    if fitness <= fitness_min:
-        failures.append(f"LOW_FITNESS (fit={fitness:.2f} <= {fitness_min:.2f})")
-    if rn_sharpe is None or rn_sharpe <= rn_sharpe_min:
-        failures.append(f"LOW_RN_SHARPE (rn={rn_sharpe if rn_sharpe is not None else 'missing'} <= {rn_sharpe_min:.2f})")
-    if rn_fitness is None or rn_fitness <= rn_fitness_min:
-        failures.append(f"LOW_RN_FITNESS (rn={rn_fitness if rn_fitness is not None else 'missing'} <= {rn_fitness_min:.2f})")
-    if margin <= margin_min:
-        failures.append(f"LOW_MARGIN (margin={margin:.6f} <= {margin_min:.6f})")
-    if turnover <= turnover_min:
-        failures.append(f"LOW_TURNOVER (to={turnover:.3f} <= {turnover_min:.3f})")
-    if turnover >= turnover_max:
-        failures.append(f"HIGH_TURNOVER (to={turnover:.3f} >= {turnover_max:.3f})")
-    if ra_fails > ra_fails_max:
-        failures.append(f"RA_FAILS (fails={ra_fails} > {ra_fails_max})")
-    if prod_corr is None:
-        failures.append("PROD_CORR_MISSING")
-    elif prod_corr >= prod_corr_max:
-        failures.append(f"HIGH_PROD_CORR (pc={prod_corr:.3f} >= {prod_corr_max:.3f})")
-    if self_corr is None:
-        failures.append("SELF_CORR_MISSING")
-    elif self_corr >= self_corr_max:
-        failures.append(f"HIGH_SELF_CORR (sc={self_corr:.3f} >= {self_corr_max:.3f})")
-
-    return failures
 
 
 # =============================================================================

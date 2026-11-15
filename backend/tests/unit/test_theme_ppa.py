@@ -244,14 +244,15 @@ async def test_theme_dispatch_does_not_count_discovery_as_robust_ppa_ready(async
         db.add(run)
         await db.commit()
 
-        class FakeAgent:
-            def __init__(self, *_args):
-                pass
-
-            async def _quality_status_for_optimization_result(self, **_kwargs):
-                return "OPTIMIZE"
-
-        monkeypatch.setattr(mining_module, "MiningAgent", FakeAgent)
+        from backend.services import alpha_quality_evaluation
+        quality_calls = []
+        async def quality(**kwargs):
+            quality_calls.append(kwargs)
+            return "OPTIMIZE"
+        def forbidden_agent(*_args, **_kwargs):
+            pytest.fail("PPA quality must not construct MiningAgent")
+        monkeypatch.setattr(mining_module, "MiningAgent", forbidden_agent)
+        monkeypatch.setattr(alpha_quality_evaluation, "evaluate_alpha_quality", quality)
 
         class Brain:
             calls = 0
@@ -282,6 +283,7 @@ async def test_theme_dispatch_does_not_count_discovery_as_robust_ppa_ready(async
         assert outcome["reason"] == "PPA_FIRST_BATCH_REVIEW"
         assert outcome["done"] is True
         assert brain.calls == 5
+        assert len(quality_calls) == 5
         assert mining_task.status == run.status == "PAUSED"
         assert run.checkpoint["ppa_cursor"] == 5
         assert run.checkpoint["ppa_first_batch_review_pending"] is True
@@ -398,12 +400,15 @@ async def test_confirmation_upgrades_parent_only_after_both_platform_ready_probe
         ))
         await db.commit()
 
-        class FakeAgent:
-            def __init__(self, *_args):
-                pass
-            async def _quality_status_for_optimization_result(self, **_kwargs):
-                return "OPTIMIZE"
-        monkeypatch.setattr(mining_module, "MiningAgent", FakeAgent)
+        from backend.services import alpha_quality_evaluation
+        quality_calls = []
+        async def quality(**kwargs):
+            quality_calls.append(kwargs)
+            return "OPTIMIZE"
+        def forbidden_agent(*_args, **_kwargs):
+            pytest.fail("PPA quality must not construct MiningAgent")
+        monkeypatch.setattr(mining_module, "MiningAgent", forbidden_agent)
+        monkeypatch.setattr(alpha_quality_evaluation, "evaluate_alpha_quality", quality)
 
         class Brain:
             calls = 0
@@ -425,6 +430,7 @@ async def test_confirmation_upgrades_parent_only_after_both_platform_ready_probe
         parent = (await db.execute(select(ResearchCandidate).where(
             ResearchCandidate.experiment_group == "r1"))).scalar_one()
         assert brain.calls == 2
+        assert len(quality_calls) == 2
         assert outcome["reason"] == "PPA_READY"
         assert parent.result_snapshot["ppa_evaluation"]["status"] == "PPA_READY"
         assert parent.result_snapshot["robustness_review"]["confirmation_cases"] == ["k1", "k2"]

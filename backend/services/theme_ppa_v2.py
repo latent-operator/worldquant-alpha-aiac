@@ -395,8 +395,8 @@ async def reconcile_paused(db, task, run, brain, fields_by_dataset, quality_eval
         await db.refresh(row)
     if result.get("alpha_id"):
         if quality_evaluator is None:
-            from backend.agents.mining_agent import MiningAgent
-            quality_evaluator = MiningAgent(db, brain)._quality_status_for_optimization_result
+            from backend.services.alpha_quality_evaluation import evaluator_for
+            quality_evaluator = evaluator_for(brain)
         await persist_result(db, brain, task, run, case, row.settings, result,
                              row.source.lower(), quality_evaluator, fields_by_dataset[case["dataset_id"]])
     await db.refresh(row)
@@ -842,8 +842,8 @@ async def run_theme_v2(db, brain, task, run, fields_by_dataset, quality_evaluato
         ledger.quota_window = restore_quota([(row.result_snapshot or {}) for row in pending])
     wrapped = ResearchBudgetBrain(brain, ledger)
     if quality_evaluator is None:
-        from backend.agents.mining_agent import MiningAgent
-        quality_evaluator = MiningAgent(db, wrapped)._quality_status_for_optimization_result
+        from backend.services.alpha_quality_evaluation import evaluator_for
+        quality_evaluator = evaluator_for(wrapped)
     start = int((run.checkpoint or {}).get("ppa_batch_cursor", 0))
     if continuous:
         return await run_parallel_batch(db, brain, task, run, batch, base, fields_by_dataset,

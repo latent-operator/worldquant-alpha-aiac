@@ -121,8 +121,8 @@ async def run_lab(manifest: dict, *, maker, brain, live_state,
                 return {"status": "PAUSED", "reason": "EVAL_RATE_LIMIT", "sent": 0,
                         "task_id": task_id, "run_id": run_id}
         if quality_evaluator is None:
-            from backend.agents.mining_agent import MiningAgent
-            quality_evaluator = MiningAgent(db, wrapped)._quality_status_for_optimization_result
+            from backend.services.alpha_quality_evaluation import evaluator_for
+            quality_evaluator = evaluator_for(wrapped)
 
         async def qualify_unfinished():
             for row in await _rows(db, run_id):

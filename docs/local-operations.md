@@ -246,3 +246,36 @@ and ambiguous failures. A zero raw UNKNOWN count alone does not prove a safe
 boundary. Old reports remain readable, but unsupported completion claims are
 downgraded or rejected; historical fixtures are not rewritten to manufacture
 evidence.
+
+## Quality decision boundary and replay
+
+`alpha_quality_policy.py` contains the quality decision rules and accepts
+precomputed expression facts. It has no database, configuration, Agent or
+network dependency. `alpha_quality_evaluation.py` supplies expression facts and
+performs correlation reads: SELF first, and PROD only when SELF is present and
+strictly below its existing threshold. Local failures or a missing Alpha
+identity do not trigger correlation reads. The Agent's compatibility method
+delegates to this public evaluator; research consumers use it directly.
+
+The extraction preserves the existing distinction between graph configuration
+loading and optimization task-config defaults. Comparisons use unrounded
+correlation values; rounding occurs only when recording metrics. Threshold
+equality, missing evidence and exception behavior are covered by replay tests.
+Platform preliminary eligibility and final PPA readiness remain separate.
+
+`backend/tests/fixtures/quality_policy_golden.json` records outputs from the
+pre-extraction commit with fake correlation responses. Its historical samples
+contain whitelisted numeric metrics and checks, with explicitly replaced
+expressions and fields. Missing correlations remain missing. This replay
+proves equivalence on the recorded inputs; it does not reconstruct an unknown
+historical expression or claim equality with a past persisted quality label.
+The complete 285-row historical replay and its capture evidence stay outside
+the repository. No replay calls WQ or a model.
+
+Import Linter rejects transitive runtime dependencies from the pure policy and
+MiningAgent dependencies from the migrated quality consumers. Its executable
+fixtures exercise both direct and helper-mediated violations, then verify the
+repaired dependency graph passes. Service package exports load on demand so
+importing a pure policy does not indirectly initialize the database or config.
+Fresh-process tests block those imports and separately verify all existing
+public service exports still resolve to their original objects.
