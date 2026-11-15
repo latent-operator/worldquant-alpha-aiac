@@ -38,10 +38,33 @@ def test_persisted_evidence_and_unoccupied_records():
     assert not classify_record("NOT_REQUESTED", {}).needs_reconciliation
 
 
-@pytest.mark.parametrize("status", ["ERROR", "FAILED"])
-def test_snapshot_round_trip_preserves_terminal_simulation_status(status):
+@pytest.mark.parametrize("key", ["status", "simulation_status"])
+@pytest.mark.parametrize("status", ["ERROR", "error", "Error", "FAILED", "failed", "Failed"])
+def test_snapshot_round_trip_preserves_terminal_simulation_status(key, status):
     from backend.services.research_audit import safe_result
-    saved = safe_result({"request_phase": "POLL_ORIGINAL", "status": status})
-    assert saved["simulation_status"] == status
+    original = {"request_phase": "POLL_ORIGINAL", "http_status": 200, key: status}
+    saved = safe_result(original)
+    assert saved["simulation_status"] == status.upper()
     assert saved["status"] is None
     assert classify_result(saved).kind == "TERMINAL_FAILURE"
+    assert classify_result(saved) == classify_result(original)
+
+
+@pytest.mark.parametrize("http_status", [404, 429])
+@pytest.mark.parametrize("status", ["error", "Failed"])
+def test_snapshot_round_trip_cannot_make_failed_lookup_terminal(http_status, status):
+    from backend.services.research_audit import safe_result
+    saved = safe_result({"request_phase": "POLL_ORIGINAL", "http_status": http_status,
+                         "status": status})
+    assert saved["simulation_status"] == status.upper()
+    assert classify_result(saved).needs_reconciliation
+
+
+@pytest.mark.parametrize("status", ["UNSUBMITTED", "SUBMITTED"])
+def test_alpha_submission_status_is_not_a_simulation_terminal(status):
+    from backend.services.research_audit import safe_result
+    saved = safe_result({"request_phase": "POLL_ORIGINAL", "http_status": 200,
+                         "status": status})
+    assert saved["status"] == status
+    assert saved["simulation_status"] is None
+    assert classify_result(saved).needs_reconciliation

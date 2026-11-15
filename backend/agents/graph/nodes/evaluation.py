@@ -13,7 +13,7 @@ Contains:
 
 import time
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 from loguru import logger
 from langchain_core.runnables import RunnableConfig
 
@@ -33,11 +33,13 @@ from backend.agents.prompts import (
 
 
 from backend.services.alpha_quality_policy import (
-    operator_call_count as _operator_call_count, as_float as _as_float,
+    operator_call_count as _operator_call_count,  # noqa: F401 - preserve graph compatibility export
+    as_float as _as_float,
     risk_neutralized_metrics as _risk_neutralized_metrics, check_value as _check_value,
 )
 from backend.services.alpha_quality_evaluation import (
-    expression_components as _expression_components, strict_gate_failures as _strict_gate_failures,
+    expression_components as _expression_components,  # noqa: F401 - preserve graph compatibility export
+    strict_gate_failures as _strict_gate_failures,
 )
 
 
