@@ -177,6 +177,7 @@ def _check_state(manifest: dict, args, evidence: dict | None = None) -> dict:
         feedback.raise_for_status()
     if feedback.json().get("evidence_hash") != manifest.get("source_evidence_hash"):
         state["source_run_current"] = False
+    state['isolation_exclusions'] = feedback.json().get('isolation_exclusions')
     if evidence is not None:
         try:
             validate_platform_evidence(evidence, manifest["base"]["theme_id"],
@@ -214,7 +215,7 @@ def _run(args, manifest: dict) -> dict:
     def live_state():
         current = _check_state(manifest, args, evidence)
         return {key: current[key] for key in ("source_unresolved", "other_active_work",
-                                              "source_run_current", "platform_verified", "now")}
+                                              "source_run_current", "platform_verified", "now", "isolation_exclusions")}
 
     async def execute():
         fallback = BrainAdapter(email=os.environ["BRAIN_EMAIL"], password=os.environ["BRAIN_PASSWORD"])

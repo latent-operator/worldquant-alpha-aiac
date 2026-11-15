@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from backend.alpha_semantic_validator import AlphaSemanticValidator
 from backend.evals.live_runner import _fields, _rows, _set_state
+from backend.evals.isolation_exclusions import blocked, exclusion_gate, validate_exclusions
 from backend.models import ExperimentRun, MiningTask, ResearchCandidate
 from backend.services.ppa_feedback import case_settings, digest, freeze_batch
 from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger
@@ -52,6 +53,10 @@ def freeze_campaign_batch(campaign: dict, evidence: dict, proposal: dict, *, ind
     if index < 1 or evidence.get("budget_remaining") is not None:
         raise ValueError("CAMPAIGN_BATCH_INVALID")
     frozen = freeze_batch(campaign["base"], evidence, proposal)
+    exclusions = validate_exclusions(evidence.get('isolation_exclusions'))
+    if any(blocked(exclusions, case['expression'], case_settings(campaign['base'], case.get('settings') or {}))
+           for case in frozen['cases']):
+        raise ValueError('ISOLATED_SIGNATURE')
     if not 1 <= len(frozen["cases"]) <= 16 or len(frozen["cases"]) % 4:
         raise ValueError("CAMPAIGN_BATCH_SIZE_INVALID")
     payload = {"schema_version": 1, "campaign_id": campaign["campaign_id"],
@@ -71,6 +76,14 @@ def validate_campaign_batch(campaign: dict, batch: dict) -> None:
     if batch.get("campaign_id") != campaign.get("campaign_id") or batch.get("code_commit") != campaign.get("code_commit"):
         raise ValueError("CAMPAIGN_ID_MISMATCH")
     cases = batch.get("cases") or []
+    # Historical manifests remain readable for reports and original-position
+    # reconciliation. New freezing and every new dispatch require exclusions.
+    exclusions = (batch.get('evidence') or {}).get('isolation_exclusions')
+    if exclusions is not None:
+        validate_exclusions(exclusions)
+        if any(blocked(exclusions, case['expression'], case_settings(campaign['base'], case.get('settings') or {}))
+               for case in cases):
+            raise ValueError('ISOLATED_SIGNATURE')
     if not 1 <= len(cases) <= 16 or len(cases) % 4 or len(set(batch.get("send_order") or [])) != len(cases):
         raise ValueError("CAMPAIGN_BATCH_SIZE_INVALID")
     checked = freeze_batch(campaign["base"], batch["evidence"],
@@ -139,7 +152,9 @@ async def _open_campaign_run(maker, campaign: dict) -> tuple[int, int]:
 async def run_campaign_batch(campaign: dict, batch: dict, *, maker, brain, live_state,
                              quality_evaluator=None, max_steps: int | None = None) -> dict:
     validate_campaign_batch(campaign, batch)
-    reason = campaign_gate(dict(live_state()), campaign["base"])
+    state = dict(live_state())
+    frozen_exclusions = batch['evidence'].get('isolation_exclusions')
+    reason = campaign_gate(state, campaign["base"])
     if reason != "READY":
         return {"status": "BLOCKED", "reason": reason, "sent": 0}
     task_id, run_id = await _open_campaign_run(maker, campaign)
@@ -214,7 +229,12 @@ async def run_campaign_batch(campaign: dict, batch: dict, *, maker, brain, live_
                 await _set_state(db, task, run, "PAUSED", "EVAL_BATCH_LIMIT_REACHED")
                 break
             try:
-                reason = campaign_gate(dict(live_state()), campaign["base"])
+                state = dict(live_state())
+                case = cases[case_id]
+                reason = exclusion_gate(frozen_exclusions, state.get('isolation_exclusions'),
+                                        case['expression'], case_settings(campaign['base'], {}))
+                if reason == 'READY':
+                    reason = campaign_gate(state, campaign["base"])
             except Exception:
                 reason = "EVAL_SOURCE_CHECK_FAILED"
             if reason != "READY":

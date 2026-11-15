@@ -5,6 +5,7 @@ param(
     [string]$BootstrapPreviousSource,
     [ValidateRange(1, [int]::MaxValue)][int]$HandoffRunId,
     [ValidateRange(1, [int]::MaxValue)][int]$EmptySuccessorRunId,
+    [string]$IsolationManifest,
     [string]$RuntimeHome = (Join-Path $PSScriptRoot '..')
 )
 
@@ -60,6 +61,8 @@ function Write-ReleaseRecord([string]$outcome, [string]$detail) {
         backup = if (Test-Path -LiteralPath $dumpPath) { $dumpPath } else { $null }
         task_snapshot = if (Test-Path -LiteralPath $snapshot) { $snapshot } else { $null }
         detail = $detail
+        isolation_manifest = $IsolationManifest
+        isolation_journal = if (Get-Variable isolationJournal -ErrorAction SilentlyContinue) { $isolationJournal } else { $null }
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordPath -Encoding utf8
 }
 
@@ -77,7 +80,9 @@ function Verify-Services([string]$expectedCommit) {
 
 Push-Location $root
 try {
-    if ($HandoffRunId -and $EmptySuccessorRunId) { throw 'Only one PPA boundary mode may be selected.' }
+    if (([int][bool]$HandoffRunId + [int][bool]$EmptySuccessorRunId + [int][bool]$IsolationManifest) -gt 1) {
+        throw 'Only one PPA boundary mode may be selected.'
+    }
     if (-not (Test-Path -LiteralPath $python) -or -not (Test-Path -LiteralPath $envFile)) {
         throw 'Python environment or private .env is missing.'
     }
@@ -86,6 +91,11 @@ try {
     $ci = $ciText | ConvertFrom-Json
     & $python scripts/preflight.py
     Assert-Native 'Offline preflight'
+    if ($IsolationManifest) {
+        & $python -m scripts.ppa_isolation check --manifest $IsolationManifest --env-file $envFile `
+            --commit $Commit --ci-run $CiRun
+        Assert-Native 'PPA isolation manifest precheck'
+    }
 
     $volumeMarker = Join-Path $runtimeRoot 'db-volume-id.txt'
     if (-not (Test-Path -LiteralPath $volumeMarker)) { throw 'Expected database volume ID is not recorded.' }
@@ -211,6 +221,13 @@ try {
             --maintenance-file $maintenanceFile
         Assert-Native 'PPA handoff close'
     }
+    if ($IsolationManifest) {
+        $isolationJournal = Join-Path $runtimeRoot "ppa-isolation-$stamp.json"
+        & $python -m scripts.ppa_isolation apply --manifest $IsolationManifest --env-file $envFile `
+            --commit $Commit --ci-run $CiRun --current-file $currentFile --journal $isolationJournal `
+            --maintenance-file $maintenanceFile
+        Assert-Native 'PPA incomplete batch isolation'
+    }
 
     & $python -m scripts.run_migrations --source $source --env-file $envFile
     Assert-Native 'Committed database migrations'
@@ -225,6 +242,11 @@ try {
     Assert-Native 'Original run resume'
     & $python -m scripts.release_tasks verify --snapshot $snapshot --env-file $envFile | Out-Null
     Assert-Native 'Post-resume identity verification'
+    if ($IsolationManifest) {
+        & $python -m scripts.ppa_isolation check --manifest $IsolationManifest --env-file $envFile `
+            --commit $Commit --ci-run $CiRun
+        Assert-Native 'Post-release isolation hold'
+    }
     Write-ReleaseRecord 'SUCCESS' 'Backup restored in isolation; health and original run identities verified.'
     [ordered]@{ commit = $Commit; source = $source; ci_run = $CiRun; record = $recordPath } |
         ConvertTo-Json | Set-Content -LiteralPath $currentFile -Encoding utf8

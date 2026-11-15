@@ -14,6 +14,7 @@ from backend.services.ppa_feedback import (
 )
 from backend.services.ppa_research_policy import evidence_metrics
 from backend.services.research_audit import signature
+from backend.evals.isolation_exclusions import blocked, validate_exclusions
 
 
 def evidence_key(parent: dict) -> tuple:
@@ -81,6 +82,7 @@ def freeze_experiment(feedback: dict, *, source_run_id: int, source_task_id: int
     if not 1 <= top_k <= budget <= 80 or min_exclusive > top_k:
         raise ValueError("EXPERIMENT_SIZE_INVALID")
     base = feedback["base"]
+    exclusions = validate_exclusions(feedback.get('isolation_exclusions'))
     exhausted = {tuple(item) for item in feedback.get("exhausted_templates") or []}
     parents = select_local_seeds(feedback["rows"], base,
         max_operators=feedback.get("strict_max_operator_count") or 5,
@@ -107,7 +109,7 @@ def freeze_experiment(feedback: dict, *, source_run_id: int, source_task_id: int
             for expression, changed in _variant_options(parent, base, lookbacks):
                 identity = signature(expression, settings)
                 behavior = behavioral_signature(expression, settings)
-                if identity in used_signatures or behavior in used_behavioral:
+                if identity in used_signatures or behavior in used_behavioral or blocked(exclusions, expression, settings):
                     continue
                 case = {"case_id": "E_" + digest([parent_id, expression])[:16],
                         "parent_case_id": parent["case_id"], "arm": "TREATMENT",
@@ -147,6 +149,7 @@ def freeze_experiment(feedback: dict, *, source_run_id: int, source_task_id: int
                "min_results": ceil(0.95 * budget),
                "source_task_id": source_task_id, "source_run_id": source_run_id,
                "source_evidence_hash": feedback.get("evidence_hash"),
+               "isolation_exclusions": exclusions,
                "source_commit": None, "prepare_commit": prepare_commit,
                "prepared_at": prepared_at, "base": base,
                "parent_evidence": {str(parent["id"]): {

@@ -11,6 +11,7 @@ from backend.services import research_audit
 from backend.tests.evals.test_live_runner import FakeBrain, clear_state, quality_evaluator
 from backend.tests.unit.test_ppa_feedback import base as fixture_base
 from backend.evals.discovery_campaign import choose_dataset, freeze_campaign_batch, run_campaign_batch
+from backend.tests.evals.test_live_ppa import empty_exclusions
 
 
 def campaign_and_batch():
@@ -28,7 +29,8 @@ def campaign_and_batch():
                 "budget_remaining": None, "continuous": True,
                 "rows": [], "seeds": [], "history_signatures": [],
                 "history_behavioral_signatures": [], "exhausted_templates": [],
-                "evidence_hash": "frozen", "strict_max_operator_count": 5}
+                "evidence_hash": "frozen", "strict_max_operator_count": 5,
+                "isolation_exclusions": empty_exclusions()}
     cases = [{"case_id": f"case_{window}", "pair_id": "group_1",
               "arm": "CONTROL" if index == 0 else "TREATMENT",
               "dataset_id": "pv1", "mechanism_id": "reversal",

@@ -56,7 +56,8 @@ def test_new_base_and_evidence_exclude_old_expressions():
     base = _new_base(source, selected, verified_at=datetime.now(timezone.utc).isoformat())
     assert list(base["datasets"]) == ["news76"]
     old = {"candidates": [{"expression": "rank(a)"}]}
-    evidence = _evidence({"evidence_hash": "source"}, old, [], base)
+    from backend.tests.evals.test_live_ppa import empty_exclusions
+    evidence = _evidence({"evidence_hash": "source", "isolation_exclusions": empty_exclusions()}, old, [], base)
     from backend.services.ppa_feedback import case_settings, signature
     assert list(signature("rank(a)", case_settings(base, {}))) in evidence["history_signatures"]
     assert evidence["budget_remaining"] is None

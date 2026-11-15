@@ -343,6 +343,9 @@ class TaskService(BaseService):
         if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
             await self.db.refresh(task, with_for_update=True)
         
+        if (getattr(task, "config", None) or {}).get("ppa_isolation_hold"):
+            raise ValueError("PPA_ISOLATION_RESEARCH_HOLD")
+
         valid_start_statuses = ["PENDING", "PAUSED", "STOPPED", "FAILED", "COMPLETED"]
         if task.status not in valid_start_statuses:
             raise ValueError(f"Cannot start task in {task.status} status")
@@ -436,7 +439,10 @@ class TaskService(BaseService):
             if expected_run_id is not None:
                 if type(expected_run_id) is not int or expected_run_id < 1:
                     raise ValueError("PPA_STALE_RUN")
+            if expected_run_id is not None or (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
                 await self.db.refresh(task, with_for_update=True)
+            if (getattr(task, "config", None) or {}).get("ppa_isolation_hold"):
+                raise ValueError("PPA_ISOLATION_RESEARCH_HOLD")
             if task.status != "PAUSED":
                 raise ValueError("Can only resume paused tasks")
             paused_run = (await self.db.execute(
@@ -487,6 +493,10 @@ class TaskService(BaseService):
         elif action == "ADJUST":
             if not parameters:
                 raise ValueError("ADJUST action requires parameters")
+            if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
+                await self.db.refresh(task, with_for_update=True)
+            if (getattr(task, "config", None) or {}).get("ppa_isolation_hold") or 'ppa_isolation_hold' in parameters:
+                raise ValueError("PPA_ISOLATION_RESEARCH_HOLD")
             new_config = {**(task.config or {}), **parameters}
             await self.task_repo.update_by_id(task_id, {"config": new_config})
             await self.commit()

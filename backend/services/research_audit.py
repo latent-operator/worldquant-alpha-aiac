@@ -291,6 +291,10 @@ class ResearchLedger:
                         scope.append(run.id)
                         root.checkpoint = {**(root.checkpoint or {}), "campaign_run_ids": sorted(scope)}
                 task = await db.get(MiningTask, self.task_id)
+                from backend.services.ppa_isolation import reservation_block
+                isolation = await reservation_block(db, run, task, expression, settings)
+                if isolation:
+                    return None, isolation
                 dedup_status = ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN"))
                 if self.max_requests is None and (getattr(task, "config", None) or {}).get("research_protocol") == "theme_ppa_v3":
                     dedup_status &= (ResearchCandidate.request_status != "FAILED") | ResearchCandidate.result_snapshot["http_status"].as_integer().is_distinct_from(429)

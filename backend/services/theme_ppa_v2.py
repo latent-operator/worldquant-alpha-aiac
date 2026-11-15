@@ -142,6 +142,22 @@ async def feedback_context(db, task, run):
                                              if row.expression and row.validation_status == "VALID"})
     context["history_behavioral_signatures"] = sorted({behavioral_signature(row.expression, row.settings or {})
         for row in rows if row.expression and row.validation_status == "VALID"})
+    # Export every isolated frozen case, including cases that never reserved a
+    # candidate. Independent lab databases cannot query this production ledger.
+    from backend.services.ppa_isolation import validate_record
+    isolated = []
+    for isolated_run in (await db.execute(select(ExperimentRun).order_by(ExperimentRun.id))).scalars():
+        record = (isolated_run.checkpoint or {}).get("ppa_isolation")
+        if record is None and isolated_run.block_reason != "PPA_HANDOFF_ISOLATED":
+            continue
+        manifest = validate_record(record)
+        if (manifest['task_id'] != isolated_run.task_id or manifest['run_id'] != isolated_run.id
+                or isolated_run.status != 'STOPPED' or isolated_run.block_reason != 'PPA_HANDOFF_ISOLATED'):
+            raise ValueError('PPA_ISOLATION_STATE_CHANGED')
+        isolated.append({key: manifest[key] for key in
+                         ('task_id', 'run_id', 'manifest_sha256', 'blocked_signatures')})
+    exclusions = {'version': 1, 'manifests': isolated}
+    context['isolation_exclusions'] = {**exclusions, 'exclusions_sha256': digest(exclusions)}
     context["unresolved_requests"] = sum(row.run_id == run.id and needs_reconciliation(row) for row in rows)
     if continuous:
         # Continuous PPA batches are independently audited before dispatch.

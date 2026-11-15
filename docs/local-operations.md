@@ -150,3 +150,48 @@ runtime: the previous source is the preserved worktree snapshot, not merely
 the older clean Git commit. If the desktop blocks local process control, do not
 use another command to bypass it; leave the prepared release unstarted and
 report the blocker.
+
+## One-time incomplete-batch isolation
+
+The owner's 2026-11-15 exception applies only to task 14 / run 28. Normal
+completed-batch handoff remains the default. Isolation permits a software
+release while preserving unknown requests, not research restart. The old
+batch cursor and request locations stay unchanged; ambiguous historical FAILED
+rows become UNKNOWN with their original snapshots retained. The task and run
+are STOPPED with an explicit research hold, and every frozen expression/settings
+signature is excluded from future requests, including independent experiments.
+
+From the clean checkout of the exact successful master-push CI commit, prepare
+the private manifest outside the repository (paths below are placeholders):
+
+```powershell
+python -m scripts.ppa_isolation prepare --manifest <absolute-private-manifest.json> --env-file <absolute-runtime.env> --commit <40-character-SHA> --ci-run <run-id> --evidence <absolute-private-audit.json>
+python -m scripts.ppa_isolation check --manifest <absolute-private-manifest.json> --env-file <absolute-runtime.env> --commit <40-character-SHA> --ci-run <run-id>
+.\scripts\deploy-local.ps1 -Commit <40-character-SHA> -CiRun <run-id> -RuntimeHome <absolute-runtime-home> -IsolationManifest <absolute-private-manifest.json>
+```
+
+Repeat `--evidence` for each audit artifact. The manifest contains hashes and
+identifiers, not expressions or credentials. Preparation and check do not
+mutate research state. Deployment checks the manifest before downtime, stops
+dispatch under maintenance, validates the backup in a separate database and
+only then applies isolation atomically. Changed persisted evidence, active
+work, in-flight requests, an altered manifest or another task/run refuse the
+handoff. `-IsolationManifest`, `-HandoffRunId` and `-EmptySuccessorRunId` are
+mutually exclusive. The private isolation journal is linked from the release
+journal; preserve both even after failure.
+
+Rollback restores code only. It does not undo the isolation or automatically
+resume the stopped task; leave the coordinator disabled and research on hold.
+An older rollback version may not implement manual-start guards, so do not
+manually restart task 14 on that version. Reconciliation and any later research
+restart require their own fresh evidence and existing authorization. CI and
+deployment smoke checks must never send simulation or submission requests.
+
+Target-run RESERVED/REQUESTED requests still block isolation. Unrelated
+historical unresolved requests may remain only when their owning tasks and
+runs are PAUSED/STOPPED: the manifest binds their identities, statuses and
+evidence hashes, and apply plus post-release checks require them unchanged.
+They are never corrected, isolated or resumed by this handoff. In the local
+rehearsal, task 12 / run 15 contains 11 UNKNOWN records and candidate 352 is
+REQUESTED with no original location. All 12 remain unresolved and must be disclosed in any later
+account/research safety assessment; software release does not prove inactivity.

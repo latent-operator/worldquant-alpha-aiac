@@ -5,6 +5,7 @@ from backend.tests.unit.test_ppa_feedback import base as fixture_base
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import scripts.ppa_discovery_campaign as operator
+from backend.tests.evals.test_live_ppa import empty_exclusions
 from scripts.ppa_discovery_campaign import (
     _evidence, _history, _new_base,
 )
@@ -28,7 +29,7 @@ def test_old_and_production_signatures_are_carried_into_next_batch():
     old = {"candidates": [{"expression": "rank(close)"}]}
     previous = [{"batch_sha256": "one", "cases": [{"expression": "rank(open)"}]}]
     source = {"evidence_hash": "source", "history_signatures": [],
-              "history_behavioral_signatures": []}
+              "history_behavioral_signatures": [], "isolation_exclusions": empty_exclusions()}
     identities, _ = _history(source, old, previous, base)
     settings = case_settings(base, {})
     assert list(signature("rank(close)", settings)) in identities
@@ -38,6 +39,7 @@ def test_old_and_production_signatures_are_carried_into_next_batch():
     assert evidence["evidence_hash"] == digest({
         "source": "source", "history": evidence["history_signatures"],
         "behavioral": evidence["history_behavioral_signatures"],
+        "isolation_exclusions": empty_exclusions(),
         "previous_batches": ["one"]})
     assert _evidence(source, old, previous, base) == evidence
 

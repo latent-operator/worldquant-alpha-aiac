@@ -9,6 +9,12 @@ from backend.evals.live_ppa import (
 )
 from backend.tests.unit.test_ppa_feedback import base as fixture_base
 from backend.tests.unit.test_ppa_research_policy import candidate as fixture_candidate
+from backend.services.ppa_feedback import digest
+
+
+def empty_exclusions():
+    payload = {'version': 1, 'manifests': []}
+    return {**payload, 'exclusions_sha256': digest(payload)}
 
 
 def parent(identifier, *, amer, fitness, sharpe, test_sharpe, lookback):
@@ -29,7 +35,8 @@ def feedback():
     return {"base": fixture_base(), "rows": rows, "parent_total_counts": {},
             "exhausted_templates": [], "history_signatures": [],
             "history_behavioral_signatures": [], "strict_max_operator_count": 5,
-            "evidence_hash": "historical", "unresolved_requests": 0}
+            "evidence_hash": "historical", "unresolved_requests": 0,
+            "isolation_exclusions": empty_exclusions()}
 
 
 def test_evidence_order_uses_only_frozen_parent_metrics():
