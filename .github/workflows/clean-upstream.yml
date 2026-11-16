@@ -1,0 +1,36 @@
+name: Pinned clean upstream checks
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  upstream:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PORT: '1'
+      REDIS_URL: redis://127.0.0.1:1/0
+      BRAIN_EMAIL: ''
+      BRAIN_PASSWORD: ''
+      OPENAI_API_KEY: offline-test-placeholder
+      OPENAI_BASE_URL: http://127.0.0.1:1/v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: lavender1203/worldquant-alpha-aiac
+          ref: 8ffda431d08703b7f6ae13c8287806fd76eb63e0
+          path: upstream-check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r upstream-check/requirements.txt pytest-mock
+      - run: python scripts/verify_clean_upstream.py --source upstream-check
+      - run: npm ci && npm run build
+        working-directory: upstream-check/frontend
