@@ -8,6 +8,9 @@ description: Review saved AIAC/WQ batch results, trace failures and quality evid
 Read `G:\安装\claude\work\aiac\LOCAL_CONTEXT.md` and the current release pointer in
 `G:\安装\claude\runtime\aiac-clean\current.json`. Use its interpreter and
 `<source>/ops/research.py report --run-id ID`, or the local read-only MCP tools.
+Completed bounded runs include `review`: the native worker's saved advisory analysis and
+authoritative facts. Read it first; verify its claims against the raw report. A failed analysis
+or uncertain desktop notification does not invalidate or restart the completed batch.
 
 - Establish task/run, candidate signature, frozen settings, WQ Alpha ID, code commit and observation time.
 - Count RESULT separately from UNKNOWN/REQUESTED/RESERVED, rejected and failed requests. Incomplete

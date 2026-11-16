@@ -41,5 +41,11 @@ The fixed batch is serial, at most 16 candidates within its declared create-requ
 Before each POST the trace is REQUESTED; a durable Location becomes ACCEPTED and allows GET-only
 recovery. An interrupted REQUESTED becomes UNKNOWN and is never automatically resent.
 Worker startup only recovers RUNNING bounded runs, never old/paused runs. Quality and PPA remain
-separate; final PPA evaluation and automatic completion notifications are not implemented here.
+separate; final PPA evaluation is not implemented here. On completion the same worker runs
+one advisory review through the existing LLM service (60-second cap), stores a REVIEW trace
+and emits an in-app/Windows notification. Failed review preserves the batch and quality labels.
+Worker startup recovers missing completed bounded reviews, without repeating WQ requests.
+Desktop delivery is at most one attempt; ATTEMPTED after interruption means delivery uncertain.
+Notifications are read at /api/v1/runs/bounded/notifications; report includes the saved review.
+This does not wake a Codex chat or start another experiment. Windows settings may suppress toasts.
 Two thin project skills live in `.agents/skills`; ordinary dispatch returns IDs and ends the chat wait.

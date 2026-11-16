@@ -211,13 +211,14 @@ async def report(db, run_id):
     if run is None: raise ValueError('Run not found')
     steps = (await db.execute(select(TraceStep).where(TraceStep.run_id==run_id,TraceStep.step_type=='SIMULATE').order_by(TraceStep.step_order))).scalars().all()
     alphas = (await db.execute(select(Alpha).where(Alpha.run_id==run_id))).scalars().all()
+    review = (await db.execute(select(TraceStep.output_data).where(TraceStep.run_id==run_id,TraceStep.step_type=='REVIEW'))).scalar_one_or_none()
     counts = {}
     for step in steps:
         status = (step.output_data or {}).get('request_status','UNSPECIFIED')
         counts[status]=counts.get(status,0)+1
     manifest = (run.config_snapshot or {}).get('bounded_manifest',{})
     return {'task_id':run.task_id,'run_id':run.id,'status':run.status,'error':run.error_message,'observed_at':now(),
-            'code_commit':(run.config_snapshot or {}).get('code_commit'),
+            'code_commit':(run.config_snapshot or {}).get('code_commit'),'review':review,
             'manifest_sha256':(run.config_snapshot or {}).get('manifest_sha256'),
             'max_create_requests':manifest.get('max_create_requests'),
             'sent':sum(bool((s.output_data or {}).get('reserved_at')) for s in steps),

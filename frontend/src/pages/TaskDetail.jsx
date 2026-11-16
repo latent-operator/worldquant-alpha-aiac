@@ -147,7 +147,7 @@ export default function TaskDetail() {
   const { data: bounded } = useQuery({
     queryKey: ['boundedRun', selectedRunId],
     queryFn: async () => { const r = await fetch(`/api/v1/runs/${selectedRunId}/bounded`); if (!r.ok) throw new Error('Report unavailable'); return r.json() },
-    enabled: !!selectedRunId, refetchInterval: task?.status === 'RUNNING' ? 10000 : false,
+    enabled: !!selectedRunId, refetchInterval: (query) => task?.status === 'RUNNING' || (task?.status === 'COMPLETED' && !query.state.data?.review) ? 10000 : false,
   })
   const { data: worker } = useQuery({
     queryKey: ['boundedWorker'],
@@ -404,6 +404,13 @@ export default function TaskDetail() {
           </Card>
 
           <Card className="glass-card" title="本次 Run 摘要" style={{ marginTop: 16 }}>
+            {bounded?.review && <div style={{ marginBottom: 16 }}>
+              <Text strong>自动复盘：{bounded.review.analysis_status === 'COMPLETED' ? '已完成' : '未完成'}</Text>
+              <Tag style={{ marginLeft: 8 }}>{bounded.review.analysis.decision}</Tag>
+              <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{bounded.review.analysis.summary}</Paragraph>
+              <Paragraph>{bounded.review.analysis.next_action}</Paragraph>
+              <Text type="secondary">以上为研究建议，未发起下一批。桌面通知：{bounded.review.desktop_status}；质量判定见下方实际结果。</Text>
+            </div>}
             <Space wrap style={{ marginBottom: 12 }}>
               <Tag color={worker?.worker_online ? 'green' : 'orange'}>Worker {worker?.worker_online ? '在线' : '未确认'}</Tag>
               {bounded?.max_create_requests && <><Tag>请求 {bounded.sent}/{bounded.max_create_requests}</Tag><Tag>结果 {bounded.requests?.RESULT || 0}</Tag><Tag>未知 {bounded.requests?.UNKNOWN || 0}</Tag><Tag>心跳 {bounded.heartbeat?.worker_heartbeat || '等待'}</Tag><Text type="warning">{bounded.error}</Text></>}

@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 import httpx
 
@@ -67,6 +67,71 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['requests'],{'RESULT':1}); self.assertEqual(result['quality_PASS'],0)
         self.assertEqual(again['status'],'COMPLETED')
         self.assertEqual(sum(x.startswith('POST') for x in self.calls),1)
+
+    async def test_completion_review_is_once_and_never_changes_quality(self):
+        from backend.services import completion_review as c
+        from backend.models import TraceStep
+        from sqlalchemy import select
+        task_id,run_id=await self.create()
+        analysis={'decision':'CHANGE_MECHANISM','summary':'Weak evidence','next_action':'New hypothesis required'}
+        with patch.object(c,'analyze',AsyncMock(return_value=analysis)) as llm, patch.object(c,'desktop_notify',AsyncMock(return_value='SHOWN')) as notify:
+            self.assertIsNone(await c.complete(run_id))  # still RUNNING
+            llm.assert_not_awaited()
+            async with httpx.AsyncClient(transport=httpx.MockTransport(self.transport)) as client:
+                await self.b.run(task_id,run_id,client=client,poll_interval=0)
+            first=await c.complete(run_id); again=await c.complete(run_id)
+            self.assertEqual(first['facts']['quality_PASS'],0)
+            self.assertEqual(again['desktop_status'],'SHOWN')
+            llm.assert_awaited_once(); notify.assert_awaited_once()
+        async with self.sessions() as db:
+            reviews=(await db.execute(select(TraceStep).where(TraceStep.run_id==run_id,TraceStep.step_type=='REVIEW'))).scalars().all()
+            self.assertEqual(len(reviews),1)
+            self.assertEqual((await self.b.report(db,run_id))['quality_PASS'],0)
+
+    async def test_review_failure_keeps_completion_and_durable_notification(self):
+        from backend.services import completion_review as c
+        task_id,run_id=await self.create()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(self.transport)) as client:
+            await self.b.run(task_id,run_id,client=client,poll_interval=0)
+        with patch.object(c,'analyze',AsyncMock(side_effect=TimeoutError)), patch.object(c,'desktop_notify',AsyncMock(side_effect=OSError)):
+            result=await c.complete(run_id)
+        self.assertEqual(result['analysis_status'],'FAILED')
+        self.assertEqual(result['desktop_status'],'FAILED')
+        async with self.sessions() as db:
+            self.assertEqual((await self.b.report(db,run_id))['status'],'COMPLETED')
+            self.assertEqual((await c.notifications(db))[0]['run_id'],run_id)
+
+    async def test_uncertain_desktop_delivery_is_not_repeated(self):
+        from backend.services import completion_review as c
+        from backend.models import TraceStep
+        from sqlalchemy import select
+        task_id,run_id=await self.create()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(self.transport)) as client:
+            await self.b.run(task_id,run_id,client=client,poll_interval=0)
+        with patch.object(c,'analyze',AsyncMock(return_value={'decision':'STOP','summary':'weak','next_action':'stop'})), patch.object(c,'desktop_notify',AsyncMock(return_value='SHOWN')):
+            await c.complete(run_id)
+        async with self.sessions() as db:
+            step=(await db.execute(select(TraceStep).where(TraceStep.run_id==run_id,TraceStep.step_type=='REVIEW'))).scalar_one()
+            step.output_data={**step.output_data,'desktop_status':'ATTEMPTED'}; await db.commit()
+        with patch.object(c,'desktop_notify',AsyncMock()) as notify:
+            result=await c.complete(run_id)
+            notify.assert_not_awaited(); self.assertEqual(result['desktop_status'],'ATTEMPTED')
+
+    async def test_restart_recovers_completed_review_without_mining(self):
+        from backend.services import completion_review as c
+        task_id,run_id=await self.create()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(self.transport)) as client:
+            await self.b.run(task_id,run_id,client=client,poll_interval=0)
+        with patch('backend.tasks.mining_tasks.review_completed_run.delay') as review, patch('backend.tasks.run_mining_task.delay') as mining:
+            await c.recover()
+            review.assert_called_once_with(run_id); mining.assert_not_called()
+
+    async def test_native_completion_hook_survives_review_failure(self):
+        from backend.tasks.mining_tasks import run_mining_task
+        from backend.services import completion_review as c
+        with patch.object(self.b,'execute',AsyncMock(return_value={'status':'COMPLETED','run_id':42})), patch.object(c,'complete',AsyncMock(side_effect=RuntimeError)) as review:
+            result=await asyncio.to_thread(run_mining_task.run,8,42)
+            self.assertEqual(result['status'],'COMPLETED'); review.assert_awaited_once_with(42)
 
     async def test_recovery_after_location_only_gets(self):
         task_id,run_id=await self.create()

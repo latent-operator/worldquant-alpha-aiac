@@ -22,6 +22,8 @@ Do not use retired Beads/OpenSpec recovery or old fork tools.
    A timeout requires reading task/run state before retrying creation or start.
 5. Return actual task/run IDs, budget and `http://127.0.0.1:5174/tasks/ID`, then end ordinary dispatch.
    Celery owns the wait. Do not keep a chat or browser polling. Monitor to completion only when requested.
+   Completion automatically saves a review and posts AIAC/Windows notifications; it does not wake
+   a Codex chat, launch the next experiment or submit an Alpha.
 
 Use `report --run-id ID` for later review. Explicit `resume --task-id ID` reuses the same eligible
 bounded run; ACCEPTED positions resume GET only. UNKNOWN/REQUESTED/REJECTED/FAILED block resume.
