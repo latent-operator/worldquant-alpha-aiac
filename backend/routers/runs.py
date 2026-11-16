@@ -4,8 +4,6 @@ Runs Router - Experiment run management
 Uses RunService for all business logic.
 """
 
-import asyncio
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
@@ -14,160 +12,12 @@ from datetime import datetime
 
 from backend.database import get_db
 from backend.services.run_service import RunService
-from backend.services.credentials_service import CredentialsService
-from backend.services.research_report import candidate_page, research_report
 
 router = APIRouter(
     prefix="/runs",
     tags=["runs"],
     responses={404: {"description": "Not found"}},
 )
-
-# The managed local API runs a single process. Retried clients must not poll
-# the same original simulation concurrently while a prior call is still active.
-_ppa_reconcile_locks: dict[int, asyncio.Lock] = {}
-
-
-@router.get("/activity-inventory")
-async def get_activity_inventory(db: AsyncSession = Depends(get_db)):
-    """Bounded active run identities, including queued and model-waiting work."""
-    from sqlalchemy import select
-    from backend.models import ExperimentRun
-    rows = (await db.execute(select(ExperimentRun.id, ExperimentRun.task_id, ExperimentRun.status)
-        .where(ExperimentRun.status.in_(("PENDING", "QUEUED", "RUNNING", "WAITING_LLM")))
-        .order_by(ExperimentRun.id).limit(10001))).all()
-    if len(rows) > 10000:
-        raise HTTPException(status_code=409, detail="ACTIVE_RUN_LIST_UNBOUNDED")
-    return {"complete": True, "runs": [dict(row._mapping) for row in rows]}
-
-
-@router.get("/{run_id}/research-history-exclusions")
-async def get_research_history(run_id: int, db: AsyncSession = Depends(get_db)):
-    """Complete production history hashes; no expressions or credentials leave this endpoint."""
-    from backend.models import ExperimentRun
-    from backend.services.research_history import export_history
-    if await db.get(ExperimentRun, run_id) is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    try:
-        return await export_history(db, source="production")
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-
-
-@router.get("/{run_id}/research-candidates")
-async def get_research_candidates(
-    run_id: int,
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db),
-):
-    """Paginated candidate lineage, including validation and request outcomes."""
-    try:
-        return await candidate_page(db, run_id, limit, offset)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
-
-
-@router.get("/{run_id}/research-report")
-async def get_research_report(run_id: int, db: AsyncSession = Depends(get_db)):
-    """Report request budget, WQ results, quality PASS and paired deltas."""
-    try:
-        return await research_report(db, run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
-
-
-@router.get("/{run_id}/ppa-feedback")
-async def get_ppa_feedback(run_id: int, db: AsyncSession = Depends(get_db)):
-    """Give the host-only Cockpit preparer measured, bounded research context."""
-    from backend.models import ExperimentRun, MiningTask
-    from backend.services.theme_ppa_v2 import feedback_context
-    run = await db.get(ExperimentRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    task = await db.get(MiningTask, run.task_id)
-    if (task.config or {}).get("research_protocol") not in {"theme_ppa_v2", "theme_ppa_v3"}:
-        raise HTTPException(status_code=400, detail="Not a PPA feedback task")
-    try:
-        return await feedback_context(db, task, run)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-
-
-@router.post("/{run_id}/ppa-batch")
-async def post_ppa_batch(run_id: int, batch: dict, db: AsyncSession = Depends(get_db)):
-    """Import one validated immutable batch while the run remains paused."""
-    from backend.models import ExperimentRun, MiningTask
-    from backend.services.theme_ppa_v2 import import_batch
-    run = await db.get(ExperimentRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    task = await db.get(MiningTask, run.task_id)
-    try:
-        return await import_batch(db, task, run, batch)
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-
-
-class EpochAdvanceRequest(BaseModel):
-    expected_epoch: int
-
-
-@router.post("/{run_id}/ppa-epoch")
-async def post_ppa_epoch(run_id: int, request: EpochAdvanceRequest, db: AsyncSession = Depends(get_db)):
-    """Advance an exhausted paused continuous run without starting a simulation."""
-    from backend.models import ExperimentRun, MiningTask
-    from backend.services.theme_ppa_v2 import advance_epoch
-    run = await db.get(ExperimentRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    task = await db.get(MiningTask, run.task_id)
-    try:
-        return await advance_epoch(db, task, run, expected_epoch=request.expected_epoch)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-
-
-@router.post("/{run_id}/ppa-reconcile")
-async def post_ppa_reconcile(run_id: int, db: AsyncSession = Depends(get_db)):
-    """Poll an existing WQ simulation; never create or resubmit an Alpha."""
-    from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
-    from backend.models import ExperimentRun, MiningTask
-    from backend.services.theme_ppa_v2 import reconcile_paused
-    from backend.tasks.mining_tasks import _get_dataset_fields
-    lock = _ppa_reconcile_locks.setdefault(run_id, asyncio.Lock())
-    if lock.locked():
-        return {"resolved": 0, "pending": 1, "in_progress": True}
-    async with lock:
-        run = await db.get(ExperimentRun, run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail="Run not found")
-        task = await db.get(MiningTask, run.task_id)
-        try:
-            fields = {dataset: await _get_dataset_fields(db, dataset, task.region, task.universe)
-                      for dataset in (task.config or {}).get("ppa_manifest", {}).get("datasets", {})}
-            async with MCPBrainAdapter() as brain:
-                return await reconcile_paused(db, task, run, brain, fields)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from None
-
-
-@router.post("/{run_id}/ppa-qualification-reconcile")
-async def post_ppa_qualification_reconcile(run_id: int, db: AsyncSession = Depends(get_db)):
-    """Refresh existing Alpha checks with WQ GETs only; no simulation or submission."""
-    from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
-    from backend.models import ExperimentRun, MiningTask
-    from backend.services.theme_ppa_v2 import reconcile_qualification
-
-    run = await db.get(ExperimentRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    task = await db.get(MiningTask, run.task_id)
-    try:
-        async with MCPBrainAdapter() as brain:
-            return await reconcile_qualification(db, task, run, brain)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 # =============================================================================
@@ -196,24 +46,9 @@ class ExperimentRunDetailResponse(BaseModel):
     started_at: datetime
     finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
-    block_reason: Optional[str] = None
-    next_retry_at: Optional[datetime] = None
-    checkpoint: dict = {}
 
     class Config:
         from_attributes = True
-
-
-class RunSummaryResponse(BaseModel):
-    id: int
-    task_id: int
-    status: str
-    trigger_source: Optional[str] = None
-    started_at: datetime
-    finished_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-    block_reason: Optional[str] = None
-    next_retry_at: Optional[datetime] = None
 
 
 class TraceStepResponse(BaseModel):
@@ -255,14 +90,6 @@ class AlphaListResponse(BaseModel):
     total: int
 
 
-class TracePageResponse(BaseModel):
-    items: List[TraceStepResponse]
-    total: int
-    limit: int
-    offset: int
-    has_more: bool
-
-
 # =============================================================================
 # ENDPOINTS
 # =============================================================================
@@ -291,28 +118,6 @@ async def get_run(
         started_at=run.started_at,
         finished_at=run.finished_at,
         error_message=run.error_message,
-        block_reason=run.block_reason,
-        next_retry_at=run.next_retry_at,
-        checkpoint=run.checkpoint or {},
-    )
-
-
-@router.get("/{run_id}/summary", response_model=RunSummaryResponse)
-async def get_run_summary(
-    run_id: int,
-    service: RunService = Depends(get_run_service),
-):
-    """Run status without config, strategy, checkpoint, or Celery metadata."""
-    run = await service.get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return RunSummaryResponse(
-        id=run.id, task_id=run.task_id, status=run.status,
-        trigger_source=run.trigger_source, started_at=run.started_at,
-        finished_at=run.finished_at,
-        error_message=CredentialsService.sanitize_error(run.error_message) if run.error_message else None,
-        block_reason=CredentialsService.sanitize_error(run.block_reason) if run.block_reason else None,
-        next_retry_at=run.next_retry_at,
     )
 
 
@@ -344,28 +149,6 @@ async def get_run_trace(
         )
         for s in steps
     ]
-
-
-@router.get("/{run_id}/trace-page", response_model=TracePageResponse)
-async def get_run_trace_page(
-    run_id: int,
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    iteration: Optional[int] = Query(None, ge=1),
-    step_type: Optional[str] = Query(None, max_length=50),
-    descending: bool = Query(False),
-    service: RunService = Depends(get_run_service),
-):
-    """Read a bounded trace page; the original full trace endpoint remains available."""
-    try:
-        page = await service.get_run_trace_page(run_id, limit, offset, iteration, step_type, descending)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return TracePageResponse(
-        items=[TraceStepResponse(**vars(s)) for s in page.items],
-        total=page.total, limit=limit, offset=offset,
-        has_more=offset + len(page.items) < page.total,
-    )
 
 
 @router.get("/{run_id}/alphas", response_model=AlphaListResponse)

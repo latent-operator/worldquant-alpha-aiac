@@ -4,8 +4,7 @@ Mining Tasks - Background tasks for alpha mining
 Contains the main mining task execution logic.
 """
 
-from datetime import datetime, timedelta, timezone
-from math import ceil
+from datetime import datetime
 from sqlalchemy import select, update, desc
 from loguru import logger
 from celery.signals import task_failure
@@ -14,136 +13,12 @@ from backend.config import settings
 from backend.celery_app import celery_app
 from backend.database import AsyncSessionLocal
 from backend.agents import MiningAgent
-from backend.agents.services.llm_service import LLMBlockedError
-from backend.services.credentials_service import CredentialsService
 from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
 from backend.models import MiningTask, DatasetMetadata, Operator, DataField, ExperimentRun
 from backend.tasks import run_async
 
 
-def _slice_goal_and_prior_success(
-    checkpoint: dict, dataset_id: str, remaining_goal: int,
-) -> tuple[int, int]:
-    """Keep a run's cumulative success target stable across worker yields."""
-    prior_success = (
-        int(checkpoint.get("total_success", 0))
-        if checkpoint.get("dataset_id") == dataset_id else 0
-    )
-    return prior_success, prior_success + remaining_goal
-
-
-def _new_passes_in_slice(result: dict, prior_success: int) -> int:
-    current_success = int(result.get("total_success", 0))
-    if current_success < prior_success:
-        raise ValueError("Run success counter moved backwards across a worker yield")
-    return current_success - prior_success
-
-
-def _next_wait_minutes(kind: str, quota_attempts: int) -> int | None:
-    if kind == "DAILY_QUOTA":
-        return (15, 30, 60)[min(max(quota_attempts, 0), 2)]
-    if kind in {"NO_NEW_CANDIDATES", "DEDUP_UNAVAILABLE", "WQ_SIMULATION_ERROR"}:
-        return (5, 15, 30, 60)[min(max(quota_attempts, 0), 3)]
-    if kind == "INVALID_CREDENTIALS":
-        return None
-    return 5
-
-
-def _next_wait_seconds(kind: str, attempts: int) -> int | None:
-    if kind in {"MALFORMED_HYPOTHESIS", "MALFORMED_RESPONSE"}:
-        delays = (30, 120, 300, 900, 1800, 3600)
-        return delays[min(max(attempts, 0), len(delays) - 1)]
-    if kind == "CONNECTION_ERROR":
-        delays = (30, 120, 300, 900)
-        return delays[min(max(attempts, 0), len(delays) - 1)]
-    minutes = _next_wait_minutes(kind, attempts)
-    return None if minutes is None else minutes * 60
-
-
-def _retry_poll_seconds(next_retry_at, now=None) -> int:
-    """Poll at the deadline for short waits, and at most every five minutes otherwise."""
-    if next_retry_at is None:
-        return 300
-    now = now or datetime.now(timezone.utc)
-    if next_retry_at.tzinfo is None:
-        next_retry_at = next_retry_at.replace(tzinfo=timezone.utc)
-    return max(1, min(300, ceil((next_retry_at - now).total_seconds())))
-
-
-async def _schedule_llm_wait(
-    db, task: MiningTask, run: ExperimentRun, kind: str, revision: int,
-    safe_detail: str | None = None,
-) -> dict:
-    """Release the worker and retry the same checkpoint without fake candidates."""
-    checkpoint = run.checkpoint or {}
-    quota_attempts = int(checkpoint.get("quota_attempts", 0))
-    malformed_attempts = int(checkpoint.get("malformed_hypothesis_attempts", 0))
-    malformed_response_attempts = int(checkpoint.get("malformed_response_attempts", 0))
-    recovery_wait_attempts = int(checkpoint.get("recovery_wait_attempts", 0))
-    connection_attempts = int(checkpoint.get("connection_attempts", 0))
-    if kind != "CONNECTION_ERROR":
-        connection_attempts = 0
-    if kind == "MALFORMED_HYPOTHESIS":
-        if checkpoint.get("malformed_hypothesis_iteration") != checkpoint.get("iteration"):
-            malformed_attempts = 0
-        delay_seconds = _next_wait_seconds(kind, malformed_attempts)
-        malformed_attempts += 1
-    elif kind == "MALFORMED_RESPONSE":
-        if checkpoint.get("malformed_response_iteration") != checkpoint.get("iteration"):
-            malformed_response_attempts = 0
-        delay_seconds = _next_wait_seconds(kind, malformed_response_attempts)
-        malformed_response_attempts += 1
-    elif kind in {"NO_NEW_CANDIDATES", "DEDUP_UNAVAILABLE", "WQ_SIMULATION_ERROR"}:
-        delay_seconds = _next_wait_seconds(kind, recovery_wait_attempts)
-        recovery_wait_attempts += 1
-    elif kind == "CONNECTION_ERROR":
-        delay_seconds = _next_wait_seconds(kind, connection_attempts)
-        connection_attempts += 1
-    else:
-        delay_seconds = _next_wait_seconds(kind, quota_attempts)
-    if kind == "DAILY_QUOTA":
-        quota_attempts += 1
-    run.checkpoint = {
-        **checkpoint,
-        "quota_attempts": quota_attempts,
-        "malformed_hypothesis_attempts": malformed_attempts,
-        "malformed_hypothesis_iteration": checkpoint.get("iteration"),
-        "malformed_response_attempts": malformed_response_attempts,
-        "malformed_response_iteration": checkpoint.get("iteration"),
-        "recovery_wait_attempts": recovery_wait_attempts,
-        "connection_attempts": connection_attempts,
-        "connection_error_type": safe_detail if kind == "CONNECTION_ERROR" and safe_detail in {"TIMEOUT", "CONNECT"} else None,
-        "credential_revision": revision,
-    }
-    run.status = "WAITING_LLM"
-    run.block_reason = kind
-    run.next_retry_at = (
-        datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
-        if delay_seconds is not None else None
-    )
-    task.status = "WAITING_LLM"
-    await db.commit()
-    logger.warning(
-        f"LLM wait | task={task.id} run={run.id} reason={kind} "
-        f"detail={run.checkpoint['connection_error_type'] or 'NONE'} "
-        f"next_retry_at={run.next_retry_at}"
-    )
-    return {"_retry": True, "run_id": run.id,
-            "retry_countdown": _retry_poll_seconds(run.next_retry_at)}
-
-
-def _wait_is_due(next_retry_at, saved_revision: int, current_revision: int, now=None) -> bool:
-    if current_revision != saved_revision:
-        return True
-    if next_retry_at is None:
-        return False
-    now = now or datetime.now(timezone.utc)
-    if next_retry_at.tzinfo is None:
-        next_retry_at = next_retry_at.replace(tzinfo=timezone.utc)
-    return now >= next_retry_at
-
-
-@celery_app.task(bind=True, name="backend.tasks.run_mining_task", max_retries=None)
+@celery_app.task(bind=True, name="backend.tasks.run_mining_task")
 def run_mining_task(self, task_id: int, run_id: int | None = None):
     """
     Run a complete mining task.
@@ -167,56 +42,17 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
             if not task:
                 logger.error(f"Task {task_id} not found")
                 return {"error": "Task not found"}
-
-            existing_run = await db.get(ExperimentRun, run_id) if run_id else None
-            if existing_run and existing_run.celery_task_id and existing_run.celery_task_id != self.request.id:
-                logger.info(f"Ignoring stale mining dispatch | task={task_id} run={run_id}")
-                return {"skipped": "stale dispatch"}
-
-            if task.status not in {"RUNNING", "WAITING_LLM"}:
-                logger.info(f"Ignoring queued mining dispatch | task={task_id} status={task.status}")
-                return {"skipped": task.status}
-
-            if task.status == "WAITING_LLM":
-                waiting_run = await db.get(ExperimentRun, run_id) if run_id else None
-                if not waiting_run or waiting_run.status != "WAITING_LLM":
-                    return {"skipped": "stale wait"}
-                revision = await CredentialsService(db).get_revision()
-                checkpoint = waiting_run.checkpoint or {}
-                credentials_changed = revision != checkpoint.get("credential_revision")
-                if not _wait_is_due(waiting_run.next_retry_at, checkpoint.get("credential_revision"), revision):
-                    return {"_retry": True, "run_id": run_id,
-                            "retry_countdown": _retry_poll_seconds(waiting_run.next_retry_at)}
-                if credentials_changed:
-                    waiting_run.checkpoint = {
-                        **checkpoint, "quota_attempts": 0,
-                        "malformed_hypothesis_attempts": 0,
-                        "malformed_response_attempts": 0,
-                        "recovery_wait_attempts": 0,
-                        "connection_attempts": 0,
-                        "connection_error_type": None,
-                        "credential_revision": revision,
-                    }
-                    logger.info(f"Credential revision changed; waking task={task_id} run={run_id}")
             
             # Update status to RUNNING
-            claimed = await db.execute(
+            await db.execute(
                 update(MiningTask)
                 .where(MiningTask.id == task_id)
-                .where(MiningTask.status == task.status)
                 .values(status="RUNNING")
             )
-            if claimed.rowcount != 1:
-                await db.rollback()
-                return {"skipped": "task status changed"}
             await db.commit()
-            await db.refresh(task)
-            if task.status != "RUNNING":
-                return {"skipped": task.status}
 
             # Create or attach ExperimentRun
             run = await _get_or_create_run(db, task, run_id, self.request.id)
-            active_run_id = run.id
 
             try:
                 try:
@@ -227,64 +63,13 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     logger.warning(f"Failed to load operator registry in worker: {e}")
 
                 async with MCPBrainAdapter() as brain:
-                    if (task.config or {}).get("research_protocol") in {"theme_ppa_v1", "theme_ppa_v2", "theme_ppa_v3"}:
-                        from backend.services.theme_ppa import run_theme_dispatch
-                        if task.config["research_protocol"] in {"theme_ppa_v2", "theme_ppa_v3"}:
-                            from backend.services.theme_ppa_v2 import run_theme_v2 as run_theme_dispatch
-
-                        fields = {}
-                        for dataset_id in (task.target_datasets or []):
-                            fields[dataset_id] = await _get_dataset_fields(
-                                db, dataset_id, task.region, task.universe,
-                            )
-                        ppa_outcome = await run_theme_dispatch(db, brain, task, run, fields)
-                        if ppa_outcome.get("done"):
-                            return {"success": True, "run_id": run.id,
-                                    "research_reason": ppa_outcome.get("reason")}
-                        await db.refresh(task)
-                        if task.status in {"PAUSED", "STOPPED"}:
-                            return {"skipped": task.status}
-                        return {"_retry": True, "run_id": run.id, "retry_countdown": 1}
-
-                    if (task.config or {}).get("research_protocol") == "paper_news17_ablation_v1":
-                        from backend.services.paper_experiment import run_paper_dispatch
-
-                        fields = await _get_dataset_fields(db, "news17", task.region, task.universe)
-                        paper_outcome = await run_paper_dispatch(db, brain, task, run, fields)
-                        if paper_outcome.get("done"):
-                            return {"success": True, "run_id": run.id,
-                                    "research_reason": paper_outcome.get("reason")}
-                        await db.refresh(task)
-                        if task.status in {"PAUSED", "STOPPED"}:
-                            return {"skipped": task.status}
-                        return {"_retry": True, "run_id": run.id, "retry_countdown": 1}
-
-                    if (task.config or {}).get("audit_candidates"):
-                        from backend.services.research_audit import ResearchBudgetBrain, ResearchLedger
-
-                        continuous_mode = (task.config or {}).get("continuous_mode") is True
-                        brain = ResearchBudgetBrain(brain, ResearchLedger(
-                            task.id, run.id,
-                            None if continuous_mode else int((task.config or {}).get("research_request_budget", 1_000_000)),
-                            str((task.config or {}).get("research_family_id") or "unclassified"),
-                            dedup_task_ids=(task.config or {}).get("dedup_task_ids", []) if continuous_mode else [],
-                        ))
-                    continuous_mode = (task.config or {}).get("continuous_mode") is True
                     mining_agent = MiningAgent(db, brain)
                     
                     # Get datasets to mine
                     datasets = await _get_datasets_to_mine(db, task)
-                    resume_dataset = (run.checkpoint or {}).get("dataset_id") if run else None
-                    if resume_dataset in datasets:
-                        datasets = datasets[datasets.index(resume_dataset):]
                     
                     if not datasets:
                         logger.warning(f"No datasets found for mining in {task.region}/{task.universe}")
-                        if continuous_mode:
-                            task.status = run.status = "PAUSED"
-                            run.block_reason = "CONFIG_DATASET_UNAVAILABLE"
-                            await db.commit()
-                            return {"skipped": "CONFIG_DATASET_UNAVAILABLE", "run_id": run.id}
                         await _mark_mining_task_failed(
                             db,
                             task_id=task_id,
@@ -299,7 +84,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     
                     # Mine each dataset
                     total_alphas = 0
-                    target_reached = not continuous_mode and task.progress_current >= task.daily_goal
+                    target_reached = task.progress_current >= task.daily_goal
                     incomplete_reasons = []
                     for dataset_id in datasets:
                         # Check if task should continue
@@ -308,7 +93,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                             logger.info(f"Task {task_id} {task.status}, stopping")
                             break
                         
-                        if not continuous_mode and task.progress_current >= task.daily_goal:
+                        if task.progress_current >= task.daily_goal:
                             logger.info(f"Task {task_id} reached goal")
                             break
                         
@@ -317,23 +102,15 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                         
                         if not fields:
                             logger.warning(f"No fields found for dataset {dataset_id}, skipping")
-                            if continuous_mode:
-                                task.status = run.status = "PAUSED"
-                                run.block_reason = "CONFIG_FIELD_UNAVAILABLE"
-                                await db.commit()
-                                return {"skipped": "CONFIG_FIELD_UNAVAILABLE", "run_id": run.id}
                             continue
                         
                         # Calculate remaining alphas needed
-                        remaining_goal = max(1, task.daily_goal - task.progress_current) if continuous_mode else task.daily_goal - task.progress_current
+                        remaining_goal = task.daily_goal - task.progress_current
                         if remaining_goal <= 0:
                             logger.info(f"Task {task_id} already reached goal, stopping")
                             break
                         
-                        # Run one complete round, then release the solo worker.
-                        prior_success, absolute_goal = _slice_goal_and_prior_success(
-                            run.checkpoint or {}, dataset_id, remaining_goal,
-                        )
+                        # Run evolution loop
                         try:
                             result = await mining_agent.run_evolution_loop(
                                 task=task,
@@ -341,32 +118,19 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                                 fields=fields,
                                 operators=operators,
                                 max_iterations=task.max_iterations or 10,
-                                target_alphas=absolute_goal,
+                                target_alphas=remaining_goal,
                                 num_alphas_per_round=4,
-                                run_id=run.id,
-                                max_rounds_per_dispatch=1,
-                                continuous_mode=continuous_mode,
+                                run_id=run.id
                             )
                             
-                            # The agent returns cumulative dataset success;
-                            # only the delta belongs to this dispatch.
-                            task.progress_current += _new_passes_in_slice(result, prior_success)
+                            # Update progress
+                            task.progress_current += result.get("total_success", 0)
                             await db.commit()
                             
                             total_alphas += len(result.get("all_alphas", []))
-                            target_reached = not continuous_mode and task.progress_current >= task.daily_goal
+                            target_reached = task.progress_current >= task.daily_goal
 
-                            if result.get("yielded_for_dispatch"):
-                                await db.refresh(task)
-                                if task.status in {"PAUSED", "STOPPED"}:
-                                    return {"skipped": task.status}
-                                logger.info(
-                                    f"Continuing task={task_id} run={run.id} "
-                                    f"after completed round={result.get('iterations_completed')}"
-                                )
-                                return {"_retry": True, "run_id": run.id, "retry_countdown": 1}
-
-                            if not continuous_mode and not result.get("target_reached"):
+                            if not result.get("target_reached"):
                                 incomplete_reasons.append(
                                     (
                                         f"{dataset_id}: target not reached "
@@ -390,16 +154,6 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                                 logger.info(f"Task {task_id} reached goal via evolution loop")
                                 break
                                 
-                        except LLMBlockedError as exc:
-                            await db.rollback()
-                            await db.refresh(task)
-                            if task.status in {"PAUSED", "STOPPED"}:
-                                return {"skipped": task.status}
-                            revision = await CredentialsService(db).get_revision()
-                            await db.refresh(run)
-                            return await _schedule_llm_wait(
-                                db, task, run, exc.kind, revision, exc.safe_detail,
-                            )
                         except Exception as e:
                             logger.error(f"Evolution loop failed for {dataset_id}: {e}")
                             # Rollback any failed transaction before continuing
@@ -410,20 +164,16 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                 # while a BRAIN multi-simulation is still polling; once that
                 # call returns, this task must not overwrite it as COMPLETED.
                 await db.refresh(task)
-                if continuous_mode and task.status == "RUNNING":
-                    # A transient dataset or generation failure must not complete an
-                    # open-ended run. Release the worker and retry the same run.
-                    return {"_retry": True, "run_id": active_run_id, "retry_countdown": 60}
-                final_status, error_message = _resolve_final_status(
-                    task_status=task.status,
-                    target_reached=target_reached,
-                    incomplete_reasons=incomplete_reasons,
-                    progress_current=task.progress_current,
-                    daily_goal=task.daily_goal,
-                )
                 if task.status in ["STOPPED", "PAUSED"]:
+                    final_status = task.status
                     logger.info(f"Task {task_id} ended with intervention status {final_status}")
                 else:
+                    final_status, error_message = _resolve_final_status(
+                        target_reached=target_reached,
+                        incomplete_reasons=incomplete_reasons,
+                        progress_current=task.progress_current,
+                        daily_goal=task.daily_goal,
+                    )
                     if final_status == "COMPLETED" and error_message:
                         logger.warning(
                             f"Task {task_id} completed all configured mining work "
@@ -455,7 +205,7 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     await _mark_mining_task_failed(
                         db,
                         task_id=task_id,
-                        run_id=active_run_id,
+                        run_id=run.id if run is not None else run_id,
                         celery_task_id=self.request.id,
                         error_message=str(e)[:500],
                     )
@@ -464,25 +214,17 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
                     await db.rollback()
                 raise
     
-    outcome = run_async(_run())
-    if isinstance(outcome, dict) and outcome.get("_retry"):
-        # Celery releases the worker between checks. The same run id is reused.
-        raise self.retry(countdown=outcome.get("retry_countdown", 300),
-                         args=(task_id, outcome["run_id"]), max_retries=None)
-    return outcome
+    return run_async(_run())
 
 
 def _resolve_final_status(
     *,
-    task_status: str | None = None,
     target_reached: bool,
     incomplete_reasons: list[str],
     progress_current: int,
     daily_goal: int,
 ) -> tuple[str, str | None]:
     """Resolve task status after the mining workflow returns normally."""
-    if task_status in ["STOPPED", "PAUSED"]:
-        return task_status, None
     if target_reached:
         return "COMPLETED", None
     if incomplete_reasons:
@@ -549,7 +291,7 @@ async def _mark_mining_task_failed(
         .values(status="FAILED", updated_at=now)
     )
 
-    run_query = update(ExperimentRun).where(ExperimentRun.status.in_(["RUNNING", "WAITING_LLM"]))
+    run_query = update(ExperimentRun).where(ExperimentRun.status == "RUNNING")
     if run_id is not None:
         run_query = run_query.where(ExperimentRun.id == run_id)
     elif celery_task_id:
@@ -595,9 +337,6 @@ async def _get_or_create_run(db, task, run_id, celery_task_id):
             run.trigger_source = "API"
             run.celery_task_id = celery_task_id
             run.error_message = None
-            run.block_reason = None
-            run.next_retry_at = None
-            run.finished_at = None
             await db.commit()
     else:
         run = ExperimentRun(

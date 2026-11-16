@@ -1,41 +1,6 @@
 import asyncio
-import httpx
-import pytest
 
 from backend.adapters.brain_adapter import BrainAdapter
-from backend.adapters.brain_adapter import match_audited_children
-
-
-@pytest.mark.asyncio
-async def test_single_post_connect_error_is_typed_and_not_retried():
-    class Broken(BrainAdapter):
-        calls = 0
-
-        async def _safe_api_call(self, method, endpoint, **kwargs):
-            self.calls += 1
-            assert method == "post" and endpoint == "/simulations"
-            assert kwargs["retry_writes"] is False
-            raise httpx.ConnectError("connection lost")
-
-    brain = Broken(email="unused", password="unused")
-    result = await brain.simulate_alpha("rank(close)", retry_post=False)
-    assert brain.calls == 1
-    assert result["error_code"] == "TRANSPORT_UNCERTAIN"
-    assert result["request_phase"] == "CREATE_POST"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status,code", [(503, "SERVER_UNCERTAIN"),
-                                         (429, "RATE_LIMITED"), (400, "CLIENT_REJECTED")])
-async def test_single_post_http_failure_has_stable_error_code(status, code):
-    class Rejected(BrainAdapter):
-        async def _safe_api_call(self, method, endpoint, **kwargs):
-            return _Response({}, status_code=status, headers={}, text="private platform detail")
-
-    result = await Rejected(email="unused", password="unused").simulate_alpha(
-        "rank(close)", retry_post=False)
-    assert result["error_code"] == code
-    assert result["request_phase"] == "CREATE_POST"
 
 
 class _Response:
@@ -140,52 +105,6 @@ def test_multisim_timeout_boundary_fetches_completed_children():
     assert result["success"] is True
     assert [item["alpha_id"] for item in result["results"]] == ["alpha_a", "alpha_b"]
     assert all(item["location"].endswith("/simulations/parent") for item in result["results"])
-
-
-@pytest.mark.parametrize("size", [2, 4])
-def test_audited_multisim_maps_children_by_expression_not_position(size):
-    expressions = [f"rank({index})" for index in range(size)]
-    results = [{"alpha_id": f"a{index}", "expression": expressions[index]}
-               for index in reversed(range(size))]
-    matched = match_audited_children(expressions, results)
-    assert [item["alpha_id"] for item in matched] == [f"a{index}" for index in range(size)]
-    assert match_audited_children(expressions, [{"alpha_id": "missing"}, *results[1:]]) is None
-
-
-@pytest.mark.parametrize("size", [2, 4])
-def test_audited_multi_persists_parent_location_before_polling(size):
-    expressions = [f"rank({index})" for index in range(size)]
-    class PairAdapter(BrainAdapter):
-        async def _safe_api_call(self, method, endpoint, **kwargs):
-            assert len(kwargs["json"]) == size
-            return _Response({}, status_code=201, headers={"Location": "/simulations/parent"})
-        async def _wait_for_multisim(self, location, **kwargs):
-            assert events == [("location", "/simulations/parent")]
-            return {"success": True, "results": [
-                {"alpha_id": f"a{index}", "expression": expressions[index]}
-                for index in reversed(range(size))]}
-    events = []
-    async def saved(location):
-        events.append(("location", location))
-    results = asyncio.run(PairAdapter().simulate_batch(
-        expressions, retry_post=False, audit_match=True, on_location=saved))
-    assert [row["alpha_id"] for row in results] == [f"a{index}" for index in range(size)]
-
-
-@pytest.mark.parametrize("size", [2, 4])
-def test_audited_multi_429_is_reported_for_every_child_without_retry(size):
-    class Limited(BrainAdapter):
-        calls = 0
-        async def _safe_api_call(self, method, endpoint, **kwargs):
-            self.calls += 1
-            return _Response({}, status_code=429, headers={"Retry-After": "30",
-                                                           "X-Ratelimit-Remaining": "0"})
-    brain = Limited()
-    results = asyncio.run(brain.simulate_batch([f"rank({index})" for index in range(size)],
-                                               retry_post=False, audit_match=True))
-    assert brain.calls == 1
-    assert len(results) == size
-    assert all(row["http_status"] == 429 and row["retry_after"] == 30 for row in results)
 
 
 def test_alpha_details_polling_is_bounded():

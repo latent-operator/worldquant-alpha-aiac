@@ -34,8 +34,6 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import api from '../services/api'
-import { waitingStatusText } from '../utils/recoveryStatus'
-import { taskIteration, taskProgress } from '../utils/taskDisplay'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -55,7 +53,6 @@ const statusColors = {
   SUCCESS: 'green',
   FAILED: 'red',
   RUNNING: 'processing',
-  WAITING_LLM: 'warning',
   SKIPPED: 'default',
 }
 
@@ -67,10 +64,10 @@ export default function TaskDetail() {
 
   const [selectedRunId, setSelectedRunId] = React.useState(null)
 
-  // Keep long-running task detail bounded; trace is fetched separately.
+  // Fetch task details with trace
   const { data: task, isLoading, error } = useQuery({
     queryKey: ['task', id],
-    queryFn: () => api.getTaskSummary(id),
+    queryFn: () => api.getTask(id),
     refetchInterval: 5000, // Refresh while task is running
   })
 
@@ -90,7 +87,7 @@ export default function TaskDetail() {
 
   const { data: runTrace } = useQuery({
     queryKey: ['runTrace', selectedRunId],
-    queryFn: async () => (await api.getRunTracePage(selectedRunId, { limit: 100, descending: true })).items,
+    queryFn: () => api.getRunTrace(selectedRunId),
     enabled: !!selectedRunId,
     refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
   })
@@ -99,13 +96,6 @@ export default function TaskDetail() {
     queryKey: ['runAlphas', selectedRunId],
     queryFn: () => api.getRunAlphas(selectedRunId, { limit: 200, offset: 0 }),
     enabled: !!selectedRunId,
-    refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
-  })
-
-  const { data: researchReport } = useQuery({
-    queryKey: ['researchReport', selectedRunId],
-    queryFn: () => api.getResearchReport(selectedRunId),
-    enabled: !!selectedRunId && !!task?.continuous_mode,
     refetchInterval: task?.status === 'RUNNING' ? 5000 : false,
   })
 
@@ -307,7 +297,7 @@ export default function TaskDetail() {
             <Title level={3} style={{ margin: 0 }}>
               {task.task_name}
             </Title>
-            <Tag color={statusColors[task.status] || 'default'}>{task.status === 'WAITING_LLM' ? waitingStatusText(selectedRun?.block_reason) : task.status}</Tag>
+            <Tag color={statusColors[task.status] || 'default'}>{task.status}</Tag>
           </Space>
         </Col>
         <Col>
@@ -322,7 +312,7 @@ export default function TaskDetail() {
                 启动
               </Button>
             )}
-            {['RUNNING', 'WAITING_LLM'].includes(task.status) && (
+            {task.status === 'RUNNING' && (
               <Button 
                 icon={<PauseCircleOutlined />}
                 loading={interveneMutation.isLoading}
@@ -341,7 +331,7 @@ export default function TaskDetail() {
                 恢复
               </Button>
             )}
-            {['RUNNING', 'WAITING_LLM', 'PAUSED'].includes(task.status) && (
+            {['RUNNING', 'PAUSED'].includes(task.status) && (
               <Button 
                 danger 
                 icon={<StopOutlined />}
@@ -382,17 +372,17 @@ export default function TaskDetail() {
               </Descriptions.Item>
               <Descriptions.Item label="进度">
                 <Text strong style={{ color: '#00d4ff' }}>
-                  {taskProgress(task)}
+                  {task.progress_current} / {task.daily_goal}
                 </Text>
               </Descriptions.Item>
               <Descriptions.Item label="已发现 Alpha">
-                {researchReport?.candidate_funnel?.saved_wq_results ?? runAlphasResp?.total ?? 0}
+                {task.alphas_count || 0}
               </Descriptions.Item>
               <Descriptions.Item label="最大迭代">
-                {task.continuous_mode ? '无上限' : (task.max_iterations || 1)}
+                {task.max_iterations || 1}
               </Descriptions.Item>
               <Descriptions.Item label="当前迭代">
-                {taskIteration(task)}
+                {task.current_iteration || 0} / {task.max_iterations || 1}
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
                 {new Date(task.created_at).toLocaleString()}
@@ -419,12 +409,6 @@ export default function TaskDetail() {
                       {selectedRun?.status || '--'}
                     </Tag>
                   </Descriptions.Item>
-                  {selectedRun?.block_reason && (
-                    <Descriptions.Item label="等待原因">{waitingStatusText(selectedRun.block_reason)}</Descriptions.Item>
-                  )}
-                  {selectedRun?.next_retry_at && (
-                    <Descriptions.Item label="下次检查">{new Date(selectedRun.next_retry_at).toLocaleString()}</Descriptions.Item>
-                  )}
                   {selectedRun?.error_message && (
                     <Descriptions.Item label="错误原因">
                       <Text type="danger">{selectedRun.error_message}</Text>
@@ -432,31 +416,24 @@ export default function TaskDetail() {
                   )}
                   <Descriptions.Item label="数量">
                     <Space wrap>
-                      <Tag color="green">PASS {researchReport?.candidate_funnel?.quality_pass ?? runAlphaSummary.counts.PASS}</Tag>
-                      <Tag color="gold">OPTIMIZE {researchReport?.quality_counts?.OPTIMIZE ?? runAlphaSummary.counts.OPTIMIZE}</Tag>
-                      <Tag color="red">FAIL {researchReport?.quality_counts?.FAIL ?? runAlphaSummary.counts.FAIL}</Tag>
+                      <Tag color="green">PASS {runAlphaSummary.counts.PASS}</Tag>
+                      <Tag color="gold">OPTIMIZE {runAlphaSummary.counts.OPTIMIZE}</Tag>
+                      <Tag color="red">FAIL {runAlphaSummary.counts.FAIL}</Tag>
                       {runAlphaSummary.counts.OTHER > 0 && (
                         <Tag>OTHER {runAlphaSummary.counts.OTHER}</Tag>
                       )}
                     </Space>
                   </Descriptions.Item>
-                  {task.continuous_mode && (
-                    <Descriptions.Item label="候选 / WQ 请求 / 已保存结果">
-                      {researchReport?.candidate_funnel?.generated ?? '--'} /{' '}
-                      {researchReport?.candidate_funnel?.send_attempts_or_uncertain ?? '--'} /{' '}
-                      {researchReport?.candidate_funnel?.saved_wq_results ?? '--'}
-                    </Descriptions.Item>
-                  )}
                   <Descriptions.Item label="Score">
                     <Space wrap>
-                      <Tag>{task.continuous_mode ? '最近200条 Avg' : 'Avg'} {runAlphaSummary.avgScore?.toFixed?.(3) ?? '--'}</Tag>
-                      <Tag>{task.continuous_mode ? '最近200条 Best' : 'Best'} {runAlphaSummary.bestScore?.toFixed?.(3) ?? '--'}</Tag>
+                      <Tag>Avg {runAlphaSummary.avgScore?.toFixed?.(3) ?? '--'}</Tag>
+                      <Tag>Best {runAlphaSummary.bestScore?.toFixed?.(3) ?? '--'}</Tag>
                     </Space>
                   </Descriptions.Item>
                   <Descriptions.Item label="Sharpe">
                     <Space wrap>
-                      {!task.continuous_mode && <Tag>Avg {runAlphaSummary.avgSharpe?.toFixed?.(2) ?? '--'}</Tag>}
-                      <Tag>Best {researchReport?.best_sharpe_alpha?.sharpe?.toFixed?.(2) ?? runAlphaSummary.bestSharpe?.toFixed?.(2) ?? '--'}</Tag>
+                      <Tag>Avg {runAlphaSummary.avgSharpe?.toFixed?.(2) ?? '--'}</Tag>
+                      <Tag>Best {runAlphaSummary.bestSharpe?.toFixed?.(2) ?? '--'}</Tag>
                     </Space>
                   </Descriptions.Item>
                 </Descriptions>
@@ -538,7 +515,7 @@ export default function TaskDetail() {
                     label: `#${r.id} ${r.status} ${r.started_at ? new Date(r.started_at).toLocaleString() : ''}`,
                   }))}
                 />
-                <Text type="secondary">最近 {(runTrace || []).length} 步 / {iterationKeys.length} 轮</Text>
+                <Text type="secondary">共 {(runTrace || task.trace_steps)?.length || 0} 步 / {iterationKeys.length} 轮</Text>
               </Space>
             )}
           >
@@ -638,7 +615,7 @@ export default function TaskDetail() {
                                        ellipsis={{ rows: 2, expandable: true, symbol: '展开' }} 
                                        style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', fontStyle: 'italic', marginBottom: 8 }}
                                      >
-                                        &quot;{step.output_data.reasoning}&quot;
+                                        "{step.output_data.reasoning}"
                                      </Paragraph>
                                    )}
                                    {step.output_data?.selected_concepts && (

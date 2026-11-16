@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.alpha_semantic_validator import compute_expression_hash, load_operators_from_db
-from backend.services.alpha_quality_evaluation import strict_gate_failures as _strict_gate_failures
+from backend.agents.graph.nodes.evaluation import _strict_gate_failures
 from backend.database import AsyncSessionLocal, init_db
 from backend.models import Alpha, AlphaFailure, MiningTask
 from backend.tasks.mining_tasks import _get_dataset_fields

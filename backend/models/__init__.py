@@ -35,7 +35,6 @@ from backend.models.alpha import (
     AlphaFailure,
     AlphaPnl,
 )
-from backend.models.research import ResearchCandidate
 
 # Knowledge models
 from backend.models.knowledge import (
@@ -88,7 +87,6 @@ __all__ = [
     "Alpha",
     "AlphaFailure",
     "AlphaPnl",
-    "ResearchCandidate",
     # Knowledge
     "KnowledgeEntry",
     "OperatorPreference",

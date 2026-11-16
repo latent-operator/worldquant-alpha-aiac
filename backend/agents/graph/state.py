@@ -3,9 +3,10 @@ LangGraph State Definitions
 Strongly typed state using Pydantic for the mining workflow
 """
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Annotated
 from pydantic import BaseModel, Field
 from datetime import datetime
+from operator import add
 
 
 # =============================================================================
@@ -109,7 +110,6 @@ class MiningState(BaseModel):
     # -------------------------------------------------------------------------
     patterns: List[Dict] = Field(default_factory=list)
     pitfalls: List[Dict] = Field(default_factory=list)
-    family_plans: List[Dict] = Field(default_factory=list)
     dataset_description: str = ""
     dataset_category: str = ""
     

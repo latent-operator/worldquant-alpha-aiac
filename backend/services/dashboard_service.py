@@ -17,7 +17,7 @@ from sqlalchemy import select, func
 
 from backend.services.base import BaseService
 from backend.repositories import TaskRepository
-from backend.models import MiningTask, ExperimentRun, Alpha, TraceStep, AlphaFailure
+from backend.models import MiningTask, Alpha, TraceStep, AlphaFailure
 
 logger = logging.getLogger("services.dashboard")
 
@@ -44,8 +44,6 @@ class TaskStatusSummary:
     progress: str
     current_step: Optional[str]
     current_dataset: Optional[str]
-    block_reason: Optional[str] = None
-    next_retry_at: Optional[datetime] = None
 
 
 @dataclass
@@ -53,11 +51,8 @@ class KPIMetrics:
     """Key performance indicators."""
     today_simulations: int
     today_success_rate: float
-    today_avg_sharpe: Optional[float]
+    today_avg_sharpe: float
     week_total_alphas: int
-    today_simulation_candidates: int = 0
-    today_wq_results: int = 0
-    today_pass_count: int = 0
 
 
 class DashboardService(BaseService):
@@ -134,10 +129,9 @@ class DashboardService(BaseService):
         end: datetime,
     ) -> int:
         """Count alphas created in a time range."""
-        query = select(func.count(func.distinct(Alpha.alpha_id))).where(
+        query = select(func.count(Alpha.id)).where(
             Alpha.created_at >= start,
             Alpha.created_at < end,
-            Alpha.alpha_id.isnot(None),
         )
         result = await self.db.execute(query)
         return result.scalar() or 0
@@ -185,7 +179,7 @@ class DashboardService(BaseService):
         """
         query = (
             select(MiningTask)
-            .where(MiningTask.status.in_(["RUNNING", "WAITING_LLM", "PAUSED"]))
+            .where(MiningTask.status.in_(["RUNNING", "PAUSED"]))
             .order_by(MiningTask.created_at.desc())
         )
         
@@ -194,11 +188,6 @@ class DashboardService(BaseService):
         
         summaries = []
         for task in tasks:
-            run_result = await self.db.execute(
-                select(ExperimentRun).where(ExperimentRun.task_id == task.id)
-                .order_by(ExperimentRun.id.desc()).limit(1)
-            )
-            active_run = run_result.scalar_one_or_none()
             # Get the latest trace step
             step_query = (
                 select(TraceStep)
@@ -220,13 +209,9 @@ class DashboardService(BaseService):
                     task_name=task.task_name,
                     region=task.region,
                     status=task.status,
-                    progress=(f"PASS {task.progress_current} · 持续运行"
-                              if (task.config or {}).get("continuous_mode") is True
-                              else f"{task.progress_current}/{task.daily_goal}"),
+                    progress=f"{task.progress_current}/{task.daily_goal}",
                     current_step=current_step,
                     current_dataset=current_dataset,
-                    block_reason=active_run.block_reason if active_run else None,
-                    next_retry_at=active_run.next_retry_at if active_run else None,
                 )
             )
         
@@ -252,19 +237,9 @@ class DashboardService(BaseService):
             start_of_today,
             start_of_today + timedelta(days=1),
         )
-        simulation_trace_rows = (await self.db.execute(
-            select(TraceStep.output_data).where(
-                TraceStep.created_at >= start_of_today,
-                TraceStep.created_at < start_of_today + timedelta(days=1),
-                TraceStep.step_type == "SIMULATE",
-            )
-        )).scalars().all()
-        simulation_candidates = sum(
-            int((row or {}).get("simulated_count", 0)) for row in simulation_trace_rows
-        )
         
         # Today's passed alphas
-        today_passed_query = select(func.count(func.distinct(Alpha.alpha_id))).where(
+        today_passed_query = select(func.count(Alpha.id)).where(
             Alpha.created_at >= start_of_today,
             Alpha.quality_status == "PASS",
         )
@@ -278,7 +253,7 @@ class DashboardService(BaseService):
             Alpha.quality_status == "PASS",
         )
         today_alphas = (await self.db.execute(today_alphas_query)).scalars().all()
-        avg_sharpe = self._calculate_avg_sharpe(today_alphas) if today_alphas else None
+        avg_sharpe = self._calculate_avg_sharpe(today_alphas)
         
         # Week's total alphas
         week_total_query = select(func.count(Alpha.id)).where(
@@ -290,11 +265,8 @@ class DashboardService(BaseService):
         return KPIMetrics(
             today_simulations=today_sims,
             today_success_rate=round(success_rate, 4),
-            today_avg_sharpe=round(avg_sharpe, 2) if avg_sharpe is not None else None,
+            today_avg_sharpe=round(avg_sharpe, 2),
             week_total_alphas=week_total,
-            today_simulation_candidates=simulation_candidates,
-            today_wq_results=today_sims,
-            today_pass_count=today_passed,
         )
     
     # =========================================================================

@@ -4,7 +4,7 @@ Orchestrates the complete alpha mining state graph
 """
 
 import json
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Annotated
 from functools import partial
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -324,26 +324,9 @@ class MiningWorkflow:
                 except Exception as e:
                     logger.warning(f"[MiningWorkflow] Failed to add alpha: {e}")
             
-            # Persist each failed expression/type at most once in this run.
-            existing_failure_keys = set()
-            if run_id is not None:
-                failure_expressions = {
-                    failure.expression[:2000]
-                    for failure in result.get("failures", []) if failure.expression
-                }
-                if failure_expressions:
-                    existing_failure_keys = set((await self.db.execute(
-                        select(AlphaFailure.expression, AlphaFailure.error_type).where(
-                            AlphaFailure.run_id == run_id,
-                            AlphaFailure.expression.in_(failure_expressions),
-                        )
-                    )).all())
+            # Persist failures
             for failure in result.get("failures", []):
                 try:
-                    failure_key = ((failure.expression or "")[:2000], failure.error_type)
-                    if failure_key in existing_failure_keys:
-                        continue
-                    existing_failure_keys.add(failure_key)
                     fail_record = AlphaFailure(
                         task_id=task.id,
                         run_id=run_id,

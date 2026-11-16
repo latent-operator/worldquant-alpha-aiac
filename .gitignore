@@ -1,11 +1,8 @@
 *.pyc
 .env
-.env.*
-!.env.example
 __pycache__
 frontend/node_modules
 venv
-.venv/
 *.log
 *.log.*
 logs/
@@ -18,17 +15,13 @@ logs/
 .cursorignore
 .playwright-mcp/
 backend/alembic/versions/__pycache__/
-keys.txt
-compose.local.yaml
-work/
+.venv/
+.env.*
+!.env.example
 frontend/dist/
 parsetab.py
+.pytest_cache/
+*.dump
+*.db
 *.pem
 *.key
-
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
-.beads/proxieddb/
-*.gate.lock*

@@ -13,7 +13,6 @@ from celery.result import AsyncResult
 
 from backend.database import get_db
 from backend.services.task_service import TaskService, TaskCreateData
-from backend.services.credentials_service import CredentialsService
 from backend.celery_app import celery_app
 
 router = APIRouter(
@@ -46,7 +45,6 @@ class TaskCreateRequest(BaseModel):
     daily_goal: int = 4
     max_iterations: int = 10
     config: dict = {}
-    continuous_mode: bool = False
 
 
 class TaskResponse(BaseModel):
@@ -61,7 +59,6 @@ class TaskResponse(BaseModel):
     progress_current: int
     current_iteration: int = 0
     max_iterations: int = 10
-    continuous_mode: bool = False
     created_at: datetime
     updated_at: Optional[datetime] = None
     
@@ -99,31 +96,9 @@ class ExperimentRunResponse(BaseModel):
     started_at: datetime
     finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
-    block_reason: Optional[str] = None
-    next_retry_at: Optional[datetime] = None
-    checkpoint: Optional[dict] = None
 
     class Config:
         from_attributes = True
-
-
-class ExperimentRunSummaryResponse(BaseModel):
-    id: int
-    task_id: int
-    status: str
-    trigger_source: Optional[str] = None
-    started_at: datetime
-    finished_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-    block_reason: Optional[str] = None
-    next_retry_at: Optional[datetime] = None
-
-
-class TaskSummaryResponse(TaskResponse):
-    latest_run_id: Optional[int] = None
-    latest_run_status: Optional[str] = None
-    block_reason: Optional[str] = None
-    next_retry_at: Optional[datetime] = None
 
 
 class InterventionRequest(BaseModel):
@@ -158,7 +133,6 @@ async def list_tasks(
             progress_current=t.progress_current,
             current_iteration=t.current_iteration,
             max_iterations=t.max_iterations,
-            continuous_mode=t.continuous_mode,
             created_at=t.created_at,
             updated_at=t.updated_at,
         )
@@ -182,13 +156,9 @@ async def create_task(
         daily_goal=request.daily_goal,
         max_iterations=request.max_iterations,
         config=request.config,
-        continuous_mode=request.continuous_mode,
     )
     
-    try:
-        task = await service.create_task(data)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+    task = await service.create_task(data)
     
     return TaskResponse(
         id=task.id,
@@ -202,7 +172,6 @@ async def create_task(
         progress_current=task.progress_current,
         current_iteration=task.current_iteration,
         max_iterations=task.max_iterations,
-        continuous_mode=task.continuous_mode,
         created_at=task.created_at,
         updated_at=task.updated_at,
     )
@@ -231,7 +200,6 @@ async def get_task(
         progress_current=detail.progress_current,
         current_iteration=detail.current_iteration,
         max_iterations=detail.max_iterations,
-        continuous_mode=detail.continuous_mode,
         created_at=detail.created_at,
         updated_at=detail.updated_at,
         trace_steps=[
@@ -250,24 +218,6 @@ async def get_task(
             for s in detail.trace_steps
         ],
         alphas_count=detail.alphas_count,
-    )
-
-
-@router.get("/{task_id}/summary", response_model=TaskSummaryResponse)
-async def get_task_summary(
-    task_id: int,
-    service: TaskService = Depends(get_task_service),
-):
-    """Lightweight task state without embedding its full trace."""
-    task = await service.get_task(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    run = await service.run_repo.get_latest_by_task(task_id)
-    return TaskSummaryResponse(
-        **vars(task), latest_run_id=run.id if run else None,
-        latest_run_status=run.status if run else None,
-        block_reason=CredentialsService.sanitize_error(run.block_reason) if run and run.block_reason else None,
-        next_retry_at=run.next_retry_at if run else None,
     )
 
 
@@ -338,32 +288,9 @@ async def list_task_runs(
             started_at=r.started_at,
             finished_at=r.finished_at,
             error_message=r.error_message,
-            block_reason=r.block_reason,
-            next_retry_at=r.next_retry_at,
-            checkpoint=r.checkpoint,
         )
         for r in runs
     ]
-
-
-@router.get("/{task_id}/runs/summary", response_model=List[ExperimentRunSummaryResponse])
-async def list_task_run_summaries(
-    task_id: int,
-    service: TaskService = Depends(get_task_service),
-):
-    """Run history without checkpoints or Celery task identifiers."""
-    try:
-        runs = await service.list_task_runs(task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return [ExperimentRunSummaryResponse(
-        id=r.id, task_id=r.task_id, status=r.status,
-        trigger_source=r.trigger_source, started_at=r.started_at,
-        finished_at=r.finished_at,
-        error_message=CredentialsService.sanitize_error(r.error_message) if r.error_message else None,
-        block_reason=CredentialsService.sanitize_error(r.block_reason) if r.block_reason else None,
-        next_retry_at=r.next_retry_at,
-    ) for r in runs]
 
 
 @router.post("/{task_id}/intervene")

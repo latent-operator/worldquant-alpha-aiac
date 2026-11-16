@@ -10,13 +10,16 @@ Refactored based on ace_lib.py best practices:
 - Retry-After Handling
 """
 
+import os
 import asyncio
 import json
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
+from datetime import datetime, timedelta
 import httpx
 import redis.asyncio as redis
 from tenacity import retry, stop_after_attempt, wait_exponential
 from loguru import logger
+from sqlalchemy import select
 import logging
 
 # Suppress httpx interaction logs
@@ -25,6 +28,10 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from backend.config import settings
 from backend.database import AsyncSessionLocal
+from backend.models import BrainAuthToken
+
+# Import protocol for type checking (Protocol is runtime_checkable)
+from backend.protocols.brain_protocol import BrainProtocol
 
 # Singleton Client Storage (Loop-aware)
 _GLOBAL_CLIENT: Optional[httpx.AsyncClient] = None
@@ -36,37 +43,6 @@ def _format_exception(exc: Exception) -> str:
     if message:
         return f"{type(exc).__name__}: {message}"
     return f"{type(exc).__name__}: {exc!r}"
-
-
-def _simulation_rate_limit(headers) -> Dict[str, int]:
-    values = {}
-    for header, name in (("X-Ratelimit-Limit", "limit"),
-                         ("X-Ratelimit-Remaining", "remaining"),
-                         ("X-Ratelimit-Reset", "reset_seconds")):
-        try:
-            value = int(headers.get(header))
-            if 0 <= value <= 1_000_000_000:
-                values[name] = value
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return values
-
-
-def match_audited_children(expressions: List[str], results: List[Dict]) -> Optional[List[Dict]]:
-    """Never infer child identity from the order returned by a multi-simulation."""
-    if len(results) != len(expressions):
-        return None
-    key = lambda value: "".join(str(value or "").lower().split())
-    expected = [key(value) for value in expressions]
-    if len(set(expected)) != len(expected):
-        return None
-    by_expression = {}
-    for result in results:
-        expression = key(result.get("expression"))
-        if not expression or expression in by_expression:
-            return None
-        by_expression[expression] = result
-    return [by_expression[value] for value in expected] if set(by_expression) == set(expected) else None
 
 class BrainAdapter:
     """
@@ -97,52 +73,62 @@ class BrainAdapter:
         self.email = email or settings.BRAIN_EMAIL
         self.password = password or settings.BRAIN_PASSWORD
         self.session_token = None
-        self._credentials_revision = -1
-        self._loaded_db_email = self.email
-        self._loaded_db_password = self.password
-
-    def _safe_error(self, error: Any) -> str:
-        from backend.services.credentials_service import CredentialsService
-        return CredentialsService.sanitize_error(error, [self.email, self.password])
     
     async def _load_credentials_from_db(self) -> bool:
-        """Refresh credentials when the shared credential revision changes."""
+        """
+        Load credentials from database if not already loaded.
+        Returns True if credentials were loaded/updated.
+        """
+        # Skip if explicit credentials were provided in constructor
         if self._explicit_email and self._explicit_password:
             return False
-
+        
+        # Skip if already loaded
+        if BrainAdapter._credentials_loaded:
+            if BrainAdapter._cached_email:
+                self.email = BrainAdapter._cached_email
+            if BrainAdapter._cached_password:
+                self.password = BrainAdapter._cached_password
+            return bool(BrainAdapter._cached_email)
+        
         try:
-            from backend.services.credentials_service import CredentialsService, CredentialKey
-
+            from backend.services.credentials_service import (
+                CredentialsService, 
+                CredentialKey
+            )
+            
             async with AsyncSessionLocal() as db:
                 service = CredentialsService(db)
-                revision = await service.get_revision()
-                if revision == self._credentials_revision:
-                    return False
-                db_email = await service.get_credential(CredentialKey.BRAIN_EMAIL)
-                db_password = await service.get_credential(CredentialKey.BRAIN_PASSWORD)
-
-            new_email = db_email or settings.BRAIN_EMAIL
-            new_password = db_password or settings.BRAIN_PASSWORD
-            changed = (new_email, new_password) != (self._loaded_db_email, self._loaded_db_password)
-            self.email, self.password = new_email, new_password
-            self._loaded_db_email, self._loaded_db_password = new_email, new_password
-            self._credentials_revision = revision
-            if changed:
-                try:
-                    self.client.cookies.clear()
-                except Exception:
-                    pass
-                try:
-                    redis_client = await self._get_redis()
-                    await redis_client.delete(self.REDIS_SESSION_KEY)
-                    await redis_client.aclose()
-                except Exception as exc:
-                    logger.warning(f"Could not clear cached Brain session ({type(exc).__name__})")
-            return bool(db_email and db_password)
-        except Exception as exc:
-            logger.warning(f"Failed to refresh Brain credentials ({type(exc).__name__})")
-            return False
-
+                
+                # Load email
+                db_email = await service.get_credential(
+                    CredentialKey.BRAIN_EMAIL,
+                    fallback_env="BRAIN_EMAIL"
+                )
+                if db_email:
+                    BrainAdapter._cached_email = db_email
+                    self.email = db_email
+                
+                # Load password
+                db_password = await service.get_credential(
+                    CredentialKey.BRAIN_PASSWORD,
+                    fallback_env="BRAIN_PASSWORD"
+                )
+                if db_password:
+                    BrainAdapter._cached_password = db_password
+                    self.password = db_password
+                
+                BrainAdapter._credentials_loaded = True
+                
+                if db_email or db_password:
+                    logger.info("Loaded Brain credentials from database")
+                    return True
+                
+        except Exception as e:
+            logger.warning(f"Failed to load credentials from DB: {e}")
+        
+        return False
+    
     @classmethod
     def invalidate_credentials_cache(cls):
         """Invalidate cached credentials (call after updating credentials)."""
@@ -327,13 +313,13 @@ class BrainAdapter:
                 raise Exception(f"Auth failed: {response.status_code}")
                 
         except Exception as e:
-            logger.error(f"Authentication error: {self._safe_error(e)}")
+            logger.error(f"Authentication error: {e}")
             raise
 
     # ... Methods (simulate_alpha, get_datasets, etc.) need to use self.client ...
     # I will replicate them below, ensuring they use self.client and handle errors.
     
-    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M", retry_post: bool = True, on_location=None, on_rate_limit=None) -> Dict:
+    async def simulate_alpha(self, expression: str, region: str = "USA", universe: str = "TOP3000", delay: int = 1, decay: int = 4, neutralization: str = "SUBINDUSTRY", truncation: float = 0.08, test_period: str = "P2Y0M") -> Dict:
         # Construct payload
         sim_payload = {
             "type": "REGULAR",
@@ -346,64 +332,22 @@ class BrainAdapter:
             "regular": expression
         }
         
-        request_phase = "CREATE_POST"
         try:
-            response = await self._safe_api_call("post", "/simulations", json=sim_payload,
-                                                 retry_writes=retry_post)
-            rate_limit = _simulation_rate_limit(response.headers)
+            response = await self._safe_api_call("post", "/simulations", json=sim_payload)
             if response.status_code not in [200, 201, 202]:
-                if on_rate_limit is not None and rate_limit:
-                    try:
-                        await on_rate_limit(rate_limit)
-                    except Exception:
-                        logger.warning("Simulation quota metadata could not be persisted")
-                if not retry_post and response.status_code >= 500:
-                    return {"success": False, "error": "uncertain server error",
-                            "http_status": response.status_code, "rate_limit": rate_limit,
-                            "error_code": "SERVER_UNCERTAIN", "request_phase": request_phase}
-                logger.error(f"Brain Simulation Failed [{response.status_code}]")
-                failure = {"success": False, "error": f"Creation failed: {response.text}",
-                           "http_status": response.status_code, "rate_limit": rate_limit,
-                           "error_code": "RATE_LIMITED" if response.status_code == 429 else
-                                         "SERVER_UNCERTAIN" if response.status_code >= 500 or response.status_code == 408 else
-                                         "CLIENT_REJECTED", "request_phase": request_phase}
-                if response.status_code == 429:
-                    try:
-                        failure["retry_after"] = max(0, float(response.headers.get("Retry-After")))
-                    except (TypeError, ValueError):
-                        pass
-                return failure
+                logger.error(f"Brain Simulation Failed [{response.status_code}] | Payload: {json.dumps(sim_payload)} | Response: {response.text}")
+                return {"success": False, "error": f"Creation failed: {response.text}"}
             
             location = response.headers.get("Location")
             if not location:
-                sim_id = response.json().get("id")
-                if not sim_id:
-                    return {"success": False, "error": "uncertain no location header",
-                            "http_status": response.status_code, "rate_limit": rate_limit,
-                            "error_code": "ACK_UNTRACKED", "request_phase": request_phase}
-                location = f"/simulations/{sim_id}"
+                 location = f"/simulations/{response.json().get('id')}"
                  
             logger.info(f"Simulation started | location={location}")
-            if on_location is not None:
-                try:
-                    await on_location(location)
-                except Exception:
-                    return {"success": False, "error": "uncertain request location persistence failed",
-                            "error_code": "ACK_UNTRACKED", "request_phase": request_phase}
-            if on_rate_limit is not None and rate_limit:
-                try:
-                    await on_rate_limit(rate_limit)
-                except Exception:
-                    logger.warning("Simulation quota metadata could not be persisted")
-            request_phase = "POLL_ORIGINAL"
-            result = await self._wait_for_simulation(location)
-            return {**result, "rate_limit": rate_limit, "request_phase": request_phase}
+            return await self._wait_for_simulation(location)
         except Exception as e:
             error = _format_exception(e)
             logger.error(f"Simulate error: {error}")
-            return {"success": False, "error": error,
-                    "error_code": "TRANSPORT_UNCERTAIN",
-                    "request_phase": request_phase}
+            return {"success": False, "error": error}
 
     async def simulate_batch(
         self,
@@ -418,10 +362,6 @@ class BrainAdapter:
         max_wait: int = 1200,
         timeout_grace_seconds: int = 180,
         no_child_timeout_seconds: int = 0,
-        retry_post: bool = True,
-        audit_match: bool = False,
-        on_location=None,
-        on_rate_limit=None,
     ) -> List[Dict]:
         """
         Simulate multiple alphas in a single batch request (Multi-Simulation).
@@ -452,41 +392,19 @@ class BrainAdapter:
         
         try:
             # POST list of configs
-            response = await self._safe_api_call("post", "/simulations", json=sim_payloads,
-                                                 retry_writes=retry_post)
-            rate_limit = _simulation_rate_limit(response.headers)
+            response = await self._safe_api_call("post", "/simulations", json=sim_payloads)
             
             if response.status_code not in [200, 201, 202]:
-                if on_rate_limit is not None and rate_limit:
-                    await on_rate_limit(rate_limit)
-                if not retry_post and response.status_code >= 500:
-                    return [{"success": False, "error": "uncertain server error",
-                             "http_status": response.status_code, "rate_limit": rate_limit}
-                            for _ in expressions]
                 logger.error(f"Batch Simulation Failed [{response.status_code}] | Response: {response.text}")
                 # Return failures for all
-                try:
-                    retry_after = max(0, float(response.headers.get("Retry-After")))
-                except (TypeError, ValueError):
-                    retry_after = None
-                return [{"success": False, "error": f"Batch creation failed: {response.text}",
-                         "http_status": response.status_code, "retry_after": retry_after,
-                         "rate_limit": rate_limit} for _ in expressions]
+                return [{"success": False, "error": f"Batch creation failed: {response.text}"} for _ in expressions]
             
             location = response.headers.get("Location")
             if not location:
                 # If no location header, check body (unlikely for multi-sim)
-                return [{"success": False, "error": "uncertain no location header"} for _ in expressions]
+                return [{"success": False, "error": "No location header"} for _ in expressions]
                  
             logger.info(f"Batch simulation started | count={len(expressions)} location={location}")
-            if on_location is not None:
-                try:
-                    await on_location(location)
-                except Exception:
-                    return [{"success": False, "error": "uncertain parent location persistence failed"}
-                            for _ in expressions]
-            if on_rate_limit is not None and rate_limit:
-                await on_rate_limit(rate_limit)
             # Wait for parent simulation
             parent_result = await self._wait_for_multisim(
                 location,
@@ -510,14 +428,7 @@ class BrainAdapter:
             # Better: match by alpha ID if possible? 
             # Actually ace_lib iterates children and fetches results.
             
-            results = parent_result["results"]
-            if audit_match:
-                matched = match_audited_children(expressions, results)
-                if matched is None:
-                    return [{"success": False, "error": "uncertain child expression mapping",
-                             "location": location} for _ in expressions]
-                results = matched
-            return [{**result, "rate_limit": rate_limit} for result in results]
+            return parent_result["results"]
             
         except Exception as e:
             error = _format_exception(e)
@@ -1024,9 +935,6 @@ class BrainAdapter:
                     "bookSize": is_stats.get("bookSize"),
                     "longCount": is_stats.get("longCount"),
                     "shortCount": is_stats.get("shortCount"),
-                    "long_count": is_stats.get("longCount"),
-                    "short_count": is_stats.get("shortCount"),
-                    "two_year_sharpe": is_stats.get("twoYearSharpe"),
                     
                     # Train/Test metrics
                     "train_sharpe": train_stats.get("sharpe"),
@@ -1064,7 +972,6 @@ class BrainAdapter:
                 "pending_checks": [c.get("name") for c in pending_checks],
                 "passed_checks": [c.get("name") for c in passed_checks],
                 "can_submit": len(failed_checks) == 0 and len(pending_checks) == 0,
-                "platform_can_submit": alpha.get("canSubmit") is True,
                 
                 # Full period data (for detailed analysis)
                 "is": is_stats,
@@ -1085,16 +992,11 @@ class BrainAdapter:
             logger.error(f"Get alpha details error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _safe_api_call(self, method: str, endpoint: str, retry_writes: bool = True,
-                             retry_rate_limit: bool = True, **kwargs) -> httpx.Response:
+    async def _safe_api_call(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
         """
         Execute API call with auto-reauth on 401 and retry on 429/5xx.
         """
         url = endpoint if endpoint.startswith("http") else f"{self.BASE_URL}{endpoint}"
-        if method.lower() == "post" and not retry_writes:
-            # A timed-out creation request may already exist at WQ. Never send
-            # a second POST for an audited candidate without reconciliation.
-            return await self.client.post(url, **kwargs)
         retries = 0
         max_retries = 5
         
@@ -1112,8 +1014,6 @@ class BrainAdapter:
                 
                 # 2. Handle 429 Too Many Requests (Rate Limit)
                 if response.status_code == 429:
-                    if not retry_rate_limit:
-                        return response
                     retry_after = response.headers.get("Retry-After")
                     wait_time = float(retry_after) if retry_after else (2 ** (retries + 1))
                     logger.warning(f"429 Rate Limit for {endpoint}. Sleeping {wait_time}s (Attempt {retries+1}/{max_retries})")
@@ -1232,50 +1132,6 @@ class BrainAdapter:
             return response.json() if response is not None and response.text else {}
         except Exception:
             return {}
-
-    async def check_power_pool_correlation(self, alpha_id: str) -> Dict:
-        """Read the dedicated Power Pool correlation endpoint, never PROD."""
-        return await self.check_correlation(alpha_id, check_type="POWER-POOL")
-
-    async def read_pre_submit_checks(self, alpha_id: str, max_wait: float = 10.0) -> Dict:
-        """Read the original Alpha's checks without submitting or resimulating it."""
-        import re
-        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", str(alpha_id)):
-            raise ValueError("PPA_ALPHA_ID_INVALID")
-        deadline = asyncio.get_running_loop().time() + max(0, max_wait)
-        for attempt in range(10):
-            response = await self._safe_api_call("GET", f"/alphas/{alpha_id}/check",
-                                                 retry_rate_limit=False)
-            if response.status_code == 429:
-                try:
-                    retry_after = max(0.0, float(response.headers.get("Retry-After", 60)))
-                except (TypeError, ValueError):
-                    retry_after = 60.0
-                return {"status": "THROTTLED", "checks": [], "http_status": 429,
-                        "retry_after": retry_after}
-            if response.status_code != 200:
-                return {"status": "ERROR", "checks": [], "http_status": response.status_code}
-            try:
-                payload = response.json()
-                checks = (payload.get("is") or {}).get("checks") or []
-            except (AttributeError, TypeError, ValueError):
-                return {"status": "ERROR", "checks": [], "http_status": 200}
-            if isinstance(checks, list) and checks:
-                return {"status": "COMPLETE", "checks": checks, "http_status": 200}
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0 or attempt == 9 or "Retry-After" not in response.headers:
-                break
-            try:
-                delay = max(0, float(response.headers["Retry-After"]))
-            except (TypeError, ValueError):
-                delay = 1.0
-            if delay:
-                await asyncio.sleep(min(delay, remaining))
-        return {"status": "PENDING", "checks": [], "http_status": 200}
-
-    async def get_alpha_evidence(self, alpha_id: str) -> Dict:
-        """Refresh details of an existing Alpha by ID, with a bounded wait."""
-        return await self._get_completed_alpha_details(alpha_id, max_wait=10)
 
     async def get_user_alphas(self, limit: int = 100, offset: int = 0, stage: str = None, search: str = None, start_date: str = None) -> Dict:
         """

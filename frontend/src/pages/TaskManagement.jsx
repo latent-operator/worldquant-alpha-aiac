@@ -15,7 +15,6 @@ import {
   Input,
   Select,
   InputNumber,
-  Switch,
   message,
 } from 'antd'
 import {
@@ -26,7 +25,6 @@ import {
   EyeOutlined,
 } from '@ant-design/icons'
 import api from '../services/api'
-import { taskProgress } from '../utils/taskDisplay'
 
 const { Title } = Typography
 const { Option } = Select
@@ -156,13 +154,12 @@ export default function TaskManagement() {
         const colors = {
           PENDING: 'default',
           RUNNING: 'processing',
-          WAITING_LLM: 'warning',
           PAUSED: 'warning',
           COMPLETED: 'success',
           FAILED: 'error',
           STOPPED: 'default',
         }
-        return <Tag color={colors[status] || 'default'}>{status === 'WAITING_LLM' ? '等待恢复' : status}</Tag>
+        return <Tag color={colors[status] || 'default'}>{status}</Tag>
       },
     },
     {
@@ -170,7 +167,7 @@ export default function TaskManagement() {
       key: 'progress',
       width: 100,
       render: (_, record) => (
-        <span>{taskProgress(record)}</span>
+        <span>{record.progress_current} / {record.daily_goal}</span>
       ),
     },
     {
@@ -196,7 +193,7 @@ export default function TaskManagement() {
               启动
             </Button>
           )}
-          {['RUNNING', 'WAITING_LLM'].includes(record.status) && (
+          {record.status === 'RUNNING' && (
             <Button 
               size="small" 
               icon={<PauseCircleOutlined />}
@@ -266,7 +263,6 @@ export default function TaskManagement() {
             agent_mode: 'AUTONOMOUS',
             daily_goal: 4,
             max_iterations: 10,
-            continuous_mode: false,
           }}
         >
           <Form.Item
@@ -340,11 +336,6 @@ export default function TaskManagement() {
               </Form.Item>
             </Col>
           </Row>
-
-          <Form.Item name="continuous_mode" label="持续迭代" valuePropName="checked"
-            help="按轮保存并续跑同一 Run，直到手动暂停或停止；仍遵守平台额度。">
-            <Switch />
-          </Form.Item>
 
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
             <Space>

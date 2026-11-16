@@ -22,7 +22,6 @@ from backend.services.config_service import (
 )
 from backend.services.credentials_service import (
     CredentialsService,
-    CredentialConfigurationError,
     CredentialKey,
     get_credentials_service,
 )
@@ -110,17 +109,9 @@ async def get_credentials_status(db: AsyncSession = Depends(get_db)):
     """Get status of all configured credentials (masked values)."""
     service = get_credentials_service(db)
     credentials = await service.get_all_credentials_masked()
-    connection_tests = await service.get_connection_test_status()
-    revision = await service.get_revision()
-    encryption_status = await service.get_worker_encryption_status()
     
     return {
         "credentials": credentials,
-        "revision": revision,
-        "credential_precedence": ["database", "environment"],
-        "encryption_configured": encryption_status["ready"],
-        "encryption_status": encryption_status,
-        "connection_tests": connection_tests,
         "message": "Use POST endpoints to update credentials"
     }
 
@@ -136,11 +127,16 @@ async def set_brain_credentials(
     service = get_credentials_service(db)
     
     try:
-        await service.require_worker_encryption()
-        await service.set_credentials({
-            CredentialKey.BRAIN_EMAIL: (credentials.email, "WorldQuant Brain platform email"),
-            CredentialKey.BRAIN_PASSWORD: (credentials.password, "WorldQuant Brain platform password"),
-        })
+        await service.set_credential(
+            CredentialKey.BRAIN_EMAIL,
+            credentials.email,
+            description="WorldQuant Brain platform email"
+        )
+        await service.set_credential(
+            CredentialKey.BRAIN_PASSWORD,
+            credentials.password,
+            description="WorldQuant Brain platform password"
+        )
         
         # Invalidate cached credentials
         BrainAdapter.invalidate_credentials_cache()
@@ -150,12 +146,10 @@ async def set_brain_credentials(
             "success": True,
             "message": "Brain credentials saved successfully"
         }
-    except CredentialConfigurationError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail="Failed to save credentials"
+            detail=f"Failed to save credentials: {str(e)}"
         )
 
 
@@ -168,12 +162,21 @@ async def set_llm_credentials(
     service = get_credentials_service(db)
     
     try:
-        await service.require_worker_encryption()
-        await service.set_credentials({
-            CredentialKey.OPENAI_API_KEY: (credentials.api_key, "LLM API key"),
-            CredentialKey.OPENAI_BASE_URL: (credentials.base_url, "LLM API base URL"),
-            CredentialKey.OPENAI_MODEL: (credentials.model, "LLM model name"),
-        })
+        await service.set_credential(
+            CredentialKey.OPENAI_API_KEY,
+            credentials.api_key,
+            description="LLM API key"
+        )
+        await service.set_credential(
+            CredentialKey.OPENAI_BASE_URL,
+            credentials.base_url,
+            description="LLM API base URL"
+        )
+        await service.set_credential(
+            CredentialKey.OPENAI_MODEL,
+            credentials.model,
+            description="LLM model name"
+        )
         
         # Invalidate credential caches
         CredentialsService.invalidate_cache()
@@ -187,12 +190,10 @@ async def set_llm_credentials(
             "success": True,
             "message": "LLM credentials saved successfully"
         }
-    except CredentialConfigurationError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail="Failed to save credentials"
+            detail=f"Failed to save credentials: {str(e)}"
         )
 
 
@@ -208,19 +209,6 @@ async def test_brain_credentials(db: AsyncSession = Depends(get_db)):
             detail=result.get("error", "Authentication failed")
         )
     
-    return result
-
-
-@router.post("/credentials/llm/test")
-async def test_llm_credentials(db: AsyncSession = Depends(get_db)):
-    """Test LLM auth through the models endpoint; no completion is generated."""
-    from backend.agents.services.llm_service import get_llm_service
-
-    service = get_credentials_service(db)
-    result = await get_llm_service().test_connection()
-    await service.record_connection_test("llm", result["success"], result.get("error", ""))
-    if not result["success"]:
-        raise HTTPException(status_code=400, detail=result.get("error", "LLM connection failed"))
     return result
 
 
@@ -252,11 +240,6 @@ async def delete_credential(
             status_code=404,
             detail=f"Credential '{key}' not found"
         )
-
-    if key in (CredentialKey.BRAIN_EMAIL, CredentialKey.BRAIN_PASSWORD):
-        from backend.adapters.brain_adapter import BrainAdapter
-        BrainAdapter.invalidate_credentials_cache()
-    CredentialsService.invalidate_cache()
     
     return {"success": True, "message": f"Credential '{key}' deleted"}
 

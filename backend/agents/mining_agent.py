@@ -15,12 +15,11 @@ Design Principles:
 
 from typing import List, Dict, Optional, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from loguru import logger
 from datetime import datetime, timedelta
 import re
 import json, time, os  # #region agent log
-from contextlib import nullcontext
 
 def _debug_log(hypo_id, location, message, data=None):
     try:
@@ -31,10 +30,9 @@ def _debug_log(hypo_id, location, message, data=None):
     except: pass
 # #endregion
 
-from backend.models import MiningTask, ExperimentRun, Alpha, AlphaFailure, TraceStep, ResearchCandidate
+from backend.models import MiningTask, Alpha, AlphaFailure, TraceStep
 from backend.agents.graph import MiningWorkflow, create_mining_graph
 from backend.agents.services import LLMService, get_llm_service
-from backend.agents.services.llm_service import LLMBlockedError
 from backend.agents.services.trace_service import TraceService
 from backend.agents.strategy_agent import StrategyAgent, create_strategy_agent
 from backend.agents.evolution_strategy import (
@@ -44,101 +42,6 @@ from backend.agents.evolution_strategy import (
 from backend.agents.feedback_agent import FeedbackAgent
 from backend.adapters.brain_adapter import BrainAdapter
 from backend.adapters.mcp_brain_adapter import MCPBrainAdapter
-from backend.alpha_scoring import should_optimize
-
-
-def _next_no_new_streak(previous: int, new_candidates: int) -> int:
-    """Count consecutive rounds with no validated, unsimulated expression."""
-    return 0 if new_candidates > 0 else previous + 1
-
-
-async def _audited_request_count(db: AsyncSession, run_id: int) -> int:
-    """Count durable WQ reservations, including outcomes still unknown."""
-    return (await db.execute(select(func.count(ResearchCandidate.id)).where(
-        ResearchCandidate.run_id == run_id,
-        ResearchCandidate.request_status.in_(("RESERVED", "REQUESTED", "RESULT", "FAILED", "UNKNOWN")),
-    ))).scalar_one()
-
-
-def _should_yield_dispatch_round(
-    *, current_iteration: int, entry_iteration: int, max_iterations: int,
-    max_rounds: Optional[int], total_success: int, target_alphas: int,
-    min_iterations_before_goal_stop: int,
-    continuous_mode: bool = False,
-) -> bool:
-    """Release a Celery worker at a completed-round checkpoint."""
-    return bool(
-        max_rounds is not None
-        and max_rounds > 0
-        and current_iteration - entry_iteration >= max_rounds
-        and (continuous_mode or current_iteration < max_iterations)
-        and (continuous_mode or not (
-            total_success >= target_alphas
-            and current_iteration >= min_iterations_before_goal_stop
-        ))
-    )
-
-
-def _generation_recovery_action(no_wq_streak: int) -> str:
-    """Escalate empty generation to a DB-backed wait, never a terminal status."""
-    return "WAITING_LLM" if no_wq_streak >= 3 else "REGENERATE"
-
-
-def _paired_seed_for_iteration(rows: list[dict], iteration: int) -> dict | None:
-    """Cycle only through paired treatments with complete, improved metrics."""
-    from backend.services.research_audit import paired_improvements
-
-    seeds = paired_improvements(rows)
-    return seeds[(iteration - 1) % len(seeds)] if seeds else None
-
-
-def _eligible_candidates_from_trace(output: Dict[str, Any]) -> int:
-    """Read the post-validation, post-dedup funnel count, never CODE_GEN size."""
-    value = output.get("eligible_candidate_count")
-    if value is None:
-        value = output.get("simulated_count")
-    return max(0, int(value or 0))
-
-
-def _paper_recovery_strategy(
-    strategy: EvolutionStrategy, task_config: Dict[str, Any], cursor: int,
-) -> EvolutionStrategy:
-    """Rotate a paper's allowed fields and windows without expanding its scope."""
-    allowed = tuple(dict.fromkeys(str(field) for field in task_config.get("research_only_fields") or []))
-    if not allowed:
-        return EvolutionStrategy.rescue_mode(list(strategy.avoid_fields), iteration=strategy.iteration)
-
-    groups = (
-        ("relevance-conditioned sentiment", ("sentiment", "relevance")),
-        ("event novelty ablation", ("similarity_days", "sentiment")),
-        ("event frequency ablation", ("story_event_count", "story_event_index", "sentiment")),
-        ("sentiment classifier comparison", ("qmb", "ssc", "qep", "ber", "acb")),
-    )
-    label, terms = groups[cursor % len(groups)]
-    focused = tuple(field for field in allowed if any(term in field.lower() for term in terms))
-    if not focused:
-        focused = allowed
-    windows = (3, 5, 10, 20, 40, 60)
-    window = windows[cursor % len(windows)]
-    configured_ops = tuple(str(op) for op in task_config.get("preferred_operators") or [])
-    preferred_ops = configured_ops[cursor % len(configured_ops):] + configured_ops[:cursor % len(configured_ops)] if configured_ops else ()
-    target = str(task_config.get("target_hypothesis") or "").strip()
-    instruction = (
-        f"Within the same paper hypothesis, test {label} at a {window}-day window. "
-        "Generate structurally new expressions using only the allowed fields; "
-        "do not repeat prior formulas or change the dataset."
-    )
-    return strategy.with_updates(
-        mode=StrategyMode.EXPLORE,
-        temperature=0.9,
-        exploration_weight=0.95,
-        preferred_fields=focused,
-        avoid_fields=tuple(field for field in strategy.avoid_fields if field not in allowed),
-        preferred_operators=preferred_ops,
-        focus_hypotheses=tuple(part for part in (target, instruction) if part),
-        action_summary=f"Paper recovery: {label}, {window}-day window",
-        reasoning=instruction,
-    )
 
 
 class MiningAgent:
@@ -247,40 +150,11 @@ class MiningAgent:
         
         try:
             workflow_operators = operators if task_config.get("first_order_operator_probe") else self._apply_operator_filters(operators, strategy)
-            workflow_fields = self._apply_field_filters(fields, strategy)
-            research_only_fields = {
-                str(field_id) for field_id in (task_config.get("research_only_fields") or [])
-                if str(field_id).strip()
-            }
-            if research_only_fields:
-                # Keep the research boundary visible to every graph node, even
-                # when an evolved strategy focuses on unrelated dataset fields.
-                task_config["research_known_fields"] = [
-                    str(field.get("id") or field.get("name") or "")
-                    for field in fields
-                ]
-                allowed_fields = [
-                    field for field in fields
-                    if str(field.get("id") or field.get("name") or "") in research_only_fields
-                ]
-                required_field = str(task_config.get("research_required_field") or "")
-                allowed_ids = {str(field.get("id") or field.get("name") or "") for field in allowed_fields}
-                if not allowed_fields or (required_field and required_field not in allowed_ids):
-                    raise ValueError("Configured research fields are unavailable in this dataset")
-                workflow_fields = [
-                    field for field in workflow_fields
-                    if str(field.get("id") or field.get("name") or "") in research_only_fields
-                ]
-                selected_ids = {str(field.get("id") or field.get("name") or "") for field in workflow_fields}
-                workflow_fields.extend(
-                    field for field in allowed_fields
-                    if str(field.get("id") or field.get("name") or "") not in selected_ids
-                )
             # Run workflow with strategy context
             result = await self._workflow.run_with_persistence(
                 task=task,
                 dataset_id=dataset_id,
-                fields=workflow_fields,
+                fields=self._apply_field_filters(fields, strategy),
                 operators=workflow_operators,
                 num_alphas=num_alphas,
                 config={
@@ -530,30 +404,26 @@ class MiningAgent:
         """Inject recent exact expressions so generation avoids known DB skips."""
         if not task_config.get("avoid_attempted_expressions", True):
             return task_config
+        if task_config.get("attempted_expressions"):
+            return task_config
+
         limit = max(0, int(task_config.get("attempted_expression_limit", 500) or 0))
         if limit <= 0:
             return task_config
-
-        configured = [
-            str(expression).strip()
-            for expression in (task_config.get("attempted_expressions") or [])
-            if str(expression).strip()
-        ]
 
         attempted = await self._query_attempted_expressions(
             task=task,
             dataset_id=dataset_id,
             limit=limit,
         )
-        merged = list(dict.fromkeys([*configured, *attempted]))[:limit]
-        if not merged:
+        if not attempted:
             return task_config
 
         planned = dict(task_config)
-        planned["attempted_expressions"] = merged
+        planned["attempted_expressions"] = attempted
         logger.info(
             "[MiningAgent] Injected attempted expression filter | "
-            f"dataset={dataset_id} count={len(merged)}"
+            f"dataset={dataset_id} count={len(attempted)}"
         )
         return planned
 
@@ -591,7 +461,7 @@ class MiningAgent:
 
         failure_rows = (
             await self.db.execute(
-                select(AlphaFailure.expression, AlphaFailure.error_message, MiningTask)
+                select(AlphaFailure.expression, MiningTask)
                 .join(MiningTask, AlphaFailure.task_id == MiningTask.id)
                 .where(
                     MiningTask.region == task.region,
@@ -601,16 +471,8 @@ class MiningAgent:
                 .limit(limit)
             )
         ).all()
-        for expression, error_message, failure_task in failure_rows:
-            if failure_task.id != task.id and dataset_id not in (failure_task.target_datasets or []):
-                continue
-            if (
-                (task.config or {}).get("allow_parameter_variants", False)
-                and failure_task.id == task.id
-                and str(error_message or "").startswith("Duplicate: Structurally similar")
-            ):
-                # Parameter-sweep candidates rejected by the old batch rule
-                # are eligible for a fresh validation after the rule changes.
+        for expression, failure_task in failure_rows:
+            if dataset_id not in (failure_task.target_datasets or []):
                 continue
             expression = str(expression or "").strip()
             if expression and expression not in seen:
@@ -1205,8 +1067,6 @@ class MiningAgent:
         num_alphas_per_round: int = 4,
         initial_strategy: Optional[EvolutionStrategy] = None,
         run_id: Optional[int] = None,
-        max_rounds_per_dispatch: Optional[int] = None,
-        continuous_mode: bool = False,
     ) -> Dict[str, Any]:
         """
         Run multi-round evolution loop for alpha mining.
@@ -1241,60 +1101,17 @@ class MiningAgent:
         # #endregion
         
         # Initialize state
-        checkpoint = {}
-        if run_id is not None:
-            run = await self.db.get(ExperimentRun, run_id)
-            if run and (run.checkpoint or {}).get("dataset_id") == dataset_id:
-                checkpoint = run.checkpoint or {}
-        iteration = int(checkpoint.get("iteration", 0))
-        total_success = int(checkpoint.get("total_success", 0))
-        entry_iteration = iteration
-        entry_success = total_success
-        yielded_for_dispatch = False
+        iteration = 0
+        total_success = 0
         all_alphas: List[Alpha] = []
         all_failures: List[Dict] = []
         strategy_history: List[EvolutionStrategy] = []
         bad_round_streak = 0
         weak_round_streak = 0
         dataset_stop_reason = None
-        no_new_streak = int(checkpoint.get("no_new_streak", 0))
-        recovery_cursor = int(checkpoint.get("recovery_cursor", 0))
-        recovery_wait_attempts = int(checkpoint.get("recovery_wait_attempts", 0))
-        paper_constrained = bool((task.config or {}).get("paper_reference") and (task.config or {}).get("research_only_fields"))
         
         # Start with provided, task-config-derived, or default strategy
-        current_strategy = (
-            EvolutionStrategy.from_dict(checkpoint["strategy"])
-            if checkpoint.get("strategy") else
-            (initial_strategy or self._initial_strategy_from_task_config(task))
-        )
-
-        async def save_checkpoint(
-            completed_iteration: int, reset_connection_error: bool = False,
-            dispatch_yielded: bool = False,
-        ):
-            if run_id is None:
-                return
-            run_state = await self.db.get(ExperimentRun, run_id)
-            if run_state:
-                run_state.checkpoint = {
-                    **(run_state.checkpoint or {}),
-                    "dataset_id": dataset_id,
-                    "iteration": completed_iteration,
-                    "total_success": total_success,
-                    "no_new_streak": no_new_streak,
-                    "recovery_cursor": recovery_cursor,
-                    "recovery_wait_attempts": recovery_wait_attempts,
-                    "strategy": current_strategy.to_dict(),
-                    "dispatch_yielded": dispatch_yielded,
-                    "connection_attempts": (
-                        0 if reset_connection_error else int((run_state.checkpoint or {}).get("connection_attempts", 0))
-                    ),
-                    "connection_error_type": (
-                        None if reset_connection_error else (run_state.checkpoint or {}).get("connection_error_type")
-                    ),
-                }
-                await self.db.commit()
+        current_strategy = initial_strategy or self._initial_strategy_from_task_config(task)
         diversity_tracker = None
         metrics_tracker = None
         metrics_report = None
@@ -1320,44 +1137,9 @@ class MiningAgent:
                 1,
                 int(task_config.get("min_iterations_before_goal_stop", 1) or 1),
             )
-            while continuous_mode or iteration < max_iterations:
-                await self.db.refresh(task)
-                if task.status in {"STOPPED", "PAUSED"}:
-                    await save_checkpoint(iteration)
-                    logger.info(f"[MiningAgent] Task {task.status} before round {iteration + 1}")
-                    break
-                if _should_yield_dispatch_round(
-                    current_iteration=iteration,
-                    entry_iteration=entry_iteration,
-                    max_iterations=max_iterations,
-                    max_rounds=max_rounds_per_dispatch,
-                    total_success=total_success,
-                    target_alphas=target_alphas,
-                    min_iterations_before_goal_stop=min_iterations_before_goal_stop,
-                    continuous_mode=continuous_mode,
-                ):
-                    await save_checkpoint(iteration, dispatch_yielded=True)
-                    yielded_for_dispatch = True
-                    logger.info(
-                        f"[MiningAgent] Yielding worker after round {iteration} | "
-                        f"task={task.id} run={run_id}"
-                    )
-                    break
-                # Refresh worker-local clients once per round. The shared DB
-                # revision lets API-side credential changes reach this process.
-                refresh_brain_credentials = getattr(self.brain, "_load_credentials_from_db", None)
-                if callable(refresh_brain_credentials):
-                    await refresh_brain_credentials()
-                refresh_llm_credentials = getattr(self.llm_service, "_ensure_credentials_loaded", None)
-                if callable(refresh_llm_credentials):
-                    await refresh_llm_credentials()
-
+            while iteration < max_iterations:
                 iteration += 1
                 round_strategy = self._apply_diversity_guidance(current_strategy, diversity_tracker)
-                if paper_constrained and no_new_streak:
-                    round_strategy = _paper_recovery_strategy(
-                        round_strategy, task.config or {}, recovery_cursor,
-                    )
                 await self.db.execute(
                     update(MiningTask)
                     .where(MiningTask.id == task.id)
@@ -1376,10 +1158,6 @@ class MiningAgent:
                 
                 try:
                     # Execute mining iteration with current strategy
-                    requests_before = (
-                        await _audited_request_count(self.db, run_id)
-                        if continuous_mode and run_id is not None else None
-                    )
                     alphas = await self.run_mining_iteration(
                         task=task,
                         dataset_id=dataset_id,
@@ -1399,43 +1177,11 @@ class MiningAgent:
                         task_config=task.config or {},
                         run_id=run_id,
                     )
-
-                    simulation_trace = (await self.db.execute(
-                        select(TraceStep)
-                        .where(TraceStep.task_id == task.id, TraceStep.run_id == run_id,
-                               TraceStep.iteration == iteration, TraceStep.step_type == "SIMULATE")
-                        .order_by(TraceStep.id.desc()).limit(1)
-                    )).scalar_one_or_none()
-                    simulation_output = (simulation_trace.output_data or {}) if simulation_trace else {}
-                    new_candidates = _eligible_candidates_from_trace(simulation_output)
-                    if requests_before is not None:
-                        new_candidates = max(
-                            0, await _audited_request_count(self.db, run_id) - requests_before,
-                        )
-                    no_new_streak = _next_no_new_streak(no_new_streak, new_candidates)
                     
                     # Update counters
                     total_success += round_result.passed_count
                     all_alphas.extend(alphas)
                     strategy_history.append(round_strategy)
-
-                    if not new_candidates:
-                        recovery_cursor += 1
-                        await save_checkpoint(iteration)
-                        reason = str(simulation_output.get("reason") or "NO_VALID_CANDIDATES")
-                        logger.warning(
-                            f"[MiningAgent] No WQ candidate | task={task.id} run={run_id} "
-                            f"iteration={iteration} streak={no_new_streak} reason={reason} "
-                            f"recovery_cursor={recovery_cursor}"
-                        )
-                        if reason == "DEDUP_UNAVAILABLE":
-                            raise LLMBlockedError("DEDUP_UNAVAILABLE")
-                        if _generation_recovery_action(no_new_streak) == "WAITING_LLM":
-                            raise LLMBlockedError("NO_NEW_CANDIDATES")
-                        continue
-
-                    recovery_cursor = 0
-                    recovery_wait_attempts = 0
 
                     await self._record_observability(
                         task=task,
@@ -1491,11 +1237,7 @@ class MiningAgent:
 
                     error_limit = int((task.config or {}).get("dataset_error_round_limit", 2))
                     weak_limit = int((task.config or {}).get("dataset_weak_signal_round_limit", 4))
-                    weak_recovery = paper_constrained and weak_round_streak >= weak_limit
-                    if paper_constrained and bad_round_streak >= error_limit:
-                        await save_checkpoint(iteration)
-                        raise LLMBlockedError("WQ_SIMULATION_ERROR")
-                    if (bad_round_streak >= error_limit or weak_round_streak >= weak_limit) and not weak_recovery:
+                    if bad_round_streak >= error_limit or weak_round_streak >= weak_limit:
                         dataset_stop_reason = (
                             f"{round_health['reason']} | "
                             f"bad_round_streak={bad_round_streak}/{error_limit} "
@@ -1514,13 +1256,9 @@ class MiningAgent:
                             run_id=run_id,
                         )
                         break
-                    if weak_recovery:
-                        logger.info(f"[MiningAgent] Weak paper signal; rotating research angle | task={task.id} run={run_id}")
-                        weak_round_streak = 0
-                        recovery_cursor += 1
                     
                     # Check termination: goal reached
-                    if not continuous_mode and total_success >= target_alphas:
+                    if total_success >= target_alphas:
                         if iteration >= min_iterations_before_goal_stop:
                             logger.info(
                                 f"[MiningAgent] Goal reached! "
@@ -1536,7 +1274,6 @@ class MiningAgent:
                     # Check termination: task stopped externally
                     await self.db.refresh(task)
                     if task.status in ["STOPPED", "PAUSED"]:
-                        await save_checkpoint(iteration)
                         logger.info(f"[MiningAgent] Task {task.status}, stopping")
                         break
                     
@@ -1546,15 +1283,11 @@ class MiningAgent:
                         current_strategy=round_strategy,
                         round_result=round_result,
                         cumulative_success=total_success,
-                        target_goal=max(target_alphas, total_success + 1) if continuous_mode else target_alphas,
-                        max_iterations=max(max_iterations, iteration + 10) if continuous_mode else max_iterations,
+                        target_goal=target_alphas,
+                        max_iterations=max_iterations,
                         dataset_id=dataset_id,
                         region=task.region
                     )
-                    if weak_recovery:
-                        current_strategy = _paper_recovery_strategy(
-                            current_strategy, task.config or {}, recovery_cursor,
-                        )
                     
                     # === RECORD ROUND SUMMARY ===
                     await self._record_round_summary(
@@ -1563,7 +1296,7 @@ class MiningAgent:
                         round_result=round_result,
                         strategy=current_strategy,
                         cumulative_success=total_success,
-                        target_alphas=max(target_alphas, total_success + 1) if continuous_mode else target_alphas,
+                        target_alphas=target_alphas,
                         run_id=run_id,
                     )
                     
@@ -1575,8 +1308,8 @@ class MiningAgent:
                         iteration=iteration,
                         dataset_id=dataset_id,
                         cumulative_success=total_success,
-                        target_alphas=max(target_alphas, total_success + 1) if continuous_mode else target_alphas,
-                        max_iterations=max(max_iterations, iteration + 10) if continuous_mode else max_iterations,
+                        target_alphas=target_alphas,
+                        max_iterations=max_iterations,
                     )
                     
                     # === OPTIMIZATION CHAIN (if applicable) ===
@@ -1590,7 +1323,6 @@ class MiningAgent:
                                 f"elapsed={elapsed:.0f}s max_loop_seconds={max_loop_seconds:.0f}s "
                                 f"iteration={iteration}/{max_iterations}"
                             )
-
                             optimized_passes = 0
                         else:
                             optimized_passes = await self._run_optimization_chain(
@@ -1610,13 +1342,7 @@ class MiningAgent:
                                 f"total={total_success}/{target_alphas}"
                             )
 
-                    if continuous_mode and (task.config or {}).get("paired_seed_reference_run_id"):
-                        total_success += await self._run_continuous_paired_genetic(
-                            task=task, dataset_id=dataset_id, fields=fields,
-                            run_id=run_id, iteration=iteration,
-                        )
-
-                    if not continuous_mode and total_success >= target_alphas:
+                    if total_success >= target_alphas:
                         if iteration >= min_iterations_before_goal_stop:
                             logger.info(
                                 f"[MiningAgent] Goal reached after optimization! "
@@ -1628,39 +1354,7 @@ class MiningAgent:
                             f"until minimum iterations | success={total_success}/{target_alphas} "
                             f"iteration={iteration}/{min_iterations_before_goal_stop}"
                         )
-
-                    await save_checkpoint(iteration, reset_connection_error=True)
                     
-                except LLMBlockedError as exc:
-                    await self.db.rollback()
-                    await save_checkpoint(
-                        iteration if exc.kind in {"NO_NEW_CANDIDATES", "DEDUP_UNAVAILABLE", "WQ_SIMULATION_ERROR"}
-                        else iteration - 1
-                    )
-                    raise
-                except ValueError as exc:
-                    if "Configured research fields are unavailable" not in str(exc):
-                        logger.error(f"[MiningAgent] Round {iteration} value error: {exc}")
-                        await self.db.rollback()
-                        current_strategy = EvolutionStrategy.rescue_mode(
-                            problematic_fields=list(current_strategy.avoid_fields),
-                            iteration=iteration,
-                        )
-                        continue
-                    await self.db.rollback()
-                    await save_checkpoint(iteration - 1)
-                    await self.db.execute(
-                        update(MiningTask).where(MiningTask.id == task.id)
-                        .values(status="PAUSED", updated_at=datetime.utcnow())
-                    )
-                    if run_id is not None:
-                        run_state = await self.db.get(ExperimentRun, run_id)
-                        if run_state:
-                            run_state.status = "PAUSED"
-                            run_state.block_reason = "CONFIG_FIELD_UNAVAILABLE"
-                    await self.db.commit()
-                    dataset_stop_reason = "CONFIG_FIELD_UNAVAILABLE"
-                    break
                 except Exception as e:
                     logger.error(f"[MiningAgent] Round {iteration} error: {e}")
                     # Rollback any failed transaction
@@ -1692,9 +1386,7 @@ class MiningAgent:
         return {
             "iterations_completed": iteration,
             "total_success": total_success,
-            "new_success": max(0, total_success - entry_success),
-            "yielded_for_dispatch": yielded_for_dispatch,
-            "target_reached": not continuous_mode and total_success >= target_alphas,
+            "target_reached": total_success >= target_alphas,
             "all_alphas": all_alphas,
             "all_failures": all_failures,
             "dataset_stop_reason": dataset_stop_reason,
@@ -2756,29 +2448,28 @@ class MiningAgent:
                         "[MiningAgent] Optimization round batch budget exhausted | "
                         f"iteration={iteration} dataset={dataset_id}"
                     )
-                else:
-                    result = await self._simulate_optimization_variants(
-                        task=task,
-                        original_expression=expression,
-                        expr_variants=expr_variants[:5],
-                        settings_variants=settings_variants[:3],
-                        iteration=iteration,
-                        dataset_id=dataset_id,
-                        fields=fields or [],
-                        run_id=run_id,
-                        max_batches_override=round_batch_budget,
-                    )
-                    pass_count += result.get("pass_total", 0)
-                    round_batch_budget -= result.get("batches_run", 0)
+                    break
 
-                if (self._task_config_bool(task, "enable_genetic_optimization")
-                        and not task_config.get("paired_seed_reference_run_id")):
-                    pass_count += await self._run_genetic_optimization(
+                result = await self._simulate_optimization_variants(
+                    task=task,
+                    original_expression=expression,
+                    expr_variants=expr_variants[:5],
+                    settings_variants=settings_variants[:3],
+                    iteration=iteration,
+                    dataset_id=dataset_id,
+                    fields=fields or [],
+                    run_id=run_id,
+                    max_batches_override=round_batch_budget,
+                )
+                pass_count += result.get("pass_total", 0)
+                round_batch_budget -= result.get("batches_run", 0)
+
+                if self._task_config_bool(task, "enable_genetic_optimization"):
+                    await self._run_genetic_optimization(
                         task=task,
                         seed_expression=expression,
                         seed_metrics=metrics,
                         dataset_id=dataset_id,
-                        fields=fields,
                         run_id=run_id,
                     )
                 
@@ -2810,48 +2501,18 @@ class MiningAgent:
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
-    async def _run_continuous_paired_genetic(
-        self, task: MiningTask, dataset_id: str, fields: List[Dict],
-        run_id: Optional[int], iteration: int,
-    ) -> int:
-        """Use a verified historical paired improvement, never an arbitrary weak Alpha."""
-        if not self._task_config_bool(task, "enable_genetic_optimization"):
-            return 0
-        from backend.models import ResearchCandidate
-
-        reference_id = int((task.config or {})["paired_seed_reference_run_id"])
-        rows = (await self.db.execute(select(ResearchCandidate).where(
-            ResearchCandidate.run_id == reference_id,
-            ResearchCandidate.request_status == "RESULT",
-        ).order_by(ResearchCandidate.id).limit(100))).scalars().all()
-        seed = _paired_seed_for_iteration([{
-            "id": row.id, "arm": row.arm, "pair_id": row.pair_id,
-            "group": row.experiment_group, "window": row.window,
-            "expression": row.expression, "metrics": row.metrics or {},
-        } for row in rows], iteration)
-        if seed is None:
-            logger.info("[MiningAgent] No complete paired genetic seed; continuing ordinary exploration")
-            return 0
-        return await self._run_genetic_optimization(
-            task=task, seed_expression=seed["expression"],
-            seed_metrics=seed["metrics"], dataset_id=dataset_id,
-            fields=fields, run_id=run_id,
-        )
-
     async def _run_genetic_optimization(
         self,
         task: MiningTask,
         seed_expression: str,
         seed_metrics: Dict,
         dataset_id: Optional[str] = None,
-        fields: Optional[List[Dict]] = None,
         run_id: Optional[int] = None,
-    ) -> int:
-        """Run optional genetic optimization and persist every returned WQ result."""
+    ) -> None:
+        """Run optional budget-limited genetic optimization and persist winners."""
         try:
             from backend.genetic_optimizer import OptimizationConfig, run_genetic_optimization
-            from backend.alpha_semantic_validator import AlphaSemanticValidator, compute_expression_hash
-            from backend.agents.graph.nodes.validation import _validate_task_constraints
+            from backend.alpha_semantic_validator import compute_expression_hash
 
             task_config = task.config or {}
             config = OptimizationConfig(
@@ -2865,59 +2526,8 @@ class MiningAgent:
                 turnover_threshold=float(task_config.get("genetic_turnover_threshold", 0.7)),
             )
 
-            research_fields = {str(field) for field in task_config.get("research_only_fields") or []}
-            allowed_field_rows = [
-                field for field in (fields or [])
-                if not research_fields or str(field.get("id") or field.get("name") or "") in research_fields
-            ]
-            allowed_field_ids = [
-                str(field.get("id") or field.get("name") or "") for field in allowed_field_rows
-            ]
-            validator = AlphaSemanticValidator(fields=allowed_field_rows, strict_field_check=True)
-            required_field = str(task_config.get("research_required_field") or "")
-            genetic_results = {}
-            rejection_counts = {}
-            request_count = 0
-            wq_result_count = 0
-
             async def simulate_for_genetic(**kwargs):
-                nonlocal request_count, wq_result_count
-                candidate_expression = str(kwargs.get("expression") or "")
-                if not validator.validate(candidate_expression).valid:
-                    rejection_counts["SEMANTIC"] = rejection_counts.get("SEMANTIC", 0) + 1
-                    return {"success": False, "error": "GENETIC_VALIDATION_FAILED"}
-                if _validate_task_constraints(
-                    expression=candidate_expression,
-                    allowed_fields=allowed_field_ids,
-                    task_config=task_config,
-                    fields=allowed_field_rows,
-                ):
-                    rejection_counts["CONSTRAINT"] = rejection_counts.get("CONSTRAINT", 0) + 1
-                    return {"success": False, "error": "GENETIC_CONSTRAINT_FAILED"}
-                if required_field and not re.search(
-                    rf"(?<![A-Za-z0-9_]){re.escape(required_field)}(?![A-Za-z0-9_])",
-                    candidate_expression,
-                ):
-                    rejection_counts["PAPER_FIELD"] = rejection_counts.get("PAPER_FIELD", 0) + 1
-                    return {"success": False, "error": "GENETIC_REQUIRED_FIELD_MISSING"}
-                existing = await self.db.execute(
-                    select(Alpha.id).where(
-                        Alpha.task_id == task.id,
-                        Alpha.expression_hash == compute_expression_hash(candidate_expression),
-                    ).limit(1)
-                )
-                if existing.scalar_one_or_none() is not None:
-                    rejection_counts["DEDUP"] = rejection_counts.get("DEDUP", 0) + 1
-                    return {"success": False, "error": "GENETIC_DUPLICATE"}
-                source_context = (self.brain.source("GENETIC") if hasattr(self.brain, "source")
-                                  else nullcontext())
-                with source_context:
-                    result = await self.brain.simulate_alpha(**kwargs)
-                if result.get("error") not in {"DUPLICATE", "BUDGET_EXHAUSTED", "TASK_NOT_RUNNING"}:
-                    request_count += 1
-                if result.get("alpha_id"):
-                    wq_result_count += 1
-                    genetic_results[candidate_expression] = result
+                result = await self.brain.simulate_alpha(**kwargs)
                 metrics = result.get("metrics", {}) or {}
                 return {
                     **result,
@@ -2943,40 +2553,24 @@ class MiningAgent:
             )
 
             saved = 0
-            quality_passes = 0
-            optimizer_metadata = {
-                item.get("expression"): item for item in report.get("passed_individuals", [])
-            }
-            for expression, raw_result in genetic_results.items():
-                alpha_id = raw_result.get("alpha_id")
-                if not alpha_id:
+            for individual in report.get("passed_individuals", [])[:5]:
+                expression = individual.get("expression")
+                if not expression:
                     continue
-                exists = await self.db.execute(select(Alpha.id).where(Alpha.alpha_id == alpha_id).limit(1))
-                if exists.scalar_one_or_none() is not None:
-                    continue
-                individual = optimizer_metadata.get(expression) or {}
+
                 metrics = {
-                    **(raw_result.get("metrics") or {}),
-                    "checks": raw_result.get("checks") or [],
-                    "can_submit": raw_result.get("can_submit", False),
-                    "_settings": base_settings,
+                    "sharpe": individual.get("sharpe", 0),
+                    "fitness": individual.get("fitness", 0),
+                    "turnover": individual.get("turnover", 0),
                     "_genetic_overall_fitness": individual.get("overall_fitness", 0),
                     "_genetic_mutation_type": individual.get("mutation_type"),
                     "_genetic_mutation_description": individual.get("mutation_description"),
                 }
 
-                quality_status = await self._quality_status_for_optimization_result(
-                    task=task, expression=expression, metrics=metrics,
-                    fields=allowed_field_rows, alpha_id=alpha_id,
-                )
-                if quality_status != "PASS":
-                    can_optimize, _ = should_optimize({"is": metrics, "os": raw_result.get("os") or {}})
-                    quality_status = "OPTIMIZE" if can_optimize else "FAIL"
-                quality_passes += quality_status == "PASS"
                 self.db.add(Alpha(
                     task_id=task.id,
                     run_id=run_id,
-                    alpha_id=alpha_id,
+                    alpha_id=individual.get("alpha_id") or None,
                     expression=expression,
                     expression_hash=compute_expression_hash(expression),
                     hypothesis=f"Genetic optimization of {seed_expression[:20]}...",
@@ -2989,7 +2583,7 @@ class MiningAgent:
                     neutralization=base_settings["neutralization"],
                     truncation=base_settings["truncation"],
                     settings=base_settings,
-                    quality_status=quality_status,
+                    quality_status="OPTIMIZE",
                     status="simulated",
                     stage="IS",
                     is_sharpe=metrics.get("sharpe"),
@@ -3004,20 +2598,14 @@ class MiningAgent:
                 await self.db.commit()
             logger.info(
                 f"[MiningAgent] Genetic optimization complete | "
-                f"attempted={report.get('attempts_used')} wq_requests={request_count} "
-                f"wq_results={wq_result_count} saved={saved} rejected={rejection_counts}"
+                f"simulations={report.get('simulations_used')} saved={saved}"
             )
-            return quality_passes
         except Exception as e:
-            logger.warning(
-                f"[MiningAgent] Genetic optimization skipped/failed | "
-                f"error_type={type(e).__name__}"
-            )
+            logger.warning(f"[MiningAgent] Genetic optimization skipped/failed: {e}")
             try:
                 await self.db.rollback()
             except Exception:
                 pass
-            return 0
     
     async def _simulate_optimization_variants(
         self,
@@ -3166,21 +2754,18 @@ class MiningAgent:
                     continue
                 expressions = [job[1] for job in batch]
                 try:
-                    source_context = (self.brain.source("OPTIMIZATION") if hasattr(self.brain, "source")
-                                      else nullcontext())
-                    with source_context:
-                        results = await self.brain.simulate_batch(
-                            expressions=expressions,
-                            region=task.region,
-                            universe=task.universe,
-                            delay=int(delay),
-                            decay=decay,
-                            neutralization=neutralization,
-                            truncation=truncation,
-                            test_period=(task.config or {}).get("test_period", "P2Y0M"),
-                            max_wait=int((task.config or {}).get("optimization_simulation_max_wait", 300)),
-                            timeout_grace_seconds=int((task.config or {}).get("optimization_timeout_grace_seconds", 60)),
-                        )
+                    results = await self.brain.simulate_batch(
+                        expressions=expressions,
+                        region=task.region,
+                        universe=task.universe,
+                        delay=int(delay),
+                        decay=decay,
+                        neutralization=neutralization,
+                        truncation=truncation,
+                        test_period=(task.config or {}).get("test_period", "P2Y0M"),
+                        max_wait=int((task.config or {}).get("optimization_simulation_max_wait", 300)),
+                        timeout_grace_seconds=int((task.config or {}).get("optimization_timeout_grace_seconds", 60)),
+                    )
                     batches_run += 1
                 except Exception as e:
                     logger.warning(f"Optimization batch simulation failed: {e}")
@@ -3522,11 +3107,102 @@ class MiningAgent:
         fields: List[Dict],
         alpha_id: Optional[str],
     ) -> str:
-        """Compatibility wrapper around the shared quality evaluator."""
-        from backend.services.alpha_quality_evaluation import evaluate_alpha_quality
-        return await evaluate_alpha_quality(brain=self.brain, task=task, expression=expression,
-                                            metrics=metrics, fields=fields, alpha_id=alpha_id)
+        """Apply the same strict deliverable gates to optimization-chain output."""
+        from backend.alpha_scoring import evaluate_with_brain_checks
+        from backend.agents.graph.nodes.evaluation import _strict_gate_failures
 
+        config = task.config or {}
+        thresholds = {
+            "sharpe_min": float(config.get("sharpe_min", 1.58)),
+            "two_year_sharpe_min": float(config.get("two_year_sharpe_min", 1.6)),
+            "fitness_min": float(config.get("fitness_min", 1.0)),
+            "rn_sharpe_min": float(config.get("rn_sharpe_min", 1.58)),
+            "rn_fitness_min": float(config.get("rn_fitness_min", 1.0)),
+            "margin_min": float(config.get("margin_min", 0.001)),
+            "turnover_min": float(config.get("turnover_min", 0.05)),
+            "turnover_max": float(config.get("turnover_max", 0.30)),
+            "prod_corr_max": float(config.get("prod_corr_max", 0.7)),
+            "self_corr_max": float(config.get("self_corr_max", 0.5)),
+            "ra_fails_max": int(config.get("ra_fails_max", 0)),
+            "max_operator_count": int(config.get("max_operator_count", 5)),
+        }
+        sim_result = {
+            "is": {
+                "sharpe": metrics.get("sharpe", 0),
+                "fitness": metrics.get("fitness", 0),
+                "turnover": metrics.get("turnover", 0),
+                "drawdown": metrics.get("drawdown", 0),
+                "margin": metrics.get("margin", 0),
+                "checks": metrics.get("checks", []),
+            },
+            "riskNeutralized": metrics.get("riskNeutralized", {}),
+            "investabilityConstrained": metrics.get("investabilityConstrained", {}),
+            "checks": metrics.get("checks", []),
+            "can_submit": metrics.get("can_submit", False),
+        }
+        brain_eval = evaluate_with_brain_checks(sim_result)
+        prod_corr = None
+        self_corr = None
+
+        local_failures = _strict_gate_failures(
+            metrics=metrics,
+            brain_failed_checks=brain_eval.get("failed_checks", []),
+            prod_corr=0.0,
+            self_corr=0.0,
+            thresholds=thresholds,
+            expression=expression,
+            fields=fields,
+        )
+        local_failures = [
+            failure
+            for failure in local_failures
+            if failure not in {"PROD_CORR_MISSING", "SELF_CORR_MISSING"}
+            and not failure.startswith("HIGH_PROD_CORR")
+            and not failure.startswith("HIGH_SELF_CORR")
+        ]
+        if local_failures or not alpha_id:
+            metrics.update({
+                "_strict_gate_failures": local_failures,
+                "_hard_pass": False,
+                "_corr_checked": False,
+            })
+            return "OPTIMIZE"
+
+        try:
+            self_corr_result = await self.brain.check_correlation(alpha_id, check_type="SELF")
+            if isinstance(self_corr_result, dict) and self_corr_result.get("max") is not None:
+                self_corr = float(self_corr_result["max"])
+        except Exception as exc:
+            logger.warning(f"[MiningAgent] Optimization SELF correlation failed for {alpha_id}: {exc}")
+
+        if self_corr is not None and self_corr < thresholds["self_corr_max"]:
+            try:
+                prod_corr_result = await self.brain.check_correlation(alpha_id, check_type="PROD")
+                if isinstance(prod_corr_result, dict) and prod_corr_result.get("max") is not None:
+                    prod_corr = float(prod_corr_result["max"])
+            except Exception as exc:
+                logger.warning(f"[MiningAgent] Optimization PROD correlation failed for {alpha_id}: {exc}")
+
+        strict_failures = _strict_gate_failures(
+            metrics=metrics,
+            brain_failed_checks=brain_eval.get("failed_checks", []),
+            prod_corr=prod_corr,
+            self_corr=self_corr,
+            thresholds=thresholds,
+            expression=expression,
+            fields=fields,
+        )
+        metrics.update({
+            "_prod_corr": round(prod_corr, 4) if prod_corr is not None else None,
+            "_self_corr": round(self_corr, 4) if self_corr is not None else None,
+            "_corr_checked": True,
+            "_strict_gate_failures": strict_failures,
+            "_hard_pass": not strict_failures,
+            "_brain_failed_checks": brain_eval.get("failed_checks", []),
+            "_brain_pending_checks": brain_eval.get("pending_checks", []),
+        })
+        return "PASS" if not strict_failures else "OPTIMIZE"
+    
     @property
     def workflow(self) -> MiningWorkflow:
         """Access the underlying LangGraph workflow."""

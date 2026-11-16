@@ -83,11 +83,6 @@ const api = {
     return data
   },
 
-  getTaskSummary: async (id) => {
-    const { data } = await client.get(`/tasks/${id}/summary`)
-    return data
-  },
-
   getTaskTrace: async (id) => {
     const { data } = await client.get(`/tasks/${id}/trace`)
     return data
@@ -125,16 +120,6 @@ const api = {
 
   getRunTrace: async (runId) => {
     const { data } = await client.get(`/runs/${runId}/trace`)
-    return data
-  },
-
-  getRunTracePage: async (runId, params = {}) => {
-    const { data } = await client.get(`/runs/${runId}/trace-page`, { params })
-    return data
-  },
-
-  getResearchReport: async (runId) => {
-    const { data } = await client.get(`/runs/${runId}/research-report`)
     return data
   },
 
@@ -260,11 +245,6 @@ const api = {
 
   testBrainCredentials: async () => {
     const { data } = await client.post('/config/credentials/brain/test')
-    return data
-  },
-
-  testLLMCredentials: async () => {
-    const { data } = await client.post('/config/credentials/llm/test')
     return data
   },
 

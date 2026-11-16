@@ -61,7 +61,6 @@ class AlphaDetailResponse(BaseModel):
     id: int
     alpha_id: Optional[str] = None
     task_id: Optional[int] = None
-    run_id: Optional[int] = None
     expression: str
     hypothesis: Optional[str] = None
     logic_explanation: Optional[str] = None
@@ -195,7 +194,6 @@ async def get_alpha(
         id=alpha.id,
         alpha_id=alpha.alpha_id,
         task_id=alpha.task_id,
-        run_id=alpha.run_id,
         expression=alpha.expression,
         hypothesis=alpha.hypothesis,
         logic_explanation=alpha.logic_explanation,
@@ -278,7 +276,6 @@ async def get_alpha_by_brain_id(
         id=alpha.id,
         alpha_id=alpha.alpha_id,
         task_id=alpha.task_id,
-        run_id=alpha.run_id,
         expression=alpha.expression,
         hypothesis=alpha.hypothesis,
         logic_explanation=alpha.logic_explanation,

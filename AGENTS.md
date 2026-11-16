@@ -1,21 +1,22 @@
-# AIAC local operations
+# Local AIAC development
 
-Codex is the operator for this repository. For every code change requested in natural language, complete the software loop: inspect the current task and Git state, work on a branch, add or update offline tests, run the preflight checks, commit the change, obtain CI evidence, then perform local CD under the owner's standing authorization (2026-11-15). Do not ask for release approval again. Integrate through the writable fork and require successful master-push CI for the exact released commit. Report the commit, checks, release record, and any remaining blocker.
+Owner policy, 2026-11-16: relevant local verification is sufficient for delivery.
+Remote CI runs asynchronously and does not block local deployment. This supersedes
+the old full-preflight, master-push-CI, Beads and OpenSpec prerequisites.
 
-- Preserve the existing AIAC PostgreSQL volume, task IDs, run IDs, checkpoints, and encrypted credentials. Never use `docker compose down -v` on the live project.
-- Keep the old `F:\wq-capability-loop` paused and untouched. AIAC is the only active mining runtime.
-- No CI or smoke check may call a live LLM, WQ simulation, or WQ submission endpoint. Use mocks and isolated databases.
-- For task 14, the user's standing CD policy is to end the current run at a completed PPA batch boundary with no `RESERVED`, `REQUESTED`, or `UNKNOWN` requests, deploy the exact CI-passing commit, then start a new run on the same task ID. Preserve every old run and its results. Do not rotate other tasks; respect their prior PAUSED and STOPPED states. If the safe boundary or release gate fails, do not start a new run.
-- The owner separately approved ONE one-time incomplete-batch isolation for task 14 / run 28. Use only the audited `ppa_isolation` manifest and deployment path: preserve original positions and the incomplete cursor, correct ambiguous FAILED to UNKNOWN with before/after provenance, block all frozen signatures and old-run resume, retain research hold, validate backup/restore and record the release. This permits software CD only; it neither resolves UNKNOWN nor authorizes automatic research restart. Ordinary release gates remain unchanged. Rollback must preserve the hold and must not restore or resume the isolated run.
-- Never print, commit, copy into images, or put in release records the contents of `.env`, `keys.txt`, BRAIN credentials, LLM keys, or `CREDENTIALS_SECRET`.
-- The reviewed historical `keys.txt` is a list of dataset identifiers, not API credentials. Do not claim it requires credential rotation. Scan every new file and change before committing; review any other suspected exposure separately.
-- Deploy only a clean, named commit with successful CI on the writable fork. Record the previous commit, CI run, database revision, backup ID, and pre/post task and run states.
-- API and worker must use the same `.env` and exactly one worker. A release failure restores the previous code version; never auto-restore a live database after writes may have occurred.
+- Read `LOCAL_CONTEXT.md` and the private `runtime/aiac-clean/current.json` pointer.
+- Work on a branch. Preserve other uncommitted work. Commit reviewed changes before deployment.
+- Run tests for the changed behavior. Build the UI when changing it. Do not run unrelated legacy suites.
+- Use `ops/local.ps1` for local Start, Stop, Status, Update and Rollback. No second deployment framework.
+- Code-only releases preserve the database and record the old/new code versions. Never restore a database automatically on code rollback.
+- Schema, data or credential changes require a fresh private backup and restore validation before mutation. The code-only Update command is not a migration runner.
+- Keep completed-batch/zero-pending boundaries when switching running research code. Never rewrite request state to pass a gate.
+- Preserve legacy task12/task14/run28, UNKNOWN requests and frozen-expression exclusions. Cleanup does not reconcile or replay research.
+- Current API/UI only: worker and beat remain off. PR77 is deferred. Do not silently use browser POSTs to bypass the hold.
+- No live WQ/LLM calls in tests, CI or smoke checks. No Alpha submission without explicit instruction.
+- The owner authorizes real backtests by default when defining a future research task, once a bounded executor is separately verified. A review or maintenance request is not a new experiment.
+- PASS requires persisted quality evidence; the research goal additionally requires final PPA_READY for the same Alpha. HTTP success, CI or deployment is not goal acceptance.
+- Credentials and raw research receipts remain private. Never commit `.env`, account details, tokens or database dumps.
 
-Run `python scripts/preflight.py` before code, configuration or agent-policy commits. For a change containing only documentation/archival files, use `python scripts/preflight.py --docs-only` plus OpenSpec validation (`--all --strict` and `--archived --strict`). The classifier refuses executable or policy changes. PR CI uses the entire base-to-head diff; manual dispatch remains full. Plan archive/checklist updates before final verification to avoid a separate completion-only CI loop.
-
-For AIAC research work, read `openspec/specs/aiac-research-goal/spec.md` and run `.\scripts\goal-tools.ps1 bd prime` and `.\scripts\goal-tools.ps1 bd ready` at the start of a session or after context compaction. Link new implementation work to the open Beads goal `aiac-r1e`. OpenSpec holds the acceptance contract; Beads holds dependencies. A code task passing CI does not close the research goal without persisted AIAC quality `PASS` and final `PPA_READY` for the same candidate and WQ Alpha. RD-Agent supplies only the hypothesis–experiment–feedback design pattern; AIAC's ledger decides outcomes.
-
-Use `.\scripts\goal-tools.ps1 resume` for a complete goal/spec/memory/ready handoff. Close the research epic only through `close-goal <persisted-report> --receipt <private-path> --session-id <actual-session-id>`; this validates complete lineage and writes a report hash, commit, session and run/candidate receipt before attempting closure. Supplied report authenticity still depends on the existing read-only ledger export. Do not bypass this through raw Docker/Beads commands. Ordinary child task completion is separate.
-
-For PPA throughput changes, read `docs/ppa_runtime_contract.md` before editing. Trace the actual `theme_ppa_v3` entry point through dispatch and checkpoint recovery, then test the normal path. Record the pre-change and post-change completed WQ requests, active wall time, observed parent peak, and pause time from the same run or comparable windows. Treat tests as offline safety checks; claim a throughput improvement only after live metrics show it. If the same bottleneck survives three iterations, stop changing local branches and trace the full runtime path before another patch. Keep historical transport metadata readable until all old in-flight requests have reconciled.
+Documentation and skill-only edits need format/link or focused workflow checks, not application deployment.
+Do not introduce mandatory governance tools, extra task ledgers or resident agent polling.

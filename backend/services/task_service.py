@@ -10,7 +10,7 @@ Provides methods for:
 
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func
@@ -36,7 +36,6 @@ class TaskCreateData:
     daily_goal: int = 4
     max_iterations: int = 10
     config: Dict[str, Any] = None
-    continuous_mode: bool = False
     
     def __post_init__(self):
         if self.target_datasets is None:
@@ -61,7 +60,6 @@ class TaskSummary:
     max_iterations: int
     created_at: datetime
     updated_at: Optional[datetime]
-    continuous_mode: bool = False
 
 
 @dataclass
@@ -99,7 +97,6 @@ class TaskDetail:
     updated_at: Optional[datetime]
     trace_steps: List[TraceStepInfo]
     alphas_count: int
-    continuous_mode: bool = False
 
 
 @dataclass
@@ -113,9 +110,6 @@ class ExperimentRunInfo:
     started_at: datetime
     finished_at: Optional[datetime]
     error_message: Optional[str]
-    block_reason: Optional[str] = None
-    next_retry_at: Optional[datetime] = None
-    checkpoint: Optional[dict] = None
 
 
 class TaskService(BaseService):
@@ -181,7 +175,6 @@ class TaskService(BaseService):
             max_iterations=task.max_iterations,
             created_at=task.created_at,
             updated_at=task.updated_at,
-            continuous_mode=(task.config or {}).get("continuous_mode") is True,
         )
     
     # =========================================================================
@@ -255,7 +248,6 @@ class TaskService(BaseService):
             updated_at=task.updated_at,
             trace_steps=trace_steps,
             alphas_count=alphas_count,
-            continuous_mode=(task.config or {}).get("continuous_mode") is True,
         )
     
     def _to_trace_info(self, step: TraceStep) -> TraceStepInfo:
@@ -287,21 +279,6 @@ class TaskService(BaseService):
         Returns:
             Created TaskSummary
         """
-        config = dict(data.config or {})
-        continuous_mode = data.continuous_mode or config.get("continuous_mode") is True
-        if config.get("research_protocol") in {"theme_ppa_v1", "theme_ppa_v2", "theme_ppa_v3"}:
-            if continuous_mode and config.get("research_protocol") != "theme_ppa_v3":
-                raise ValueError("PPA_CONTINUOUS_FORBIDDEN")
-            from backend.services.theme_ppa import validate_theme_task
-            reason = validate_theme_task(data)
-            if reason:
-                raise ValueError(reason)
-            config["audit_candidates"] = True
-        if continuous_mode:
-            if config.get("research_protocol") == "paper_news17_ablation_v1":
-                raise ValueError("Fixed 40-request paper protocol cannot run continuously")
-            config["continuous_mode"] = True
-            config["audit_candidates"] = True
         task = MiningTask(
             task_name=data.name,
             region=data.region,
@@ -311,7 +288,7 @@ class TaskService(BaseService):
             agent_mode=data.agent_mode,
             daily_goal=data.daily_goal,
             max_iterations=data.max_iterations,
-            config=config,
+            config=data.config,
             status="PENDING",
         )
         
@@ -340,12 +317,7 @@ class TaskService(BaseService):
         task = await self.task_repo.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
-        if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
-            await self.db.refresh(task, with_for_update=True)
         
-        if (getattr(task, "config", None) or {}).get("ppa_isolation_hold"):
-            raise ValueError("PPA_ISOLATION_RESEARCH_HOLD")
-
         valid_start_statuses = ["PENDING", "PAUSED", "STOPPED", "FAILED", "COMPLETED"]
         if task.status not in valid_start_statuses:
             raise ValueError(f"Cannot start task in {task.status} status")
@@ -415,73 +387,20 @@ class TaskService(BaseService):
         action = action.upper()
         
         if action == "PAUSE":
-            if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
-                await self.db.refresh(task, with_for_update=True)
-            if task.status not in {"RUNNING", "WAITING_LLM"}:
+            if task.status != "RUNNING":
                 raise ValueError("Can only pause running tasks")
-            active_run = (await self.db.execute(
-                select(ExperimentRun).where(ExperimentRun.task_id == task_id)
-                .order_by(ExperimentRun.id.desc()).limit(1)
-            )).scalar_one_or_none()
-            if active_run and active_run.status in {"RUNNING", "WAITING_LLM"}:
-                active_run.status = "PAUSED"
-                active_run.next_retry_at = None
-                if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
-                    from backend.services.ppa_progress import begin_pause
-                    active_run.block_reason = "USER_PAUSED"
-                    active_run.checkpoint = begin_pause(active_run.checkpoint, "USER_PAUSED")
             await self.task_repo.update_status(task_id, "PAUSED")
             await self.commit()
             return {"action": "paused", "new_status": "PAUSED"}
         
         elif action == "RESUME":
-            expected_run_id = (parameters or {}).get("expected_run_id")
-            if expected_run_id is not None:
-                if type(expected_run_id) is not int or expected_run_id < 1:
-                    raise ValueError("PPA_STALE_RUN")
-            if expected_run_id is not None or (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
-                await self.db.refresh(task, with_for_update=True)
-            if (getattr(task, "config", None) or {}).get("ppa_isolation_hold"):
-                raise ValueError("PPA_ISOLATION_RESEARCH_HOLD")
             if task.status != "PAUSED":
                 raise ValueError("Can only resume paused tasks")
-            paused_run = (await self.db.execute(
-                select(ExperimentRun).where(ExperimentRun.task_id == task_id)
-                .order_by(ExperimentRun.id.desc()).limit(1)
-            )).scalar_one_or_none()
-            if expected_run_id is not None and (not paused_run or paused_run.id != expected_run_id):
-                raise ValueError("PPA_STALE_RUN")
-            expected_reason = (parameters or {}).get("expected_block_reason")
-            if expected_reason is not None and (not isinstance(expected_reason, str) or not paused_run
-                                                or paused_run.status != "PAUSED"
-                                                or paused_run.block_reason != expected_reason):
-                raise ValueError("PPA_STALE_RUN")
             await self.task_repo.update_status(task_id, "RUNNING")
-            if paused_run and paused_run.status == "PAUSED":
-                paused_run.status = "RUNNING"
-                paused_run.next_retry_at = None
-                if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
-                    from backend.services.ppa_progress import close_pause
-                    paused_run.checkpoint = {**close_pause(paused_run.checkpoint), "ppa_stop_reason": None}
-                    paused_run.block_reason = None
-                await self.commit()
-                from backend.tasks import run_mining_task
-                queued = run_mining_task.delay(task_id, paused_run.id)
-                paused_run.celery_task_id = queued.id
-                await self.commit()
-                return {"action": "resumed", "new_status": "RUNNING", "run_id": paused_run.id}
             await self.commit()
             return {"action": "resumed", "new_status": "RUNNING"}
         
         elif action == "STOP":
-            waiting_run = (await self.db.execute(
-                select(ExperimentRun).where(ExperimentRun.task_id == task_id)
-                .order_by(ExperimentRun.id.desc()).limit(1)
-            )).scalar_one_or_none()
-            if waiting_run and waiting_run.status == "WAITING_LLM":
-                waiting_run.status = "STOPPED"
-                waiting_run.next_retry_at = None
-                waiting_run.finished_at = datetime.utcnow()
             await self.task_repo.update_status(task_id, "STOPPED")
             await self.commit()
             return {"action": "stopped", "new_status": "STOPPED"}
@@ -493,10 +412,6 @@ class TaskService(BaseService):
         elif action == "ADJUST":
             if not parameters:
                 raise ValueError("ADJUST action requires parameters")
-            if (getattr(task, "config", None) or {}).get("research_protocol") in {"theme_ppa_v2", "theme_ppa_v3"}:
-                await self.db.refresh(task, with_for_update=True)
-            if (getattr(task, "config", None) or {}).get("ppa_isolation_hold") or 'ppa_isolation_hold' in parameters:
-                raise ValueError("PPA_ISOLATION_RESEARCH_HOLD")
             new_config = {**(task.config or {}), **parameters}
             await self.task_repo.update_by_id(task_id, {"config": new_config})
             await self.commit()
@@ -571,9 +486,6 @@ class TaskService(BaseService):
                 started_at=run.started_at,
                 finished_at=run.finished_at,
                 error_message=run.error_message,
-                block_reason=run.block_reason,
-                next_retry_at=run.next_retry_at,
-                checkpoint=run.checkpoint,
             )
             for run in result.items
         ]

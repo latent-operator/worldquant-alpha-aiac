@@ -82,10 +82,7 @@ async def node_validate(state: MiningState, config: RunnableConfig = None) -> Di
     task_config = config.get("configurable", {}).get("task_config", {}) if config else {}
     
     # Reset deduplicator for this batch
-    batch_dedup = ExpressionDeduplicator(
-        similarity_threshold=0.90,
-        allow_parameter_variants=bool(task_config.get("allow_parameter_variants", False)),
-    )
+    batch_dedup = ExpressionDeduplicator(similarity_threshold=0.90)
     
     updated_alphas = []
     valid_count = 0

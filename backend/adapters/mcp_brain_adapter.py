@@ -188,9 +188,6 @@ def _normalize_alpha_result(item: Dict[str, Any]) -> Dict[str, Any]:
         "pending_checks": pending_checks,
         "passed_checks": passed_checks,
         "can_submit": bool(item.get("can_submit", len(failed_checks) == 0 and len(pending_checks) == 0)),
-        "platform_can_submit": item.get("platform_can_submit") is True or alpha.get("canSubmit") is True,
-        "classifications": alpha.get("classifications") or item.get("classifications") or [],
-        "themes": alpha.get("themes") or item.get("themes") or [],
         "is": is_stats,
         "os": os_stats,
         "train": train_stats,
@@ -252,8 +249,6 @@ class MCPBrainAdapter:
         self.fallback = fallback or BrainAdapter()
         self.mcp = mcp_client or MCPToolClient()
         self._fallback_entered = False
-        self._fallback_lock = asyncio.Lock()
-        self.no_fallback_on_simulation_error = False
 
     async def __aenter__(self):
         return self
@@ -264,10 +259,9 @@ class MCPBrainAdapter:
             self._fallback_entered = False
 
     async def _ensure_fallback(self) -> BrainAdapter:
-        async with self._fallback_lock:
-            if not self._fallback_entered:
-                await self.fallback.__aenter__()
-                self._fallback_entered = True
+        if not self._fallback_entered:
+            await self.fallback.__aenter__()
+            self._fallback_entered = True
         return self.fallback
 
     async def enabled_tool_names(self) -> List[str]:
@@ -277,40 +271,6 @@ class MCPBrainAdapter:
     async def simulate_alpha(self, expression: str, **kwargs) -> Dict[str, Any]:
         results = await self.simulate_batch([expression], **kwargs)
         return results[0] if results else {"success": False, "error": "No simulation result returned"}
-
-    supports_request_tracking = True
-
-    async def poll_existing_simulation(self, location: str) -> Dict[str, Any]:
-        fallback = await self._ensure_fallback()
-        return await fallback._wait_for_simulation(location)
-
-    async def simulate_single(self, expression: str, **kwargs) -> Dict[str, Any]:
-        """Explicit one-expression WQ request for audited runs, without padding."""
-        fallback = await self._ensure_fallback()
-        return await fallback.simulate_alpha(expression=expression, retry_post=False, **kwargs)
-
-    async def simulate_audited_pair(self, expressions: List[str], **kwargs) -> List[Dict[str, Any]]:
-        if len(expressions) != 2:
-            raise ValueError("PPA_AUDITED_PAIR_REQUIRES_TWO")
-        return await self.simulate_audited_multi(expressions, **kwargs)
-
-    async def simulate_audited_multi(self, expressions: List[str], **kwargs) -> List[Dict[str, Any]]:
-        if not 2 <= len(expressions) <= 10:
-            raise ValueError("PPA_AUDITED_MULTI_SIZE_INVALID")
-        fallback = await self._ensure_fallback()
-        return await fallback.simulate_batch(expressions, retry_post=False,
-                                             audit_match=True, **kwargs)
-
-    async def poll_existing_multisim(self, location: str, expression: str) -> Dict[str, Any]:
-        from backend.adapters.brain_adapter import match_audited_children
-        fallback = await self._ensure_fallback()
-        parent = await fallback._wait_for_multisim(location)
-        if not parent.get("success"):
-            return {"success": False, "error": "uncertain original parent poll"}
-        matching = [row for row in parent.get("results", []) if
-                    match_audited_children([expression], [row]) is not None]
-        return matching[0] if len(matching) == 1 else {
-            "success": False, "error": "uncertain original child mapping"}
 
     async def simulate_batch(
         self,
@@ -379,13 +339,6 @@ class MCPBrainAdapter:
                     for _ in expressions
                 ]
             except Exception as exc:
-                if self.no_fallback_on_simulation_error:
-                    logger.warning(
-                        "[MCPBrainAdapter] Audited simulation response uncertain; "
-                        f"no fallback ({type(exc).__name__})"
-                    )
-                    return [{"success": False, "error": "uncertain network result"}
-                            for _ in expressions]
                 logger.warning(
                     "[MCPBrainAdapter] MCP create_multi_simulation failed, using fallback: "
                     f"{type(exc).__name__}: {exc!r}"
@@ -404,7 +357,6 @@ class MCPBrainAdapter:
             max_wait=max_wait,
             timeout_grace_seconds=timeout_grace_seconds,
             no_child_timeout_seconds=no_child_timeout_seconds,
-            retry_post=not self.no_fallback_on_simulation_error,
         )
 
     async def check_correlation(self, alpha_id: str, check_type: str = "PROD") -> Dict[str, Any]:
@@ -434,20 +386,6 @@ class MCPBrainAdapter:
         fallback = await self._ensure_fallback()
         payload = await fallback.check_correlation(alpha_id, check_type=check_type)
         return {"max": _max_correlation(payload), "raw": payload, "source": "brain_api"}
-
-    async def check_power_pool_correlation(self, alpha_id: str) -> Dict[str, Any]:
-        """Use the BRAIN Power Pool endpoint; generic MCP correlation is PROD."""
-        fallback = await self._ensure_fallback()
-        payload = await fallback.check_power_pool_correlation(alpha_id)
-        return {"max": _max_correlation(payload), "source": "brain_api_power_pool"}
-
-    async def read_pre_submit_checks(self, alpha_id: str, max_wait: float = 10.0) -> Dict[str, Any]:
-        fallback = await self._ensure_fallback()
-        return await fallback.read_pre_submit_checks(alpha_id, max_wait=max_wait)
-
-    async def get_alpha_evidence(self, alpha_id: str) -> Dict[str, Any]:
-        fallback = await self._ensure_fallback()
-        return await fallback.get_alpha_evidence(alpha_id)
 
     async def get_datasets(self, region: str = "USA", delay: int = 1, universe: str = "TOP3000") -> List[Dict[str, Any]]:
         if await self.mcp.is_tool_enabled("get_datasets"):

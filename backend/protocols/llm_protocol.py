@@ -29,9 +29,6 @@ class LLMResponse:
     parsed: Optional[Dict[str, Any]] = None
     model: str = ""
     tokens_used: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    finish_reason: Optional[str] = None
     latency_ms: int = 0
     success: bool = True
     error: Optional[str] = None

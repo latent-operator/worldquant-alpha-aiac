@@ -5,8 +5,6 @@ Main FastAPI Application with all routers
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
 
 from backend.config import settings
@@ -45,28 +43,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Browser access is limited to the supported local UI and API origins.
-LOCAL_ORIGINS = [f"http://{host}:{port}" for host in ("127.0.0.1", "localhost", "[::1]")
-                 for port in (3000, 5173, 5174, 8000, 8003)]
-
-
-@app.middleware("http")
-async def reject_untrusted_origin(request, call_next):
-    # CORS alone does not stop browsers sending simple cross-origin POSTs.
-    origin = request.headers.get("origin")
-    if origin is not None and origin not in LOCAL_ORIGINS:
-        return JSONResponse({"detail": "Untrusted origin"}, status_code=403)
-    return await call_next(request)
-
-
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=LOCAL_ORIGINS,
-    allow_credentials=False,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "backend"])
 
 # Include all routers
 app.include_router(dashboard.router, prefix=settings.API_V1_STR)

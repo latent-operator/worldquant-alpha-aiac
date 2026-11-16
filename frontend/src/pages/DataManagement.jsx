@@ -14,12 +14,17 @@ import {
   message,
   Tooltip,
   Tabs,
+  Drawer,
+  List,
+  Descriptions
 } from 'antd'
 import {
   DatabaseOutlined,
   SyncOutlined,
   SearchOutlined,
   FunctionOutlined,
+  UnorderedListOutlined,
+  CheckCircleOutlined
 } from '@ant-design/icons'
 import api from '../services/api'
 

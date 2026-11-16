@@ -1,55 +1,98 @@
-"""Public service exports, loaded only when requested.
-
-Importing a pure policy submodule must not initialize SQLAlchemy, configuration,
-credentials or the runtime. Existing ``from backend.services import X`` callers
-keep the same classes and functions through the lazy compatibility exports.
 """
-from importlib import import_module
+Services Module - Business logic layer
 
+This module provides service classes that encapsulate business logic,
+separating it from routers (presentation) and repositories (data access).
 
-_EXPORTS = {
-    'BaseService': 'backend.services.base',
-    'transactional': 'backend.services.base',
-    'AlphaService': 'backend.services.alpha_service',
-    'AlphaListFilters': 'backend.services.alpha_service',
-    'DashboardService': 'backend.services.dashboard_service',
-    'MiningService': 'backend.services.mining_service',
-    'TaskService': 'backend.services.task_service',
-    'TaskCreateData': 'backend.services.task_service',
-    'AnalysisService': 'backend.services.analysis_service',
-    'CredentialsService': 'backend.services.credentials_service',
-    'DatasetService': 'backend.services.dataset_service',
-    'DatasetListFilters': 'backend.services.dataset_service',
-    'DatasetInfo': 'backend.services.dataset_service',
-    'DataFieldInfo': 'backend.services.dataset_service',
-    'KnowledgeService': 'backend.services.knowledge_service',
-    'KnowledgeListFilters': 'backend.services.knowledge_service',
-    'KnowledgeCreateData': 'backend.services.knowledge_service',
-    'KnowledgeUpdateData': 'backend.services.knowledge_service',
-    'KnowledgeEntryInfo': 'backend.services.knowledge_service',
-    'RunService': 'backend.services.run_service',
-    'RunDetailInfo': 'backend.services.run_service',
-    'TraceStepInfo': 'backend.services.run_service',
-    'AlphaListItem': 'backend.services.run_service',
-    'OperatorService': 'backend.services.operator_service',
-    'OperatorListFilters': 'backend.services.operator_service',
-    'OperatorInfo': 'backend.services.operator_service',
-    'ConfigService': 'backend.services.config_service',
-    'ThresholdsConfig': 'backend.services.config_service',
-    'DiversityConfig': 'backend.services.config_service',
-    'OperatorPrefInfo': 'backend.services.config_service',
-}
-__all__ = list(_EXPORTS)
+All services inherit from BaseService and use dependency injection
+for external dependencies.
 
+Usage:
+    from backend.services import AlphaService, DashboardService
+    
+    async def my_handler(db: AsyncSession):
+        service = AlphaService(db)
+        alphas, total = await service.list_alphas(filters)
+"""
 
-def __getattr__(name):
-    module = _EXPORTS.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(module), name)
-    globals()[name] = value
-    return value
+from backend.services.base import BaseService, transactional
 
+# Core Services
+from backend.services.alpha_service import AlphaService, AlphaListFilters
+from backend.services.dashboard_service import DashboardService
+from backend.services.mining_service import MiningService
+from backend.services.task_service import TaskService, TaskCreateData
+from backend.services.analysis_service import AnalysisService
+from backend.services.credentials_service import CredentialsService
 
-def __dir__():
-    return sorted(set(globals()) | set(__all__))
+# New Services (added in refactoring)
+from backend.services.dataset_service import (
+    DatasetService,
+    DatasetListFilters,
+    DatasetInfo,
+    DataFieldInfo,
+)
+from backend.services.knowledge_service import (
+    KnowledgeService,
+    KnowledgeListFilters,
+    KnowledgeCreateData,
+    KnowledgeUpdateData,
+    KnowledgeEntryInfo,
+)
+from backend.services.run_service import (
+    RunService,
+    RunDetailInfo,
+    TraceStepInfo,
+    AlphaListItem,
+)
+from backend.services.operator_service import (
+    OperatorService,
+    OperatorListFilters,
+    OperatorInfo,
+)
+from backend.services.config_service import (
+    ConfigService,
+    ThresholdsConfig,
+    DiversityConfig,
+    OperatorPrefInfo,
+)
+
+__all__ = [
+    # Base
+    "BaseService",
+    "transactional",
+    # Core Services
+    "AlphaService",
+    "AlphaListFilters",
+    "DashboardService",
+    "MiningService",
+    "TaskService",
+    "TaskCreateData",
+    "AnalysisService",
+    "CredentialsService",
+    # Dataset Service
+    "DatasetService",
+    "DatasetListFilters",
+    "DatasetInfo",
+    "DataFieldInfo",
+    # Knowledge Service
+    "KnowledgeService",
+    "KnowledgeListFilters",
+    "KnowledgeCreateData",
+    "KnowledgeUpdateData",
+    "KnowledgeEntryInfo",
+    # Run Service
+    "RunService",
+    "RunDetailInfo",
+    "TraceStepInfo",
+    "AlphaListItem",
+    # Operator Service
+    "OperatorService",
+    "OperatorListFilters",
+    "OperatorInfo",
+    # Config Service
+    "ConfigService",
+    "ThresholdsConfig",
+    "DiversityConfig",
+    "OperatorPrefInfo",
+]

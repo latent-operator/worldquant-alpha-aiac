@@ -10,7 +10,6 @@ Tests cover:
 """
 
 import pytest
-import pytest_asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -75,14 +74,14 @@ class TestDatasetService:
         assert isinstance(categories, list)
     
     @pytest.mark.asyncio
-    async def test_trigger_dataset_sync(self, db_session, monkeypatch):
+    async def test_trigger_dataset_sync(self, db_session, mocker):
         """Test triggering dataset sync."""
         # Mock the celery task
         mock_task = MagicMock()
         mock_task.id = "test-task-id"
-        monkeypatch.setattr(
+        mocker.patch(
             "backend.tasks.sync_datasets_from_brain",
-            MagicMock(delay=MagicMock(return_value=mock_task)),
+            MagicMock(delay=MagicMock(return_value=mock_task))
         )
         
         service = DatasetService(db_session)
@@ -245,13 +244,13 @@ class TestOperatorService:
         assert len(operators) >= 0  # May find or not depending on sample
     
     @pytest.mark.asyncio
-    async def test_trigger_operator_sync(self, db_session, monkeypatch):
+    async def test_trigger_operator_sync(self, db_session, mocker):
         """Test triggering operator sync."""
         mock_task = MagicMock()
         mock_task.id = "sync-task-id"
-        monkeypatch.setattr(
+        mocker.patch(
             "backend.tasks.sync_operators_from_brain",
-            MagicMock(delay=MagicMock(return_value=mock_task)),
+            MagicMock(delay=MagicMock(return_value=mock_task))
         )
         
         service = OperatorService(db_session)
@@ -275,7 +274,9 @@ class TestConfigService:
         thresholds = await service.get_thresholds()
         
         # Should return defaults
-        assert thresholds == ThresholdsConfig()
+        assert thresholds.sharpe_min == 1.58
+        assert thresholds.turnover_max == 0.3
+        assert thresholds.fitness_min == 1.0
     
     @pytest.mark.asyncio
     async def test_update_thresholds(self, db_session):
@@ -357,7 +358,7 @@ class TestConfigService:
 # Fixtures for Tests (add to conftest.py if not present)
 # =============================================================================
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def sample_dataset(db_session):
     """Create a sample dataset for testing."""
     from backend.models import DatasetMetadata
@@ -378,7 +379,7 @@ async def sample_dataset(db_session):
     return dataset
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def sample_operator(db_session):
     """Create a sample operator for testing."""
     from backend.models import Operator

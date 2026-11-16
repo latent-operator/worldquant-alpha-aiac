@@ -1,175 +1,37 @@
-name: AIAC offline checks
-
+name: Current AIAC checks
 on:
   push:
     branches: [master]
-  pull_request:
-    branches: [master]
+    paths-ignore: ['**/*.md']
   workflow_dispatch:
-
 permissions:
   contents: read
-
+concurrency:
+  group: current-aiac-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  change-scope:
+  current-application:
     runs-on: ubuntu-latest
-    outputs:
-      docs_only: ${{ steps.scope.outputs.docs_only }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - id: scope
-        shell: bash
-        env:
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if [ -n "$PR_BASE" ]; then
-            python scripts/check_scope.py --base "$PR_BASE"
-          else
-            python scripts/check_scope.py
-          fi
-
-  documentation:
-    needs: change-scope
-    if: needs.change-scope.outputs.docs_only == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: git diff --check HEAD^ HEAD
-      - run: python scripts/check_repo_hygiene.py
-      - run: npm install -g @fission-ai/openspec@2.0.0
-      - run: openspec validate --all --strict && openspec validate --archived --strict
-        env:
-          OPENSPEC_TELEMETRY: "0"
-
-  governance-report:
-    needs: change-scope
-    if: needs.change-scope.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Install pinned report tools
-        shell: bash
-        run: |
-          python -m pip install ruff==0.17.4
-          npm install --prefix "$RUNNER_TEMP/aiac-governance" --no-save --ignore-scripts --no-audit --no-fund knip@6.45.1
-          npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
-          curl --fail --silent --show-error --location -o "$RUNNER_TEMP/gitleaks.tar.gz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
-          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  '"$RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
-      - name: Report aggregate findings only
-        shell: bash
-        run: python scripts/governance_report.py --knip "$RUNNER_TEMP/aiac-governance/node_modules/.bin/knip" --gitleaks "$RUNNER_TEMP/gitleaks"
-
-  offline-ubuntu:
-    needs: change-scope
-    if: needs.change-scope.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: aiac_ci
-          POSTGRES_PASSWORD: ci_only_password
-          POSTGRES_DB: aiac_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U aiac_ci -d aiac_ci"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
     env:
-      POSTGRES_USER: aiac_ci
-      POSTGRES_PASSWORD: ci_only_password
-      POSTGRES_SERVER: 127.0.0.1
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: aiac_ci
-      BRAIN_EMAIL: ""
-      BRAIN_PASSWORD: ""
-      OPENAI_API_KEY: ""
-      CREDENTIALS_SECRET: ""
-      DEEPEVAL_DISABLE_DOTENV: "1"
-      DEEPEVAL_TELEMETRY_OPT_OUT: "1"
+      OPENAI_API_KEY: offline-test-placeholder
+      OPENAI_BASE_URL: http://127.0.0.1:1/v1
+      BRAIN_EMAIL: ''
+      BRAIN_PASSWORD: ''
+      POSTGRES_PORT: '1'
+      REDIS_URL: redis://127.0.0.1:1/0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.13'
           cache: pip
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: python -m pip install -r requirements.txt -r requirements-eval.txt
-      - name: Install isolated architecture tools
-        shell: bash
-        run: |
-          python -m venv "$RUNNER_TEMP/aiac-architecture"
-          "$RUNNER_TEMP/aiac-architecture/bin/python" -m pip install -r requirements-governance.txt
-          echo "AIAC_GOVERNANCE_BIN=$RUNNER_TEMP/aiac-architecture/bin" >> "$GITHUB_ENV"
-      - run: npm ci
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest backend/tests/unit -q --asyncio-mode=auto
+      - run: python -m unittest ops.test_local integrations.aiac_mcp.test_client -q
+      - run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
         working-directory: frontend
-      - name: Offline preflight
-        run: python scripts/preflight.py
-      - name: Fresh and repeatable migrations
-        run: |
-          python -m alembic -c backend/alembic.ini upgrade head
-          python -m alembic -c backend/alembic.ini upgrade head
-          python -m alembic -c backend/alembic.ini current --check
-
-  offline-windows:
-    needs: change-scope
-    if: needs.change-scope.outputs.docs_only != 'true'
-    runs-on: windows-latest
-    env:
-      BRAIN_EMAIL: ""
-      BRAIN_PASSWORD: ""
-      OPENAI_API_KEY: ""
-      CREDENTIALS_SECRET: ""
-      DEEPEVAL_DISABLE_DOTENV: "1"
-      DEEPEVAL_TELEMETRY_OPT_OUT: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: python -m pip install -r requirements.txt -r requirements-eval.txt
-      - name: Install isolated architecture tools
-        shell: pwsh
-        run: |
-          $governanceHome = Join-Path $env:RUNNER_TEMP 'aiac-architecture'
-          python -m venv $governanceHome
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & (Join-Path $governanceHome 'Scripts/python.exe') -m pip install -r requirements-governance.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "AIAC_GOVERNANCE_BIN=$(Join-Path $governanceHome 'Scripts')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - run: npm ci
-        working-directory: frontend
-      - name: Offline preflight
-        run: python scripts/preflight.py
