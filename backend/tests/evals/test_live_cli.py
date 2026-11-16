@@ -62,11 +62,14 @@ def test_production_gate_uses_only_get_and_counts_pending():
             return httpx.Response(200, json={"request_counts": {"UNKNOWN": 2}, "evidence_pending_count": 2})
         if request.url.path.endswith("tasks/14/summary"):
             return httpx.Response(200, json={"latest_run_id": 28, "status": "PAUSED"})
+        if request.url.path.endswith("activity-inventory"):
+            return httpx.Response(200, json={"complete": True, "runs": []})
         return httpx.Response(200, json=[])
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         state = production_state(client, "http://127.0.0.1:8003/api/v1", 14, 28)
     assert state == {"source_unresolved": 2, "other_active_work": False,
-                     "source_run_current": True}
+                     "source_run_current": True, "source_task_id": 14, "source_run_id": 28,
+                     "source_task_status": "PAUSED", "source_block_reason": None}
     assert calls and set(calls) == {"GET"}
 
 
@@ -78,6 +81,8 @@ def test_production_gate_rejects_missing_or_invalid_derived_evidence(pending):
                                             "evidence_pending_count": pending})
         if request.url.path.endswith("summary"):
             return httpx.Response(200, json={"latest_run_id": 28, "status": "PAUSED"})
+        if request.url.path.endswith("activity-inventory"):
+            return httpx.Response(200, json={"complete": True, "runs": []})
         return httpx.Response(200, json=[])
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         with pytest.raises(ValueError, match="SOURCE_REQUEST_EVIDENCE_MISSING"):

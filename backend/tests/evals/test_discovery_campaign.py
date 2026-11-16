@@ -14,6 +14,11 @@ from backend.evals.discovery_campaign import choose_dataset, freeze_campaign_bat
 from backend.tests.evals.test_live_ppa import empty_exclusions
 
 
+def empty_history(source):
+    from backend.services.research_history import build_history
+    return build_history([], [], source=source)
+
+
 def campaign_and_batch():
     base = fixture_base()
     base.update(region="GLB", universe="TOP3000", delay=1,
@@ -21,7 +26,7 @@ def campaign_and_batch():
                 settings={"decay": 4, "neutralization": "SUBINDUSTRY",
                           "truncation": 0.08, "test_period": "P2Y0M"},
                 turnover_max=0.7, min_positions=10, ppa_corr_max=0.5)
-    campaign = {"campaign_id": "new-dataset-test", "base": base,
+    campaign = {"schema_version": 2, "campaign_id": "new-dataset-test", "base": base,
                 "dataset_id": "pv1", "source_task_id": 14, "source_run_id": 28,
                 "code_commit": "a" * 40, "old_lab_task_id": 1}
     evidence = {"next_phase": "discovery", "phase_limit": 16,
@@ -30,7 +35,8 @@ def campaign_and_batch():
                 "rows": [], "seeds": [], "history_signatures": [],
                 "history_behavioral_signatures": [], "exhausted_templates": [],
                 "evidence_hash": "frozen", "strict_max_operator_count": 5,
-                "isolation_exclusions": empty_exclusions()}
+                "isolation_exclusions": empty_exclusions(),
+                "global_history_exclusions": {"production": empty_history("production"), "lab": empty_history("lab")}}
     cases = [{"case_id": f"case_{window}", "pair_id": "group_1",
               "arm": "CONTROL" if index == 0 else "TREATMENT",
               "dataset_id": "pv1", "mechanism_id": "reversal",
