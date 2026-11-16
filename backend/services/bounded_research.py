@@ -43,6 +43,9 @@ def freeze(config, region, universe, excluded):
         raise ValueError('This release supports proven single simulation mode only')
     candidates = config.get('candidates', [])
     budget = config.get('max_create_requests', 4)
+    concurrency = config.get('max_concurrent', 1)
+    if type(concurrency) is not int or not 1 <= concurrency <= 10:
+        raise ValueError('max_concurrent must be 1..10 within the account allowance')
     if type(budget) is not int or not 1 <= budget <= 16 or not 1 <= len(candidates) <= budget:
         raise ValueError('Freeze 1..16 candidates within max_create_requests')
     if not config.get('hypothesis') or not 1 <= len(config.get('fields', [])) <= 2:
@@ -68,7 +71,8 @@ def freeze(config, region, universe, excluded):
         cases.append({'case_id':str(candidate.get('id', i + 1)), 'payload':payload, 'signature':digest(payload)})
     if len({x['signature'] for x in cases}) != len(cases) or len({x['case_id'] for x in cases}) != len(cases):
         raise ValueError('Duplicate frozen cases')
-    return {'version':1, 'simulation_mode':'single', 'max_create_requests':budget,
+    return {'version':1, 'simulation_mode':'single', 'max_create_requests':budget,'max_concurrent':concurrency,
+            'family':config.get('family','unspecified'),'continuous':config.get('continuous') is True,
             'hypothesis':config['hypothesis'], 'fields':config['fields'], 'cases':cases}
 
 
@@ -148,7 +152,7 @@ def exclusions():
     return {normalized(x.get('expression')) for x in json.loads(raw.decode('utf-8-sig'))}
 
 
-async def start(db, task_id, resume=False, enqueue=None):
+async def start(db, task_id, resume=False, enqueue=None, next_config=None, previous_run_id=None):
     """Atomic run creation plus durable frozen trace positions; shared by UI and CLI."""
     from sqlalchemy import select, text
     from backend.models import MiningTask, ExperimentRun, TraceStep, Alpha
@@ -157,8 +161,13 @@ async def start(db, task_id, resume=False, enqueue=None):
     if task is None or (task.config or {}).get('execution_mode') != MODE:
         raise ValueError('Only fresh bounded tasks may execute; legacy tasks remain frozen')
     runs = (await db.execute(select(ExperimentRun).where(ExperimentRun.task_id==task_id).order_by(ExperimentRun.id.desc()))).scalars().all()
-    if runs:
+    if runs and next_config is None:
         run = runs[0]
+        if resume and run.status=='COMPLETED' and task.status=='PAUSED' and task.config.get('continuous') is True:
+            from backend.tasks.mining_tasks import continue_research
+            task.status='RUNNING'; await db.commit()
+            queued=continue_research.delay(task.id,run.id)
+            return {'task_id':task.id,'run_id':run.id,'celery_task_id':queued.id,'continuation':True}
         if not resume or run.status == 'COMPLETED' or task.status == 'STOPPED':
             raise ValueError('Run already exists; resume the same eligible run explicitly')
         steps = (await db.execute(select(TraceStep).where(TraceStep.run_id==run.id, TraceStep.step_type=='SIMULATE'))).scalars().all()
@@ -167,10 +176,13 @@ async def start(db, task_id, resume=False, enqueue=None):
         if not steps or not run.config_snapshot.get('bounded_manifest'):
             raise ValueError('No bounded recovery manifest')
     else:
-        if resume or task.status != 'PENDING': raise ValueError('Fresh bounded task must be PENDING')
+        if next_config is not None:
+            if not runs or runs[0].id!=previous_run_id or runs[0].status!='COMPLETED' or task.status!='RUNNING' or task.config.get('continuous') is not True:
+                raise ValueError('Continuation is stale, stopped or not authorized')
+        elif resume or task.status != 'PENDING': raise ValueError('Fresh bounded task must be PENDING')
         excluded = exclusions()
         excluded.update(normalized(x) for x in (await db.execute(select(Alpha.expression))).scalars())
-        manifest = freeze(task.config, task.region, task.universe, excluded)
+        manifest = freeze(next_config if next_config is not None else task.config, task.region, task.universe, excluded)
         from validator import ExpressionValidator
         validator = ExpressionValidator()
         for case in manifest['cases']:
@@ -221,6 +233,7 @@ async def report(db, run_id):
             'code_commit':(run.config_snapshot or {}).get('code_commit'),'review':review,
             'manifest_sha256':(run.config_snapshot or {}).get('manifest_sha256'),
             'max_create_requests':manifest.get('max_create_requests'),
+            'max_concurrent':manifest.get('max_concurrent',1),'continuous':manifest.get('continuous',False),
             'sent':sum(bool((s.output_data or {}).get('reserved_at')) for s in steps),
             'requests':counts,'quality_PASS':sum(a.quality_status=='PASS' for a in alphas),
             'PPA_READY':0,'heartbeat':run.strategy_snapshot or {},
@@ -229,7 +242,7 @@ async def report(db, run_id):
                        'is_metrics':a.is_metrics,'settings':a.settings,'checks':a.checks} for a in alphas]}
 
 
-async def run(task_id, run_id, client=None, poll_interval=10, max_seconds=1800, after_receipt=None):
+async def run(task_id, run_id, client=None, poll_interval=5, max_seconds=1800, after_receipt=None):
     """Celery owns the wait. A session advisory lock serializes the account."""
     from sqlalchemy import select, text
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -250,6 +263,7 @@ async def run(task_id, run_id, client=None, poll_interval=10, max_seconds=1800, 
                 if task.status!='RUNNING' or experiment.status!='RUNNING': return {'status':experiment.status}
                 steps = (await db.execute(select(TraceStep).where(TraceStep.run_id==run_id,TraceStep.step_type=='SIMULATE').order_by(TraceStep.step_order))).scalars().all()
                 if len(steps)!=len(manifest['cases']): raise ValueError('Incomplete trace positions')
+                if any(s.input_data!=c for s,c in zip(steps,manifest['cases'])): raise ValueError('Frozen trace changed')
 
                 async def heartbeat():
                     experiment.strategy_snapshot={'worker_heartbeat':now(),'pid':os.getpid(),'execution_mode':MODE}
@@ -275,24 +289,32 @@ async def run(task_id, run_id, client=None, poll_interval=10, max_seconds=1800, 
                         await adapter.__aenter__(); client=adapter.client
                     except Exception as exc:
                         return await pause('AUTH_UNAVAILABLE: '+type(exc).__name__)
-                started=time.monotonic()
-                for step,case in zip(steps,manifest['cases']):
-                    if step.input_data != case: return await pause('Frozen trace changed')
-                    if step.output_data.get('request_status')=='RESULT': continue
-                    await db.refresh(task)
-                    if task.status!='RUNNING': return await pause('Owner intervention preserved')
-                    status=step.output_data.get('request_status')
-                    if status=='NOT_REQUESTED':
+                async def fill_window():
+                    active=sum(s.output_data.get('request_status')=='ACCEPTED' for s in steps)
+                    for step,case in zip(steps,manifest['cases']):
+                        if active>=manifest.get('max_concurrent',1): break
+                        if step.output_data.get('request_status')!='NOT_REQUESTED': continue
+                        await db.refresh(task)
+                        if task.status!='RUNNING': return 'Owner intervention preserved'
                         # Recheck durable exclusions immediately before every create request.
-                        if normalized(case['payload']['regular']) in exclusions(): return await pause('Historical replay blocked')
+                        if normalized(case['payload']['regular']) in exclusions(): return 'Historical replay blocked'
                         sent=sum(bool(s.output_data.get('reserved_at')) for s in steps)
-                        if sent >= manifest['max_create_requests']: return await pause('Request budget exhausted')
+                        if sent >= manifest['max_create_requests']: return 'Request budget exhausted'
                         step.output_data={'request_status':'REQUESTED','reserved_at':now()}; step.status='RUNNING'
                         await heartbeat()  # commit BEFORE crossing the WQ boundary
                         receipt=await post_once(client,case['payload'])
                         step.output_data={**step.output_data,**receipt}; await heartbeat()
                         if after_receipt: await after_receipt(step)
-                        status=receipt['request_status']
+                        if receipt['request_status']!='ACCEPTED': return 'Request '+receipt['request_status']+'; no POST retry'
+                        active+=1
+                    return None
+
+                started=time.monotonic()
+                for step,case in zip(steps,manifest['cases']):
+                    if step.output_data.get('request_status')=='RESULT': continue
+                    reason=await fill_window()
+                    if reason: return await pause(reason)
+                    status=step.output_data.get('request_status')
                     if status!='ACCEPTED': return await pause('Request '+str(status)+'; no POST retry')
                     location=simulation_url(step.output_data['location'])
                     alpha=None
@@ -343,12 +365,15 @@ async def run(task_id, run_id, client=None, poll_interval=10, max_seconds=1800, 
                 await db.refresh(task)
                 if task.status in ('PAUSED','STOPPED'):
                     return await pause('Owner intervention preserved after final RESULT')
-                task.progress_current=sum(s.output_data.get('quality_status')=='PASS' for s in steps)
-                task.current_iteration=1; task.status='COMPLETED'; experiment.status='COMPLETED'
+                passed=sum(s.output_data.get('quality_status')=='PASS' for s in steps)
+                continuous=task.config.get('continuous') is True
+                task.progress_current=(task.progress_current or 0)+passed if continuous else passed
+                task.current_iteration=(task.current_iteration or 0)+1
+                task.status='RUNNING' if continuous else 'COMPLETED'; experiment.status='COMPLETED'
                 experiment.finished_at=datetime.now(timezone.utc).replace(tzinfo=None)
                 db.add(TraceStep(task_id=task_id,run_id=run_id,step_type='EVALUATE',step_order=len(steps)+1,
                                  status='SUCCESS',input_data={'manifest_sha256':digest(manifest)},
-                                 output_data={'RESULT':len(steps),'quality_PASS':task.progress_current,'PPA_READY':0,
+                                 output_data={'RESULT':len(steps),'quality_PASS':passed,'PPA_READY':0,
                                               'next_action':'Review persisted results before another hypothesis batch'}))
                 await heartbeat()
                 return await report(db,run_id)

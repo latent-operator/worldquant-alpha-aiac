@@ -23,7 +23,10 @@ Do not use retired Beads/OpenSpec recovery or old fork tools.
 5. Return actual task/run IDs, budget and `http://127.0.0.1:5174/tasks/ID`, then end ordinary dispatch.
    Celery owns the wait. Do not keep a chat or browser polling. Monitor to completion only when requested.
    Completion automatically saves a review and posts AIAC/Windows notifications; it does not wake
-   a Codex chat, launch the next experiment or submit an Alpha.
+   a Codex chat or submit an Alpha. The owner additionally authorizes an explicitly continuous task
+   with no total request cap and up to 10 simultaneous simulations. Set continuous=true,
+   max_concurrent, verified_fields and a stable family; each batch still freezes its request budget.
+   The original worker then plans subsequent batches from saved reviews. Pause/stop halts continuation.
 
 Use `report --run-id ID` for later review. Explicit `resume --task-id ID` reuses the same eligible
 bounded run; ACCEPTED positions resume GET only. UNKNOWN/REQUESTED/REJECTED/FAILED block resume.

@@ -389,10 +389,10 @@ export default function TaskDetail() {
                 {task.alphas_count || 0}
               </Descriptions.Item>
               <Descriptions.Item label="最大迭代">
-                {task.max_iterations || 1}
+                {task.config?.continuous ? '不设上限（手动暂停/停止）' : task.max_iterations || 1}
               </Descriptions.Item>
               <Descriptions.Item label="当前迭代">
-                {task.current_iteration || 0} / {task.max_iterations || 1}
+                {task.current_iteration || 0} / {task.config?.continuous ? '∞' : task.max_iterations || 1}
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
                 {new Date(task.created_at).toLocaleString()}
@@ -409,9 +409,12 @@ export default function TaskDetail() {
               <Tag style={{ marginLeft: 8 }}>{bounded.review.analysis.decision}</Tag>
               <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{bounded.review.analysis.summary}</Paragraph>
               <Paragraph>{bounded.review.analysis.next_action}</Paragraph>
-              <Text type="secondary">以上为研究建议，未发起下一批。桌面通知：{bounded.review.desktop_status}；质量判定见下方实际结果。</Text>
+              <Text type="secondary">{task.config?.continuous ? '连续研究已授权，后台依据复盘规划下一批。' : '以上为研究建议，未发起下一批。'}桌面通知：{bounded.review.desktop_status}；质量判定见下方实际结果。</Text>
             </div>}
             <Space wrap style={{ marginBottom: 12 }}>
+              <Tag>并发上限 {bounded?.max_concurrent || 1}</Tag>
+              {task.config?.continuous && <Tag color="blue">总回测次数不限</Tag>}
+              {task.config?.continuation_error && <Text type="warning">{task.config.continuation_error}</Text>}
               <Tag color={worker?.worker_online ? 'green' : 'orange'}>Worker {worker?.worker_online ? '在线' : '未确认'}</Tag>
               {bounded?.max_create_requests && <><Tag>请求 {bounded.sent}/{bounded.max_create_requests}</Tag><Tag>结果 {bounded.requests?.RESULT || 0}</Tag><Tag>未知 {bounded.requests?.UNKNOWN || 0}</Tag><Tag>心跳 {bounded.heartbeat?.worker_heartbeat || '等待'}</Tag><Text type="warning">{bounded.error}</Text></>}
             </Space>

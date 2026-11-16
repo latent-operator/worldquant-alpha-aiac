@@ -32,6 +32,8 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
             run_async(complete(run_id))
         except Exception as exc:
             logger.error("Completion review deferred to worker recovery: {}", type(exc).__name__)
+        if result.get('continuous'):
+            continue_research.delay(task_id,run_id)
     return {key: result.get(key) for key in ("status", "run_id", "reason", "error_type")}
 
 
@@ -40,6 +42,12 @@ def review_completed_run(run_id: int, retry_desktop: bool = False):
     from backend.services.completion_review import complete
     result=run_async(complete(run_id,retry_desktop=retry_desktop))
     return {'run_id':run_id,'analysis_status':result.get('analysis_status') if result else 'SKIPPED'}
+
+
+@celery_app.task(name="backend.tasks.continue_research")
+def continue_research(task_id: int, previous_run_id: int):
+    from backend.services.continuous_research import advance
+    return run_async(advance(task_id,previous_run_id))
 
 
 def _resolve_final_status(
@@ -91,6 +99,8 @@ def recover_bounded_runs(**kwargs):
     run_async(recover())
     from backend.services.completion_review import recover as recover_reviews
     run_async(recover_reviews())
+    from backend.services.continuous_research import recover as recover_continuous
+    run_async(recover_continuous())
 
 
 async def _mark_mining_task_failed(

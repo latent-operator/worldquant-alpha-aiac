@@ -139,6 +139,84 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             result=await asyncio.to_thread(run_mining_task.run,8,42)
             self.assertEqual(result['status'],'COMPLETED'); review.assert_awaited_once_with(42)
 
+    async def test_parallel_window_sends_ten_before_polling(self):
+        from backend.models import MiningTask
+        candidates=[{'id':str(i),'expression':f'ts_mean(close, {i+2})'} for i in range(10)]
+        task_id,run_id=await self.create(candidates)
+        # Recreate the frozen manifest to exercise the public configuration path.
+        from backend.models import ExperimentRun,TraceStep
+        from sqlalchemy import select
+        async with self.sessions() as db:
+            task=await db.get(MiningTask,task_id)
+            task.config={**task.config,'max_concurrent':10}
+            manifest=self.b.freeze(task.config,task.region,task.universe,set())
+            run=await db.get(ExperimentRun,run_id)
+            run.config_snapshot={**run.config_snapshot,'bounded_manifest':manifest,'manifest_sha256':self.b.digest(manifest)}
+            await db.commit()
+        payloads={}; calls=[]
+        def transport(request):
+            calls.append(request.method)
+            if request.method=='POST':
+                key=str(len(payloads));payloads[key]=json.loads(request.content)
+                return httpx.Response(201,headers={'Location':self.b.BASE+'/simulations/'+key})
+            key=request.url.path.rsplit('/',1)[-1]
+            if '/simulations/' in request.url.path:return httpx.Response(200,json={'alpha':key})
+            return httpx.Response(200,json={'id':key,'regular':{'code':payloads[key]['regular'],'operatorCount':1},'settings':payloads[key]['settings'],'stage':'IS','status':'UNSUBMITTED','is':{}})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            result=await self.b.run(task_id,run_id,client=client,poll_interval=0)
+        self.assertEqual(calls[:10],['POST']*10)
+        self.assertEqual(calls.count('POST'),10)
+        self.assertEqual(result['requests'],{'RESULT':10})
+
+    async def test_continuation_creates_one_run_and_preserves_stop(self):
+        from backend.services import continuous_research as c
+        from backend.models import MiningTask,TraceStep,ExperimentRun
+        from sqlalchemy import select
+        task_id,run_id=await self.create()
+        async with self.sessions() as db:
+            task=await db.get(MiningTask,task_id)
+            task.config={**task.config,'continuous':True,'verified_fields':['close'],'max_concurrent':1}
+            await db.commit()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(self.transport)) as client:
+            await self.b.run(task_id,run_id,client=client,poll_interval=0)
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(MiningTask,task_id)).status,'RUNNING')
+            db.add(TraceStep(task_id=task_id,run_id=run_id,step_type='REVIEW',step_order=3,status='SUCCESS',output_data={'analysis_status':'COMPLETED','analysis':{'decision':'STOP'}}));await db.commit()
+        plan={'hypothesis':'new mechanism','family':'new-family','fields':['close'],'candidates':[{'id':'next','expression':'ts_mean(close, 12)'}]}
+        with patch.object(c,'propose',AsyncMock(return_value=plan)), patch.object(c,'verify_fields',AsyncMock()), patch('backend.tasks.run_mining_task.delay',return_value=type('Job',(),{'id':'offline-next'})()) as queued:
+            await c.advance(task_id,run_id)
+            await c.advance(task_id,run_id)
+            self.assertEqual(queued.call_count,1)
+        async with self.sessions() as db:
+            runs=(await db.execute(select(ExperimentRun).where(ExperimentRun.task_id==task_id))).scalars().all()
+            self.assertEqual(len(runs),2)
+            self.assertEqual(runs[0].status,'COMPLETED')
+            task=await db.get(MiningTask,task_id);task.status='STOPPED';await db.commit()
+        with patch.object(c,'propose',AsyncMock()) as planner:
+            await c.advance(task_id,runs[-1].id);planner.assert_not_awaited()
+
+    async def test_parallel_429_preserves_accepted_receipts_and_stops_posting(self):
+        from backend.models import MiningTask,ExperimentRun
+        task_id,run_id=await self.create([{'id':str(i),'expression':f'ts_mean(close,{i+2})'} for i in range(4)])
+        async with self.sessions() as db:
+            task=await db.get(MiningTask,task_id)
+            manifest=self.b.freeze({**task.config,'max_concurrent':4},task.region,task.universe,set())
+            run=await db.get(ExperimentRun,run_id)
+            run.config_snapshot={**run.config_snapshot,'bounded_manifest':manifest,'manifest_sha256':self.b.digest(manifest)};await db.commit()
+        calls=[]
+        def transport(request):
+            calls.append(request.method)
+            if len(calls)==3:return httpx.Response(429)
+            return httpx.Response(201,headers={'Location':self.b.BASE+'/simulations/'+str(len(calls))})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            await self.b.run(task_id,run_id,client=client,poll_interval=0)
+        self.assertEqual(calls,['POST']*3)
+        async with self.sessions() as db:
+            result=await self.b.report(db,run_id)
+            self.assertEqual(result['status'],'PAUSED')
+            self.assertEqual(result['requests'],{'ACCEPTED':2,'REJECTED':1,'NOT_REQUESTED':1})
+            with self.assertRaisesRegex(ValueError,'blocks resume'):await self.b.start(db,task_id,resume=True)
+
     async def test_recovery_after_location_only_gets(self):
         task_id,run_id=await self.create()
         class Crash(BaseException): pass

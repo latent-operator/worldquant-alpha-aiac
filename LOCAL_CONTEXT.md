@@ -37,7 +37,13 @@ first obtain and restore-test a private backup. Code rollback never restores a d
 Only update this concise handoff when active runtime or research facts change; results stay in AIAC.
 
 For first bounded activation, use Update -EnableWorker. Subsequent updates retain the flag.
-The fixed batch is serial, at most 16 candidates within its declared create-request budget.
+Each batch freezes at most 16 candidates within its declared create-request budget.
+Owner now authorizes continuous research with no total count limit and confirms a 10-slot WQ allowance.
+continuous=true chains native runs under one task after saved reviews; max_concurrent controls
+up to 10 simultaneous single simulations within the one account-locked worker. The plan is
+generated with the existing LLM, restricted to verified fields and excluded/failed families.
+Pause/stop applies between and during batches; planner failure, UNKNOWN, 429 or auth failure pauses.
+Resume a paused continuous task between completed runs to plan its next run; never replay a completed one.
 Before each POST the trace is REQUESTED; a durable Location becomes ACCEPTED and allows GET-only
 recovery. An interrupted REQUESTED becomes UNKNOWN and is never automatically resent.
 Worker startup only recovers RUNNING bounded runs, never old/paused runs. Quality and PPA remain
@@ -47,5 +53,6 @@ and emits an in-app/Windows notification. Failed review preserves the batch and 
 Worker startup recovers missing completed bounded reviews, without repeating WQ requests.
 Desktop delivery is at most one attempt; ATTEMPTED after interruption means delivery uncertain.
 Notifications are read at /api/v1/runs/bounded/notifications; report includes the saved review.
-This does not wake a Codex chat or start another experiment. Windows settings may suppress toasts.
+This does not wake a Codex chat. Next runs require continuous=true; ordinary bounded batches stop.
+Windows settings may suppress toasts. Current continuous dispatch receipts live under runtime/aiac-clean/continuous-runner.
 Two thin project skills live in `.agents/skills`; ordinary dispatch returns IDs and ends the chat wait.
