@@ -36,9 +36,9 @@ def run_mining_task(self, task_id: int, run_id: int | None = None):
 
 
 @celery_app.task(name="backend.tasks.review_completed_run")
-def review_completed_run(run_id: int):
+def review_completed_run(run_id: int, retry_desktop: bool = False):
     from backend.services.completion_review import complete
-    result=run_async(complete(run_id))
+    result=run_async(complete(run_id,retry_desktop=retry_desktop))
     return {'run_id':run_id,'analysis_status':result.get('analysis_status') if result else 'SKIPPED'}
 
 

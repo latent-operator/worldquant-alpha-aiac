@@ -14,6 +14,8 @@ from backend.services.bounded_research import report, now
 def facts_from(batch):
     return {**{k:batch[k] for k in ('task_id','run_id','code_commit','manifest_sha256','status',
                                   'sent','max_create_requests','requests','quality_PASS','PPA_READY')},
+            'cases':[{'case_id':c['case_id'],'signature':c['signature'],'alpha_id':c.get('alpha_id'),
+                      'expression':c['payload']['regular']} for c in batch['cases']],
             'alphas':[{'alpha_id':a['alpha_id'],'quality_status':a['quality_status'],
                        'settings':a['settings'],'metrics':a['is_metrics'],
                        'failures':a['metrics'].get('failures',[]),'missing':a['metrics'].get('missing',[])}
@@ -62,7 +64,7 @@ async def desktop_notify(task_id, run_id, results, passes, analysis_status):
     return status
 
 
-async def complete(run_id):
+async def complete(run_id, retry_desktop=False):
     async with AsyncSessionLocal() as db:
         # Serializes duplicate deliveries, including the bounded LLM wait. No WQ calls.
         run=(await db.execute(select(ExperimentRun).where(ExperimentRun.id==run_id).with_for_update())).scalar_one_or_none()
@@ -86,7 +88,9 @@ async def complete(run_id):
                 input_data={'manifest_sha256':batch['manifest_sha256']},output_data=output)
             db.add(step); await db.flush()
         output=dict(step.output_data)
-        if output['desktop_status']!='PENDING': return output
+        if output['desktop_status']!='PENDING':
+            if not retry_desktop or output['desktop_status'] not in ('FAILED','DISABLED'): return output
+            output={**output,'previous_desktop_status':output['desktop_status'],'desktop_status':'PENDING'}
         # Commit the durable in-app notification and an at-most-once desktop attempt first.
         step.output_data={**output,'desktop_status':'ATTEMPTED'}
         await db.commit()

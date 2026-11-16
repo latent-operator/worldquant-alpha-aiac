@@ -81,6 +81,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
                 await self.b.run(task_id,run_id,client=client,poll_interval=0)
             first=await c.complete(run_id); again=await c.complete(run_id)
             self.assertEqual(first['facts']['quality_PASS'],0)
+            self.assertEqual(first['facts']['cases'][0]['alpha_id'],'offlineAlpha')
             self.assertEqual(again['desktop_status'],'SHOWN')
             llm.assert_awaited_once(); notify.assert_awaited_once()
         async with self.sessions() as db:
@@ -97,6 +98,11 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             result=await c.complete(run_id)
         self.assertEqual(result['analysis_status'],'FAILED')
         self.assertEqual(result['desktop_status'],'FAILED')
+        with patch.object(c,'analyze',AsyncMock()) as llm, patch.object(c,'desktop_notify',AsyncMock(return_value='SUBMITTED')):
+            retried=await c.complete(run_id,retry_desktop=True)
+            self.assertEqual(retried['desktop_status'],'SUBMITTED')
+            self.assertEqual(retried['previous_desktop_status'],'FAILED')
+            llm.assert_not_awaited()
         async with self.sessions() as db:
             self.assertEqual((await self.b.report(db,run_id))['status'],'COMPLETED')
             self.assertEqual((await c.notifications(db))[0]['run_id'],run_id)
