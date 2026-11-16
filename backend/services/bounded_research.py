@@ -48,7 +48,7 @@ def freeze(config, region, universe, excluded):
         raise ValueError('max_concurrent must be 1..10 within the account allowance')
     if type(budget) is not int or not 1 <= budget <= 16 or not 1 <= len(candidates) <= budget:
         raise ValueError('Freeze 1..16 candidates within max_create_requests')
-    if not config.get('hypothesis') or not 1 <= len(config.get('fields', [])) <= 2:
+    if not isinstance(config.get('hypothesis'),str) or not config['hypothesis'].strip() or not 1 <= len(config.get('fields', [])) <= 2:
         raise ValueError('Economic hypothesis and verified fields are required')
     cases = []
     for i, candidate in enumerate(candidates):

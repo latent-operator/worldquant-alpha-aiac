@@ -195,6 +195,14 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(c,'propose',AsyncMock()) as planner:
             await c.advance(task_id,runs[-1].id);planner.assert_not_awaited()
 
+    async def test_planner_structured_hypothesis_is_saved_as_text(self):
+        from backend.services.continuous_research import propose
+        from types import SimpleNamespace
+        service=SimpleNamespace(call=AsyncMock(return_value=SimpleNamespace(success=True,parsed={'hypothesis':{'mechanism':'risk premium'}})),client=SimpleNamespace(close=AsyncMock()))
+        with patch('backend.agents.services.llm_service.LLMService',return_value=service):
+            plan=await propose({})
+        self.assertEqual(json.loads(plan['hypothesis']),{'mechanism':'risk premium'})
+
     async def test_parallel_429_preserves_accepted_receipts_and_stops_posting(self):
         from backend.models import MiningTask,ExperimentRun
         task_id,run_id=await self.create([{'id':str(i),'expression':f'ts_mean(close,{i+2})'} for i in range(4)])

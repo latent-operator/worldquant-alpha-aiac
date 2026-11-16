@@ -37,7 +37,10 @@ async def propose(context):
                 '避免 excluded_expressions，不把更多回测或HTTP成功当作质量。无总批次数上限，但不得绕过限流、重复提交或提交Alpha。'),
             user_prompt=json.dumps(context,ensure_ascii=False),temperature=.5,json_mode=True,max_tokens=6000),timeout=90)
         if not response.success or not isinstance(response.parsed,dict):raise ValueError('Planner returned no valid JSON')
-        return response.parsed
+        plan=response.parsed
+        if isinstance(plan.get('hypothesis'),dict):
+            plan['hypothesis']=json.dumps(plan['hypothesis'],ensure_ascii=False)
+        return plan
     finally: await service.client.close()
 
 
