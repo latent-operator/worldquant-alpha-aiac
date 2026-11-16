@@ -96,7 +96,9 @@ async def test_unsent_frozen_case_blocks_posts_and_completion(async_engine, monk
 
 
 def clear_state():
-    return {"source_unresolved": 0, "other_active_work": False,
+    from backend.services.research_history import build_history
+    return {"production_history": build_history([], [], source="production"),
+            "source_run_current": True, "source_unresolved": 0, "other_active_work": False,
             "platform_verified": True, "isolation_exclusions": empty_exclusions()}
 
 

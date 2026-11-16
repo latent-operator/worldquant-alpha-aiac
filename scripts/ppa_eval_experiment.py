@@ -108,22 +108,32 @@ def production_state(client: httpx.Client, base_url: str, task_id: int, run_id: 
     summary = client.get(f"{base}/tasks/{task_id}/summary")
     summary.raise_for_status()
     active = []
-    for offset in range(0, 10000, 100):
-        response = client.get(f"{base}/tasks", params={"status": "RUNNING", "limit": 100,
-                                                        "offset": offset})
-        response.raise_for_status()
-        page = response.json()
-        active.extend(page)
-        if len(page) < 100:
-            break
-    else:
-        raise ValueError("ACTIVE_TASK_LIST_UNBOUNDED")
+    for status in ("RUNNING", "WAITING_LLM"):
+        for offset in range(0, 10000, 100):
+            response = client.get(f"{base}/tasks", params={"status": status, "limit": 100,
+                                                            "offset": offset})
+            response.raise_for_status()
+            page = response.json()
+            if not isinstance(page, list):
+                raise ValueError("ACTIVE_TASK_LIST_INVALID")
+            active.extend(page)
+            if len(page) < 100:
+                break
+        else:
+            raise ValueError("ACTIVE_TASK_LIST_UNBOUNDED")
+    response = client.get(f"{base}/runs/activity-inventory")
+    response.raise_for_status()
+    inventory = response.json()
+    if not isinstance(inventory, dict) or inventory.get("complete") is not True or not isinstance(inventory.get("runs"), list):
+        raise ValueError("ACTIVE_RUN_LIST_INVALID")
     pending = report.json().get("evidence_pending_count")
     if type(pending) is not int or pending < 0:
         raise ValueError("SOURCE_REQUEST_EVIDENCE_MISSING")
     task = summary.json()
     return {"source_unresolved": pending,
-            "other_active_work": bool(active),
+            "source_task_id": task_id, "source_run_id": run_id,
+            "source_task_status": task.get("status"), "source_block_reason": task.get("block_reason"),
+            "other_active_work": bool(active or inventory["runs"]),
             "source_run_current": task.get("latest_run_id") == run_id
                                   and task.get("status") in {"PAUSED", "STOPPED"}}
 

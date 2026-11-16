@@ -28,6 +28,32 @@ router = APIRouter(
 _ppa_reconcile_locks: dict[int, asyncio.Lock] = {}
 
 
+@router.get("/activity-inventory")
+async def get_activity_inventory(db: AsyncSession = Depends(get_db)):
+    """Bounded active run identities, including queued and model-waiting work."""
+    from sqlalchemy import select
+    from backend.models import ExperimentRun
+    rows = (await db.execute(select(ExperimentRun.id, ExperimentRun.task_id, ExperimentRun.status)
+        .where(ExperimentRun.status.in_(("PENDING", "QUEUED", "RUNNING", "WAITING_LLM")))
+        .order_by(ExperimentRun.id).limit(10001))).all()
+    if len(rows) > 10000:
+        raise HTTPException(status_code=409, detail="ACTIVE_RUN_LIST_UNBOUNDED")
+    return {"complete": True, "runs": [dict(row._mapping) for row in rows]}
+
+
+@router.get("/{run_id}/research-history-exclusions")
+async def get_research_history(run_id: int, db: AsyncSession = Depends(get_db)):
+    """Complete production history hashes; no expressions or credentials leave this endpoint."""
+    from backend.models import ExperimentRun
+    from backend.services.research_history import export_history
+    if await db.get(ExperimentRun, run_id) is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    try:
+        return await export_history(db, source="production")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 @router.get("/{run_id}/research-candidates")
 async def get_research_candidates(
     run_id: int,
