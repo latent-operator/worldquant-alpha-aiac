@@ -130,8 +130,8 @@ export default function TaskDetail() {
     const bestSharpe = sharpes.length ? Math.max(...sharpes) : null
 
     const top = [...runAlphas]
-      .filter(a => typeof a.metrics?._score === 'number')
-      .sort((a, b) => (b.metrics?._score ?? -Infinity) - (a.metrics?._score ?? -Infinity))
+      .filter(a => typeof a.metrics?.sharpe === 'number')
+      .sort((a, b) => (b.metrics?.sharpe ?? -Infinity) - (a.metrics?.sharpe ?? -Infinity))
       .slice(0, 8)
 
     return {
@@ -144,6 +144,16 @@ export default function TaskDetail() {
     }
   }, [runAlphas])
 
+  const { data: bounded } = useQuery({
+    queryKey: ['boundedRun', selectedRunId],
+    queryFn: async () => { const r = await fetch(`/api/v1/runs/${selectedRunId}/bounded`); if (!r.ok) throw new Error('Report unavailable'); return r.json() },
+    enabled: !!selectedRunId, refetchInterval: task?.status === 'RUNNING' ? 10000 : false,
+  })
+  const { data: worker } = useQuery({
+    queryKey: ['boundedWorker'],
+    queryFn: async () => { const r = await fetch('/api/v1/runs/bounded/health'); if (!r.ok) throw new Error('Worker unavailable'); return r.json() },
+    refetchInterval: 20000,
+  })
   const queryClient = useQueryClient()
 
   // Start task mutation
@@ -394,6 +404,10 @@ export default function TaskDetail() {
           </Card>
 
           <Card className="glass-card" title="本次 Run 摘要" style={{ marginTop: 16 }}>
+            <Space wrap style={{ marginBottom: 12 }}>
+              <Tag color={worker?.worker_online ? 'green' : 'orange'}>Worker {worker?.worker_online ? '在线' : '未确认'}</Tag>
+              {bounded?.max_create_requests && <><Tag>请求 {bounded.sent}/{bounded.max_create_requests}</Tag><Tag>结果 {bounded.requests?.RESULT || 0}</Tag><Tag>未知 {bounded.requests?.UNKNOWN || 0}</Tag><Tag>心跳 {bounded.heartbeat?.worker_heartbeat || '等待'}</Tag><Text type="warning">{bounded.error}</Text></>}
+            </Space>
             {!selectedRunId ? (
               <Empty description="未选择 Run" />
             ) : isRunAlphasLoading ? (

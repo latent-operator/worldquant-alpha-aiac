@@ -33,5 +33,6 @@ jobs:
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pytest backend/tests/unit -q --asyncio-mode=auto
       - run: python -m unittest ops.test_local integrations.aiac_mcp.test_client -q
+      - run: python -m unittest discover -s backend/tests/bounded -q
       - run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
         working-directory: frontend

@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][ValidateSet('Start','Stop','Status','Update','Rollback')][string]$Action,
     [string]$RuntimeHome='G:\安装\claude\runtime\aiac-clean',
-    [string]$Commit='HEAD'
+    [string]$Commit='HEAD',
+    [switch]$EnableWorker
 )
 $ErrorActionPreference='Stop'
 $root=(Resolve-Path -LiteralPath $RuntimeHome).Path
@@ -13,7 +14,7 @@ if (-not $mutex.WaitOne(0)) { $mutex.Dispose(); throw 'Another local operation i
 function Native-OK { if ($LASTEXITCODE -ne 0) { throw 'Local command failed; current release preserved' } }
 function Read-Release { Get-Content -LiteralPath $pointer -Raw | ConvertFrom-Json }
 function Stop-Services {
-    foreach ($service in @('api','ui')) {
+    foreach ($service in @('worker','api','ui')) {
         $pidPath=Join-Path $root "$service.pid.json"
         if (-not (Test-Path -LiteralPath $pidPath)) { continue }
         $saved=Get-Content -LiteralPath $pidPath -Raw | ConvertFrom-Json
@@ -28,15 +29,21 @@ function Stop-Services {
 function Start-Services {
     $release=Read-Release
     if (Test-Path -LiteralPath (Join-Path $root 'maintenance.lock')) { throw 'Maintenance hold active' }
-    foreach ($service in @('api','ui')) {
+    $services=@('api','ui')
+    if ($release.worker_enabled) {$services += 'worker'}
+    foreach ($service in $services) {
         $pidPath=Join-Path $root "$service.pid.json"
         if (Test-Path -LiteralPath $pidPath) {
             $saved=Get-Content -LiteralPath $pidPath -Raw | ConvertFrom-Json
             $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$($saved.pid)" -ErrorAction SilentlyContinue
             if ($proc -and $proc.CommandLine -and $proc.CommandLine.Contains($root) -and $proc.CommandLine.Contains("--service $service") -and $proc.CommandLine.Contains('ops.launch')) { continue }
         }
-        $port=if ($service -eq 'api') { $release.api_port } else { $release.ui_port }
-        if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw "Port $port already occupied" }
+        $port=if ($service -eq 'api') { $release.api_port } elseif($service -eq 'ui') { $release.ui_port } else { 0 }
+        if ($port -and (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) { throw "Port $port already occupied" }
+        if($service -eq 'worker'){
+            $others=@(Get-CimInstance Win32_Process | Where-Object {$_.CommandLine -and $_.CommandLine.Contains('ops.launch') -and $_.CommandLine.Contains('--service worker') -and $_.CommandLine.Contains($root)})
+            if($others){throw 'A worker already exists outside the saved PID'}
+        }
         $arguments='-m ops.launch --runtime "'+$root+'" --service '+$service
         $child=Start-Process -FilePath $release.python_executable -ArgumentList $arguments -WorkingDirectory $code -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $root "$service.out.log") -RedirectStandardError (Join-Path $root "$service.err.log")
         @{pid=$child.Id;service=$service;commit=$release.commit} | ConvertTo-Json | Set-Content -LiteralPath $pidPath
@@ -56,7 +63,13 @@ function Wait-Health {
         try {
             $api=Invoke-RestMethod "http://127.0.0.1:$($release.api_port)/health" -TimeoutSec 2
             $ui=Invoke-RestMethod "http://127.0.0.1:$($release.ui_port)/__ui_health" -TimeoutSec 2
-            if ($api.status -eq 'ok' -and $ui.commit -eq $release.commit) { return }
+            if ($api.status -eq 'ok' -and $ui.commit -eq $release.commit) {
+                if($release.worker_enabled){
+                    $worker=Invoke-RestMethod "http://127.0.0.1:$($release.api_port)/api/v1/runs/bounded/health" -TimeoutSec 5
+                    if(-not $worker.worker_online){continue}
+                }
+                return
+            }
         } catch {}
         Start-Sleep -Seconds 2
     }
@@ -66,7 +79,7 @@ try {
     if ($Action -eq 'Status') {
         $release=Read-Release
         $release | Select-Object source,commit,worker_enabled
-        foreach ($service in @('api','ui')) {
+        foreach ($service in @('api','ui','worker')) {
             $pidPath=Join-Path $root "$service.pid.json"
             $running=$false
             if (Test-Path -LiteralPath $pidPath) {
@@ -97,6 +110,12 @@ try {
                 try { & npm.cmd ci --ignore-scripts --no-audit --no-fund; Native-OK; & npm.cmd run build; Native-OK } finally { Pop-Location }
             }
             $next=[pscustomobject]@{source=$source;commit=$sha;python_executable=$old.python_executable;ui_dist=(Join-Path $source 'frontend/dist');api_port=$old.api_port;ui_port=$old.ui_port;worker_enabled=$false;research_hold=$true;delivery='local-verified-ci-asynchronous'}
+            if($EnableWorker -or $old.worker_enabled){
+                if(-not (Test-Path -LiteralPath (Join-Path $source 'backend/services/bounded_research.py'))){throw 'This release has no bounded executor'}
+                $history=Join-Path $root 'research-20261116-fundamental72/history-exclusions.json'
+                $next.worker_enabled=$true
+                $next | Add-Member -NotePropertyMembers @{execution_mode='bounded';history_exclusions=$history;history_exclusions_sha256=(Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash.ToLower()}
+            }
         } else { $next=Get-Content -LiteralPath (Join-Path $root 'previous.json') -Raw | ConvertFrom-Json }
         $record=[ordered]@{at=(Get-Date).ToUniversalTime().ToString('o');action=$Action;before=$old;after=$next;database_restore=$false;status='PREPARING'}
         $recordPath=Join-Path $root ('change-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.json')
@@ -106,6 +125,11 @@ try {
             $next | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $pointer
             Start-Services; Wait-Health
             $old | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $root 'previous.json')
+            if(Get-ScheduledTask -TaskName 'AIAC-Clean-Ensure' -ErrorAction SilentlyContinue){
+                $manager=Join-Path $next.source 'ops/local.ps1'
+                $action=New-ScheduledTaskAction -Execute (Get-Command pwsh).Source -Argument ('-NoProfile -WindowStyle Hidden -File "'+$manager+'" -Action Start -RuntimeHome "'+$root+'"')
+                Set-ScheduledTask -TaskName 'AIAC-Clean-Ensure' -Action $action | Out-Null
+            }
             $record.status='RELEASED'
         } catch {
             Stop-Services

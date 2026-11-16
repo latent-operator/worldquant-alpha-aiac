@@ -2,7 +2,7 @@
 
 本地维护入口见 [LOCAL_CONTEXT.md](LOCAL_CONTEXT.md)。本 fork 当前应用基于已重装的上游
 `8ffda431`；旧研究协调器与治理工具链已退出活动代码。相关本地验证通过即可交付，
-远端 CI 异步运行。使用 `ops/local.ps1` 管理本地 API/UI；worker 与新回测保持暂停。
+远端 CI 异步运行。使用 `ops/local.ps1` 管理本地服务；有预算的原生 worker 是否启用以部署指针为准。
 原项目介绍保留如下，其中自动挖掘功能不代表本地已启用。
 
 <div align="center">

@@ -29,6 +29,11 @@ def get_run_service(db: AsyncSession = Depends(get_db)) -> RunService:
     return RunService(db)
 
 
+@router.get("/bounded/health")
+async def bounded_health():
+    from backend.services.bounded_research import health
+    return await health()
+
 # =============================================================================
 # RESPONSE MODELS
 # =============================================================================
@@ -187,3 +192,12 @@ async def get_run_alphas(
     ]
     
     return AlphaListResponse(items=items, total=result.total)
+
+
+@router.get("/{run_id}/bounded")
+async def bounded_report(run_id: int, db: AsyncSession = Depends(get_db)):
+    from backend.services.bounded_research import report
+    try:
+        return await report(db, run_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
