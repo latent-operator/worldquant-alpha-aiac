@@ -127,8 +127,8 @@ try {
             $old | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $root 'previous.json')
             if(Get-ScheduledTask -TaskName 'AIAC-Clean-Ensure' -ErrorAction SilentlyContinue){
                 $manager=Join-Path $next.source 'ops/local.ps1'
-                $action=New-ScheduledTaskAction -Execute (Get-Command pwsh).Source -Argument ('-NoProfile -WindowStyle Hidden -File "'+$manager+'" -Action Start -RuntimeHome "'+$root+'"')
-                Set-ScheduledTask -TaskName 'AIAC-Clean-Ensure' -Action $action | Out-Null
+                $ensureAction=New-ScheduledTaskAction -Execute (Get-Command pwsh).Source -Argument ('-NoProfile -WindowStyle Hidden -File "'+$manager+'" -Action Start -RuntimeHome "'+$root+'"')
+                Set-ScheduledTask -TaskName 'AIAC-Clean-Ensure' -Action $ensureAction | Out-Null
             }
             $record.status='RELEASED'
         } catch {
