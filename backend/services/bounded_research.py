@@ -242,7 +242,7 @@ async def report(db, run_id):
                        'is_metrics':a.is_metrics,'settings':a.settings,'checks':a.checks} for a in alphas]}
 
 
-async def run(task_id, run_id, client=None, poll_interval=5, max_seconds=1800, after_receipt=None):
+async def run(task_id, run_id, client=None, poll_interval=5, max_seconds=1800, after_receipt=None, settle=False):
     """Celery owns the wait. A session advisory lock serializes the account."""
     from sqlalchemy import select, text
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -260,10 +260,25 @@ async def run(task_id, run_id, client=None, poll_interval=5, max_seconds=1800, a
                 manifest = (experiment.config_snapshot or {}).get('bounded_manifest')
                 if not manifest or digest(manifest)!=experiment.config_snapshot.get('manifest_sha256'):
                     raise ValueError('Missing or changed frozen manifest')
-                if task.status!='RUNNING' or experiment.status!='RUNNING': return {'status':experiment.status}
+                if not settle and (task.status!='RUNNING' or experiment.status!='RUNNING'): return {'status':experiment.status}
                 steps = (await db.execute(select(TraceStep).where(TraceStep.run_id==run_id,TraceStep.step_type=='SIMULATE').order_by(TraceStep.step_order))).scalars().all()
                 if len(steps)!=len(manifest['cases']): raise ValueError('Incomplete trace positions')
                 if any(s.input_data!=c for s,c in zip(steps,manifest['cases'])): raise ValueError('Frozen trace changed')
+                if settle:
+                    # Explicit operational collection after a definitive concurrency rejection.
+                    # Never reconcile UNKNOWN or legacy runs; never send a simulation POST.
+                    if (not manifest.get('continuous') or task.status not in ('PAUSED','STOPPED') or
+                        any(s.output_data.get('request_status') not in ('ACCEPTED','RESULT','REJECTED','NOT_REQUESTED','CANCELLED') for s in steps) or
+                        not any(s.output_data.get('request_status')=='REJECTED' and s.output_data.get('http_status')==429
+                                and 'CONCURRENT_SIMULATION_LIMIT_EXCEEDED' in s.output_data.get('body','') for s in steps)):
+                        raise ValueError('Only explicit concurrency-rejected continuous runs can be settled')
+                    task.status='STOPPED';experiment.status='STOPPED'
+                    for s in steps:
+                        if s.output_data.get('request_status')=='NOT_REQUESTED':
+                            s.output_data={**s.output_data,'request_status':'CANCELLED','cancelled_at':now(),
+                                           'reason':'Unsent candidate cancelled after concurrency rejection'}
+                            s.status='CANCELLED'
+                    await db.commit()
 
                 async def heartbeat():
                     experiment.strategy_snapshot={'worker_heartbeat':now(),'pid':os.getpid(),'execution_mode':MODE}
@@ -312,7 +327,8 @@ async def run(task_id, run_id, client=None, poll_interval=5, max_seconds=1800, a
                 started=time.monotonic()
                 for step,case in zip(steps,manifest['cases']):
                     if step.output_data.get('request_status')=='RESULT': continue
-                    reason=await fill_window()
+                    if settle and step.output_data.get('request_status') in ('REJECTED','CANCELLED'):continue
+                    reason=None if settle else await fill_window()
                     if reason: return await pause(reason)
                     status=step.output_data.get('request_status')
                     if status!='ACCEPTED': return await pause('Request '+str(status)+'; no POST retry')
@@ -320,7 +336,7 @@ async def run(task_id, run_id, client=None, poll_interval=5, max_seconds=1800, a
                     alpha=None
                     while time.monotonic()-started < max_seconds:
                         await db.refresh(task)
-                        if task.status!='RUNNING': return await pause('Owner intervention preserved; known Location retained')
+                        if not settle and task.status!='RUNNING': return await pause('Owner intervention preserved; known Location retained')
                         try:
                             response=await client.get(location,follow_redirects=False,timeout=30)
                             step.output_data={**step.output_data,'last_poll_at':now(),'last_poll_status':response.status_code}
@@ -363,6 +379,11 @@ async def run(task_id, run_id, client=None, poll_interval=5, max_seconds=1800, a
                                       'aiac_alpha_id':a.id,'quality_status':verdict,'metrics':m,'failures':failures,'missing':missing}
                     step.status='SUCCESS'; await heartbeat()
                 await db.refresh(task)
+                if settle:
+                    experiment.finished_at=datetime.now(timezone.utc).replace(tzinfo=None)
+                    experiment.error_message='Concurrency rejection retained; known results collected, unsent cases cancelled'
+                    await heartbeat()
+                    return await report(db,run_id)
                 if task.status in ('PAUSED','STOPPED'):
                     return await pause('Owner intervention preserved after final RESULT')
                 passed=sum(s.output_data.get('quality_status')=='PASS' for s in steps)

@@ -201,12 +201,18 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             task=await db.get(MiningTask,task_id)
             manifest=self.b.freeze({**task.config,'max_concurrent':4},task.region,task.universe,set())
+            manifest['continuous']=True
             run=await db.get(ExperimentRun,run_id)
             run.config_snapshot={**run.config_snapshot,'bounded_manifest':manifest,'manifest_sha256':self.b.digest(manifest)};await db.commit()
-        calls=[]
+        calls=[];payloads={}
         def transport(request):
             calls.append(request.method)
-            if len(calls)==3:return httpx.Response(429)
+            if request.method=='GET':
+                key=request.url.path.rsplit('/',1)[-1]
+                if '/simulations/' in request.url.path:return httpx.Response(200,json={'alpha':key})
+                return httpx.Response(200,json={'id':key,'regular':{'code':payloads[key]['regular'],'operatorCount':1},'settings':payloads[key]['settings'],'stage':'IS','status':'UNSUBMITTED','is':{}})
+            if len(calls)==3:return httpx.Response(429,json={'detail':'CONCURRENT_SIMULATION_LIMIT_EXCEEDED'})
+            payloads[str(len(calls))]=json.loads(request.content)
             return httpx.Response(201,headers={'Location':self.b.BASE+'/simulations/'+str(len(calls))})
         async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
             await self.b.run(task_id,run_id,client=client,poll_interval=0)
@@ -216,6 +222,11 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['status'],'PAUSED')
             self.assertEqual(result['requests'],{'ACCEPTED':2,'REJECTED':1,'NOT_REQUESTED':1})
             with self.assertRaisesRegex(ValueError,'blocks resume'):await self.b.start(db,task_id,resume=True)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            settled=await self.b.run(task_id,run_id,client=client,poll_interval=0,settle=True)
+        self.assertEqual(calls.count('POST'),3)
+        self.assertEqual(settled['status'],'STOPPED')
+        self.assertEqual(settled['requests'],{'RESULT':2,'REJECTED':1,'CANCELLED':1})
 
     async def test_recovery_after_location_only_gets(self):
         task_id,run_id=await self.create()
