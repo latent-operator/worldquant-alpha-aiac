@@ -1,0 +1,17 @@
+schema_version: 1
+skill: aiac-research
+status: candidate
+owner: local-aiac
+source_issue: aiac-r1e.17
+mode: bounded-research-dispatch
+authorization_source: owner-instructions-2026-11-16
+secrets: existing-private-configuration-only
+production_gate: deployed-native-worker-and-verified-cli-contract
+execution: native-aiac-api-and-celery-only
+prohibited:
+  - alpha-submission
+  - legacy-run-resume
+  - uncertain-post-retry
+  - fabricated-quality-or-ppa-state
+  - secrets-in-skill-or-logs
+promotion_evidence: ../../eval-workspace/iteration-1/decision.json

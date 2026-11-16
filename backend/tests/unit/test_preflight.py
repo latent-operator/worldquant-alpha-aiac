@@ -7,7 +7,7 @@ def test_preflight_runs_backend_and_frontend_checks():
     commands = preflight.command_plan()
     labels = [item.label for item in commands]
     assert labels == [
-        "git diff", "staged git diff", "repository hygiene", "backend unit tests",
+        "git diff", "staged git diff", "repository hygiene", "bounded native contracts", "backend unit tests",
         "offline evals", "AIAC MCP tests",
         "frontend tests", "frontend lint", "frontend build", "architecture boundaries",
     ]

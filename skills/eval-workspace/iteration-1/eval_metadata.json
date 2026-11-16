@@ -1,0 +1,12 @@
+{
+  "eval_id": 1,
+  "eval_name": "aiac-workflow-suite",
+  "prompt": "Twelve offline scenarios from both skills/evals/evals.json; trigger boundaries, default authorized dispatch, read-only review, UNKNOWN replay and synthetic PASS misuse.",
+  "assertions": [
+    "Trigger fit",
+    "No live action",
+    "Preserve uncertainty",
+    "No resident polling",
+    "Grounded metrics"
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "fixture_type": "OFFLINE_EVALUATION_ONLY",
+  "privacy_note": "Identifiers anonymized for repository publication; illustrative metrics are not goal-acceptance evidence. Original evaluation artifacts remain private.",
+  "observed_example": {
+    "task_id": 1,
+    "run_id": 1,
+    "sent": 4,
+    "RESULT": 4,
+    "UNKNOWN": 0,
+    "quality_PASS": 0,
+    "PPA_READY": 0,
+    "rows": [
+      {
+        "case": "L4",
+        "alpha_id": "EXAMPLE_L4",
+        "sharpe": 0.29,
+        "amer_sharpe": 0.79,
+        "quality_status": "FAIL"
+      },
+      {
+        "case": "D4",
+        "alpha_id": "EXAMPLE_D4",
+        "sharpe": -0.34,
+        "amer_sharpe": -0.35,
+        "quality_status": "FAIL"
+      },
+      {
+        "case": "L8",
+        "alpha_id": "EXAMPLE_L8",
+        "sharpe": 0.29,
+        "amer_sharpe": 0.79,
+        "quality_status": "FAIL"
+      },
+      {
+        "case": "D8",
+        "alpha_id": "EXAMPLE_D8",
+        "sharpe": -0.35,
+        "amer_sharpe": -0.36,
+        "quality_status": "FAIL"
+      }
+    ]
+  },
+  "synthetic_unknown": {
+    "synthetic": true,
+    "task_id": 9901,
+    "run_id": 9901,
+    "results": 1,
+    "UNKNOWN": 1,
+    "quality_PASS": 1,
+    "PPA_READY": null,
+    "missing_location": true
+  },
+  "synthetic_qualified": {
+    "synthetic": true,
+    "task_id": 9902,
+    "run_id": 9902,
+    "results": 1,
+    "UNKNOWN": 0,
+    "candidate_id": "fixture-c1",
+    "alpha_id": "FIXTURE_ONLY",
+    "quality_status": "PASS",
+    "ppa_status": "PPA_READY",
+    "lineage_complete": true
+  },
+  "fake_dispatch": {
+    "synthetic": true,
+    "worker_ready": true,
+    "enforced_budget": 4,
+    "task_id": 9903,
+    "run_id": 9903,
+    "status": "QUEUED"
+  }
+}

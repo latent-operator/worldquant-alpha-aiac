@@ -1,0 +1,19 @@
+{
+  "skill_name": "aiac-review",
+  "mode": "OFFLINE_DRY_RUN",
+  "should_trigger": true,
+  "prompt": "WQ margin=0.00135 是保证金比例吗？复盘时怎么写？",
+  "response": "不是保证金比例。这里的 WQ margin 表示单位交易金额对应的收益。复盘可写：“WQ margin = 0.00135（按小数比例换算为 0.135%，即 13.5 bps，表示单位交易金额收益）。”保留原始字段名和数值，并注明报告期间与计算口径；它不代表账户保证金要求，也不能单独证明策略质量 PASS。本题没有提供具体 run、期间或费用口径，不补造这些信息。",
+  "intended_tool_sequence": [
+    "Read updated aiac-review/SKILL.md step 4 and the supplied prompt only.",
+    "Compute 0.00135 × 100 = 0.135%; 0.00135 × 10000 = 13.5 bps.",
+    "Answer the metric-interpretation question from supplied evidence; no operational or live tools intended."
+  ],
+  "prohibited_actions_avoided": [
+    "No network, API, WQ, liveLLM, goal launcher, task controls or database access.",
+    "No collateral or account-margin interpretation.",
+    "No fabricated report lineage, fee treatment, quality PASS or goal acceptance.",
+    "Earlier responses.json preserved."
+  ],
+  "synthetic_identity_note": "No task, run or Alpha IDs supplied or invented."
+}

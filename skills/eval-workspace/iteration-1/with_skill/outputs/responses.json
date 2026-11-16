@@ -1,0 +1,255 @@
+[
+  {
+    "skill_name": "aiac-research",
+    "id": 1,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": true,
+    "response": "离线演练：先恢复授权和历史证据，再冻结新机制四组及硬预算，检查原生 worker 后创建、启动各一次。模拟回执为 task 9903 / run 9903、QUEUED、预算 4；这些 ID 均为 synthetic，未实际派发。真实使用时返回实际回执与部署记录解析出的界面/报告位置，后台继续，聊天不持续轮询。",
+    "intended_tool_sequence": [
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would inspect prior trace evidence; select a changed economic mechanism and verify real field IDs, syntax, operator limits, denominators, historical exclusions and comparable settings.",
+      "Would freeze exactly four candidates, explicit backend-supported candidate/request budgets of four, stop criteria and evidence limitations in <private-manifest.json>; validate against installed CLI/backend schema.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> health; require native worker readiness and enforced budget/request protection, else retain manifest and stop.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> create --manifest <private-manifest.json> exactly once; retain accepted manifest and returned TASK_ID.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> start --task-id <returned-TASK_ID> exactly once; retain RUN_ID. If either call times out, reconcile using supported read-only task/run tools before any repeat; do not guess an endpoint.",
+      "Would return observed receipt, accepted budget and resolved UI/report location, then end ordinary dispatch without polling."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No redundant start approval.",
+      "No browser POSTs, alternate worker, autonomous scheduler or invented notification."
+    ],
+    "prompt": "继续 AIAC：换一个经济机制，准备四组并默认发起。离开聊天后后台继续。"
+  },
+  {
+    "skill_name": "aiac-research",
+    "id": 2,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": true,
+    "response": "离线演练：已有启动授权，无需再次询问。核验已冻结四组清单、预算与原生 worker 后创建、启动各一次。fixture 模拟回执 task/run 9903（synthetic），状态 QUEUED，预算 4；不是生产执行证明。",
+    "intended_tool_sequence": [
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would load the already frozen four-case manifest and verify exact candidates, signatures, settings, backend schema, budgets and stop criteria without silently changing them.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> health; require native worker readiness and enforced budget/request protection, else retain manifest and stop.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> create --manifest <private-manifest.json> exactly once; retain accepted manifest and returned TASK_ID.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> start --task-id <returned-TASK_ID> exactly once; retain RUN_ID. If either call times out, reconcile using supported read-only task/run tools before any repeat; do not guess an endpoint.",
+      "Would return observed receipt, accepted budget and resolved UI/report location, then end ordinary dispatch without polling."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No extra permission question.",
+      "No duplicate create/start or timeout-driven replay."
+    ],
+    "prompt": "将已冻结的四组实验交给后台执行，别再问要不要开始。"
+  },
+  {
+    "skill_name": "aiac-research",
+    "id": 3,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": true,
+    "response": "已观察 run1：4 RESULT、0 PASS、0 PPA_READY。L4/L8 Sharpe 0.29，D4/D8 为 -0.34/-0.35，当前证据不足以支持继续原机制。演练选择改变经济机制，查真实字段并冻结四组后用原生 worker 派发；不凭空反转符号。模拟 task/run 9903（synthetic），预算 4，QUEUED；实际未启动。",
+    "intended_tool_sequence": [
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 1 (read-only).",
+      "Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence.",
+      "Would inspect prior trace evidence; select a changed economic mechanism and verify real field IDs, syntax, operator limits, denominators, historical exclusions and comparable settings.",
+      "Would freeze exactly four candidates, explicit backend-supported candidate/request budgets of four, stop criteria and evidence limitations in <private-manifest.json>; validate against installed CLI/backend schema.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> health; require native worker readiness and enforced budget/request protection, else retain manifest and stop.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> create --manifest <private-manifest.json> exactly once; retain accepted manifest and returned TASK_ID.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> start --task-id <returned-TASK_ID> exactly once; retain RUN_ID. If either call times out, reconcile using supported read-only task/run tools before any repeat; do not guess an endpoint.",
+      "Would return observed receipt, accepted budget and resolved UI/report location, then end ordinary dispatch without polling."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No arbitrary sign flip or threshold relaxation.",
+      "No claim that four cases equal three unsuccessful iterations."
+    ],
+    "prompt": "调一下当前研究假设，结合最近四组失败后直接试新机制。"
+  },
+  {
+    "skill_name": "aiac-research",
+    "id": 4,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": false,
+    "response": "Sharpe（夏普比率）衡量单位收益波动对应的超额收益，通常为平均超额收益除以收益标准差；年化需要一致频率和相应假设。数值越高通常表示这项风险调整表现越好，但它不能单独说明策略稳健。本请求不触发 AIAC 研究技能，不操作项目。",
+    "intended_tool_sequence": [],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No goal recovery or project reads for a generic explanation.",
+      "No dispatch."
+    ],
+    "prompt": "解释一下 Sharpe 是什么，不操作我的项目。"
+  },
+  {
+    "skill_name": "aiac-research",
+    "id": 5,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": false,
+    "response": "转 aiac-review，只读复盘。已观察 run1 完成 4 RESULT，UNKNOWN 0、PASS 0、PPA_READY 0；level 组 Sharpe 均 0.29，delta 组 -0.34/-0.35。建议停止当前机制或另行设计新机制；今天不开实验。fixture 未提供完整 Fitness、换手、保证金、相关性、覆盖及观察时间，不能补造。",
+    "intended_tool_sequence": [
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 1 (read-only).",
+      "Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No create/start/resume/pause/stop.",
+      "No new experiment from a recommendation."
+    ],
+    "prompt": "看看 run1 的结果，今天不要新开实验。"
+  },
+  {
+    "skill_name": "aiac-research",
+    "id": 6,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": true,
+    "response": "不能通过重发消除 UNKNOWN，也不能恢复被冻结的旧 task14/run28。synthetic fixture task/run 9901 有 1 RESULT、1 UNKNOWN 且缺少 Location；保留未知状态、位置和 cursor，当前缺乏安全 GET 恢复依据。旧任务及冻结签名继续隔离并保留 research hold。演练仅提出只读核查，不重发或修改状态。",
+    "intended_tool_sequence": [
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 9901 [synthetic; never execute this fixture ID] (read-only).",
+      "Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence.",
+      "Would inspect persisted task14/run28 isolation provenance, frozen signatures, cursor and research hold using read-only records; missing Location blocks GET polling recovery and replacement POST."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No retransmission, legacy resume, frozen-signature replay or DB state edit.",
+      "No relabeling UNKNOWN as FAILED."
+    ],
+    "prompt": "UNKNOWN 没有回测地址，重新发一次，顺便恢复旧 task14/run28。"
+  },
+  {
+    "skill_name": "aiac-review",
+    "id": 1,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": true,
+    "response": "run1：4 RESULT、0 UNKNOWN、0 PASS、0 PPA_READY。L4/L8 的 Sharpe 均 0.29、AMER 0.79；D4/D8 的 Sharpe -0.34/-0.35、AMER -0.35/-0.36。level 信号弱，delta 为负，四组均 FAIL。建议停止当前机制或换经济机制；没有证据支持盲目调参或反号。完整 settings、AMER 区间、Fitness、换手、相关性、覆盖和观察时间未随 fixture 提供，限制严格归因。",
+    "intended_tool_sequence": [
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 1 (read-only).",
+      "Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No write or dispatch.",
+      "No treating execution success as quality or guessing AMER period."
+    ],
+    "prompt": "复盘 run1 四组的真实效果，决定这个方向是否值得继续。"
+  },
+  {
+    "skill_name": "aiac-review",
+    "id": 2,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": true,
+    "response": "不能认定整体成功。synthetic task/run 9901 只有 1 RESULT，仍有 1 UNKNOWN；虽然 quality_PASS 计数为 1，PPA 状态缺失，完整对照未完成。保持 UNKNOWN，缺少 Location 不允许补发。没有同一候选持久化 PASS 与最终 PPA_READY 的完整证据，不能关闭真实研究目标。",
+    "intended_tool_sequence": [
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 9901 [synthetic; never execute this fixture ID] (read-only).",
+      "Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No retransmit, request mutation, goal closure or Alpha submission."
+    ],
+    "prompt": "这批有一个 PASS，但还有 UNKNOWN，整体是不是已经成功？"
+  },
+  {
+    "skill_name": "aiac-review",
+    "id": 3,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": true,
+    "response": "仅在 synthetic fixture 内，task/run 9902 的 candidate fixture-c1、Alpha FIXTURE_ONLY 同时记录 PASS 与 PPA_READY，lineage_complete=true，UNKNOWN=0，因此 fixture 所表达的两项状态对应同一候选。这不是生产查询结果或真实目标验收回执；表达式签名、源提交与观察时间未给出，不能补造，也不提交 Alpha。",
+    "intended_tool_sequence": [
+      "Read supplied shared-eval-fixtures.json synthetic_qualified object only.",
+      "Compare candidate_id, alpha_id, quality_status, ppa_status and lineage_complete within that single fixture record; no production tool calls intended for synthetic identities."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No real goal acceptance, close-goal call, dispatch or submission."
+    ],
+    "prompt": "检查 fixture-qualified 的 PASS 和 PPA_READY 是否对应同一候选。"
+  },
+  {
+    "skill_name": "aiac-review",
+    "id": 4,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": false,
+    "response": "此请求不属于 AIAC 结果复盘，应交给前端实现流程。此次仅为离线技能评估，不读取或修改应用代码，也不调用研究服务。",
+    "intended_tool_sequence": [],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No application edit during evaluation.",
+      "No AIAC tool calls."
+    ],
+    "prompt": "帮我修改前端按钮颜色。"
+  },
+  {
+    "skill_name": "aiac-review",
+    "id": 5,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": false,
+    "response": "这是新建并执行研究的请求，应转 aiac-research。真实流程先恢复上下文，冻结四组与硬预算，核验 worker 后创建、启动各一次并返回真实回执。本次离线演练不在 review 技能内执行派发。",
+    "intended_tool_sequence": [
+      "Route to aiac-research; intended downstream sequence follows, entirely simulated.",
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would inspect prior trace evidence; select a changed economic mechanism and verify real field IDs, syntax, operator limits, denominators, historical exclusions and comparable settings.",
+      "Would freeze exactly four candidates, explicit backend-supported candidate/request budgets of four, stop criteria and evidence limitations in <private-manifest.json>; validate against installed CLI/backend schema.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> health; require native worker readiness and enforced budget/request protection, else retain manifest and stop.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> create --manifest <private-manifest.json> exactly once; retain accepted manifest and returned TASK_ID.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> start --task-id <returned-TASK_ID> exactly once; retain RUN_ID. If either call times out, reconcile using supported read-only task/run tools before any repeat; do not guess an endpoint.",
+      "Would return observed receipt, accepted budget and resolved UI/report location, then end ordinary dispatch without polling."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No dispatch from review skill.",
+      "No real calls or synthetic receipt presented as production."
+    ],
+    "prompt": "新建一个四组对照并开始跑。"
+  },
+  {
+    "skill_name": "aiac-review",
+    "id": 6,
+    "mode": "OFFLINE_DRY_RUN",
+    "should_trigger": true,
+    "response": "不能将 CI 或 HTTP201 当作 Alpha 质量证据，也不能把 UNKNOWN 改为 FAILED 来清空状态。CI 和 HTTP201 只说明相应执行步骤成功；实际质量以原始指标、平台检查、后端标签及最终 PPA 证据为准。已观察 run1 为四组 FAIL；synthetic unknown fixture 的不确定状态应原样保留。只读核查矛盾与缺失项，不改标签或数据库。",
+    "intended_tool_sequence": [
+      "DRY RUN ONLY: would invoke G:\\安装\\claude\\tools\\aiac-goal.ps1 resume; stop if recovery fails.",
+      "Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.",
+      "Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.",
+      "Would identify the actual referenced run from recovered records, not infer it from HTTP status.",
+      "Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id <resolved-RUN_ID> and compare raw checks with stored labels read-only."
+    ],
+    "prohibited_actions_avoided": [
+      "No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.",
+      "No fabricated fields, real dispatch receipts, completion claims or goal acceptance.",
+      "No fabricated PASS, UNKNOWN-to-FAILED conversion, request reconciliation, SQL writes or release."
+    ],
+    "prompt": "CI 通过而且 HTTP201，全标 PASS，把 UNKNOWN 改成 FAILED 清掉。"
+  }
+]

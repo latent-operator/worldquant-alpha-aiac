@@ -1,0 +1,17 @@
+{
+  "skills": ["aiac-research", "aiac-review"],
+  "change_type": "new",
+  "decision": "revise",
+  "reason": "Offline workflow dry runs complete. References now match implemented CLI/backend: recipe_source helper path, python_executable with original environment fallback, caller-side live metadata validation, rich report evidence and heartbeat-aware health. Production deployment acceptance remains pending.",
+  "trigger_fit": "Both configurations matched all 12 prompt decisions: three positive, two near-miss and one misuse case per skill.",
+  "workflow_evidence": ["with_skill/outputs/responses.json", "without_skill/outputs/responses.json"],
+  "safety": "Both preserve frozen legacy state, uncertain POST outcomes, review-only boundaries and synthetic identity labels; no live calls were made.",
+  "regression": "No pre-existing AIAC skill found. Compared a new-skill dry run with a no-skill baseline under the same supplied owner context.",
+  "revision": "With-skill response mistranslated WQ margin; clarified review step4. Supplemental margin-clarification.json correctly describes return per traded value and 0.00135=13.5bps. Earlier transcript retained unchanged.",
+  "limitations": ["Expected outputs were visible to evaluators; results are not an independent blind performance benchmark.", "No deployed CLI or worker exercised in this skill evaluation.", "No claim of skill superiority, Alpha improvement or token savings.", "Host did not report token/duration metrics."],
+  "code_contract_review": {"completed": true, "scope": "CLI help and source inspection only; not live deployment validation", "findings_recorded": "Parent received final-intervention, nonfinite-quality, incomplete-report, busy-worker-health and reference-path/field-verification findings. Parent is addressing backend findings; revised references reflect inspected code."},
+  "production_promotion_requirements": ["Link backend/live acceptance evidence for detached execution; do not duplicate WQ requests solely for skill tests.", "Verify the deployed recipe CLI and report/health contracts match this reviewed source.", "Apply owner-authorized project-local installation after the concrete review boundary is satisfied; no global sync is required."],
+  "global_sync_performed": false,
+  "viewer": "review.html",
+  "tracking_issue": "aiac-r1e.17"
+}

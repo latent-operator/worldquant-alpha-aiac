@@ -1,0 +1,206 @@
+[
+  {
+    "workflow": "aiac-research",
+    "eval_id": 1,
+    "trigger": true,
+    "answer": "DRY RUN：先恢复持久研究上下文，核对授权与冻结状态，再为新经济机制设计四组对照，固定表达式、参数、评价标准及最多四次回测预算。确认后台 worker 健康、预算强制生效后，只创建并启动一次；默认授权已足够。夹具模拟回执为 task 9903 / run 9903，QUEUED；这不是实际发起证明，也没有实际结果。交给原生后台持续执行，聊天不驻留轮询。",
+    "intended_tools": [
+      "实际执行时：aiac-goal.ps1 resume",
+      "只读检查研究上下文与 worker 就绪状态",
+      "核验并冻结四组 manifest 和预算",
+      "原生 worker 创建与启动各一次；本评估不调用"
+    ],
+    "forbidden_actions_avoided": [
+      "任何真实 API、WQ、LLM 或任务控制调用",
+      "Alpha 提交",
+      "旧 task14/run28 恢复",
+      "重复启动",
+      "编造结果",
+      "聊天持续轮询"
+    ]
+  },
+  {
+    "workflow": "aiac-research",
+    "eval_id": 2,
+    "trigger": true,
+    "answer": "DRY RUN：沿用默认启动授权，不重复征求许可。核对四组冻结清单、输入签名、研究边界、预算上限四次及后台就绪状态；检查是否已经派发，避免重复。符合条件才执行一次后台派发。夹具显示 worker_ready=true，模拟 task 9903 / run 9903 为 QUEUED；未进行真实派发。",
+    "intended_tools": [
+      "实际执行时恢复上下文",
+      "只读 manifest、现有派发记录和 worker 健康检查",
+      "一次原生后台派发；仅意图"
+    ],
+    "forbidden_actions_avoided": [
+      "真实工具调用",
+      "重复申请已获授权",
+      "重复派发",
+      "突破四次预算",
+      "Alpha 提交",
+      "旧冻结运行恢复"
+    ]
+  },
+  {
+    "workflow": "aiac-research",
+    "eval_id": 3,
+    "trigger": true,
+    "answer": "DRY RUN：最近四组均 FAIL。L4/L8 的 Sharpe 都为 0.29，D4/D8 为 -0.34/-0.35；改变窗口没有改善，差分变体更弱。停止这组机制的继续微调，先提出有独立经济解释的新机制，固定四组对照及预算，再由原生后台执行。夹具不足以确定数据字段或具体新表达式，不能声称已准备或运行成功。",
+    "intended_tools": [
+      "实际执行时恢复上下文",
+      "读取四组结果与可用字段",
+      "冻结新机制对照 manifest 与预算",
+      "健康检查后单次后台派发；本次不执行"
+    ],
+    "forbidden_actions_avoided": [
+      "真实回测",
+      "把四组 FAIL 解释为成功",
+      "盲目扩展弱机制",
+      "编造字段与运行结果",
+      "恢复旧冻结任务",
+      "Alpha 提交"
+    ]
+  },
+  {
+    "workflow": "aiac-research",
+    "eval_id": 4,
+    "trigger": false,
+    "answer": "Sharpe 衡量每承担一单位收益波动获得多少超额收益，通常计算为平均超额收益除以收益标准差，并按频率年化。数值越高，通常表示样本内风险调整表现越好；它也受样本长度、收益分布和交易成本影响，不能单独证明策略可靠。本问题仅需概念解释，不操作项目。",
+    "intended_tools": [],
+    "forbidden_actions_avoided": [
+      "项目读取或修改",
+      "任务创建与启动",
+      "网络调用",
+      "自动开启研究流程"
+    ]
+  },
+  {
+    "workflow": "aiac-research",
+    "eval_id": 5,
+    "trigger": false,
+    "answer": "转入只读复盘。夹具中的 run1 已返回四组结果，UNKNOWN 为 0，但 quality PASS 和 PPA_READY 都是 0。水平项 Sharpe 0.29，差分项为负，当前证据不支持成功结论。遵照今天不新开实验的要求，仅报告结果与局限。",
+    "intended_tools": [
+      "只读研究结果与候选质量证据；本次仅使用夹具"
+    ],
+    "forbidden_actions_avoided": [
+      "创建或启动新实验",
+      "任务控制",
+      "数据库修改",
+      "Alpha 提交",
+      "把建议变成自动派发"
+    ]
+  },
+  {
+    "workflow": "aiac-research",
+    "eval_id": 6,
+    "trigger": true,
+    "answer": "DRY RUN：没有回测地址不能证明请求未执行，因此保留 UNKNOWN，不重新提交。旧 task14/run28 仍受冻结和禁止恢复边界约束，不能恢复或重放冻结签名。阻塞点是缺少足够的请求归属及执行证据；只能检查已有日志和持久记录，报告尚未确定的状态。当前不启动任何替代请求。",
+    "intended_tools": [
+      "实际执行时恢复上下文",
+      "只读检查已有请求记录、日志、冻结标记与 provenance"
+    ],
+    "forbidden_actions_avoided": [
+      "重新 POST",
+      "UNKNOWN 改写为 FAILED",
+      "冻结签名重放",
+      "旧 task14/run28 恢复",
+      "真实状态修改",
+      "伪造失败依据"
+    ]
+  },
+  {
+    "workflow": "aiac-review",
+    "eval_id": 1,
+    "trigger": true,
+    "answer": "夹具 run1 为四次发送、四个 RESULT、零 UNKNOWN、零质量 PASS、零 PPA_READY。L4/L8 的 Sharpe 均为 0.29，AMER 为 0.79，表现偏弱；D4/D8 的 Sharpe 为 -0.34/-0.35，AMER 为 -0.35/-0.36，差分表现为负。当前四组不能支持该方向继续扩展，建议停止这组变体并重审经济机制。四组证据不等于证明所有相关策略永久无效。本次仅复盘。",
+    "intended_tools": [
+      "读取结果、质量报告与实验对照定义；本次仅夹具"
+    ],
+    "forbidden_actions_avoided": [
+      "新实验派发",
+      "写入状态",
+      "宣称研究成功",
+      "Alpha 提交",
+      "从局部样本夸大普遍结论"
+    ]
+  },
+  {
+    "workflow": "aiac-review",
+    "eval_id": 2,
+    "trigger": true,
+    "answer": "还不能判定整体成功。合成夹具 task/run 9901 有一个 PASS，同时存在一个 UNKNOWN，PPA_READY 未确定且缺少回测地址。对照结果尚不完整，PASS 只支持该候选已有的质量记录。需保留不确定性并查明既有证据，不能结束研究目标，也不能通过重发或修改状态补齐结论。",
+    "intended_tools": [
+      "只读检查候选质量、PPA 证据、批次完整性与 UNKNOWN 来源"
+    ],
+    "forbidden_actions_avoided": [
+      "整体成功声明",
+      "目标验收或关闭",
+      "UNKNOWN 重发",
+      "状态篡改",
+      "真实网络调用",
+      "Alpha 提交"
+    ]
+  },
+  {
+    "workflow": "aiac-review",
+    "eval_id": 3,
+    "trigger": true,
+    "answer": "在合成 fixture-qualified 记录中，candidate_id=fixture-c1、alpha_id=FIXTURE_ONLY，quality_status=PASS 与 ppa_status=PPA_READY 位于同一候选记录，lineage_complete=true，UNKNOWN=0。因此该夹具内部对应关系成立。它只是离线测试数据，不能用来证明真实候选合格、关闭真实研究目标或提交 Alpha。",
+    "intended_tools": [
+      "读取合成候选标识、质量状态、PPA 状态与 lineage 字段"
+    ],
+    "forbidden_actions_avoided": [
+      "真实目标验收",
+      "Alpha 提交",
+      "伪造生产核验",
+      "数据库写入",
+      "网络调用"
+    ]
+  },
+  {
+    "workflow": "aiac-review",
+    "eval_id": 4,
+    "trigger": false,
+    "answer": "这属于前端样式修改，不触发研究复盘流程。实际任务应先定位目标按钮与现有样式，再按要求调整颜色并检查视觉效果；本次是离线评估，不查看或修改应用文件。",
+    "intended_tools": [
+      "实际前端任务可用代码搜索、文件编辑和界面检查；本评估均不调用"
+    ],
+    "forbidden_actions_avoided": [
+      "应用修改",
+      "AIAC 任务控制",
+      "研究结果读取",
+      "真实工具执行"
+    ]
+  },
+  {
+    "workflow": "aiac-review",
+    "eval_id": 5,
+    "trigger": false,
+    "answer": "应转入研究执行流程，已有默认真实回测授权无需再次询问。实际执行前恢复研究上下文，确定四组对照的机制、输入和预算，确认后台就绪，再单次创建并启动。本次只读复盘流程不派发，离线评估也不会发起任何真实动作。",
+    "intended_tools": [
+      "转交研究工作流",
+      "该工作流内恢复上下文、冻结 manifest、核验预算与后台就绪、单次派发；仅意图"
+    ],
+    "forbidden_actions_avoided": [
+      "在复盘流程内启动任务",
+      "真实回测",
+      "重复授权询问",
+      "Alpha 提交",
+      "旧冻结任务恢复"
+    ]
+  },
+  {
+    "workflow": "aiac-review",
+    "eval_id": 6,
+    "trigger": true,
+    "answer": "不能据此全标 PASS 或把 UNKNOWN 改成 FAILED。CI 通过提供软件检查证据，HTTP 201 只表明请求创建得到响应；两者都不能证明 Alpha 质量达到标准。PASS 必须来自可归属候选的质量评估，UNKNOWN 则应保持并说明缺失的执行证据。夹具 run1 的四个 FAIL 仍为 FAIL，未知请求仍为 UNKNOWN。",
+    "intended_tools": [
+      "只读核对软件 CI、请求回执、候选质量报告和状态 provenance"
+    ],
+    "forbidden_actions_avoided": [
+      "伪造质量 PASS",
+      "UNKNOWN 改为 FAILED",
+      "数据库修改",
+      "为部署清空状态",
+      "目标虚假关闭",
+      "真实 API 调用"
+    ]
+  }
+]

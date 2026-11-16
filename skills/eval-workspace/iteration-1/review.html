@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eval Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600&family=Lora:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --bg: #faf9f5;
+      --surface: #ffffff;
+      --border: #e8e6dc;
+      --text: #141413;
+      --text-muted: #b0aea5;
+      --accent: #d97757;
+      --accent-hover: #c4613f;
+      --green: #788c5d;
+      --green-bg: #eef2e8;
+      --red: #c44;
+      --red-bg: #fceaea;
+      --header-bg: #141413;
+      --header-text: #faf9f5;
+      --radius: 6px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Lora', Georgia, serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ---- Header ---- */
+    .header {
+      background: var(--header-bg);
+      color: var(--header-text);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .header h1 {
+      font-family: 'Poppins', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+    .header .instructions {
+      font-size: 0.8rem;
+      opacity: 0.7;
+      margin-top: 0.25rem;
+    }
+    .header .progress {
+      font-size: 0.875rem;
+      opacity: 0.8;
+      text-align: right;
+    }
+
+    /* ---- Main content ---- */
+    .main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    /* ---- Sections ---- */
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      flex-shrink: 0;
+    }
+    .section-header {
+      font-family: 'Poppins', sans-serif;
+      padding: 0.75rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .section-body {
+      padding: 1rem;
+    }
+
+    /* ---- Config badge ---- */
+    .config-badge {
+      display: inline-block;
+      padding: 0.2rem 0.625rem;
+      border-radius: 9999px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-left: 0.75rem;
+      vertical-align: middle;
+    }
+    .config-badge.config-primary {
+      background: rgba(33, 150, 243, 0.12);
+      color: #1976d2;
+    }
+    .config-badge.config-baseline {
+      background: rgba(255, 193, 7, 0.15);
+      color: #f57f17;
+    }
+
+    /* ---- Prompt ---- */
+    .prompt-text {
+      white-space: pre-wrap;
+      font-size: 0.9375rem;
+      line-height: 1.6;
+    }
+
+    /* ---- Outputs ---- */
+    .output-file {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .output-file + .output-file {
+      margin-top: 1rem;
+    }
+    .output-file-header {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .output-file-header .dl-btn {
+      font-size: 0.7rem;
+      color: var(--accent);
+      text-decoration: none;
+      cursor: pointer;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-weight: 500;
+      opacity: 0.8;
+    }
+    .output-file-header .dl-btn:hover {
+      opacity: 1;
+      text-decoration: underline;
+    }
+    .output-file-content {
+      padding: 0.75rem;
+      overflow-x: auto;
+    }
+    .output-file-content pre {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+    }
+    .output-file-content img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 4px;
+    }
+    .output-file-content iframe {
+      width: 100%;
+      height: 600px;
+      border: none;
+    }
+    .output-file-content table {
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+      width: 100%;
+    }
+    .output-file-content table td,
+    .output-file-content table th {
+      border: 1px solid var(--border);
+      padding: 0.375rem 0.5rem;
+      text-align: left;
+    }
+    .output-file-content table th {
+      background: var(--bg);
+      font-weight: 600;
+    }
+    .output-file-content .download-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+    .output-file-content .download-link:hover {
+      background: var(--border);
+    }
+    .empty-state {
+      color: var(--text-muted);
+      font-style: italic;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    /* ---- Feedback ---- */
+    .prev-feedback {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.625rem 0.75rem;
+      margin-top: 0.75rem;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .prev-feedback-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.25rem;
+      color: var(--text-muted);
+    }
+    .feedback-textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.9375rem;
+      line-height: 1.5;
+      resize: vertical;
+      color: var(--text);
+    }
+    .feedback-textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    .feedback-status {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+      min-height: 1.1em;
+    }
+
+    /* ---- Grades (collapsible) ---- */
+    .grades-toggle {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .grades-toggle:hover {
+      color: var(--accent);
+    }
+    .grades-toggle .arrow {
+      margin-right: 0.5rem;
+      transition: transform 0.15s;
+      font-size: 0.75rem;
+    }
+    .grades-toggle .arrow.open {
+      transform: rotate(90deg);
+    }
+    .grades-content {
+      display: none;
+      margin-top: 0.75rem;
+    }
+    .grades-content.open {
+      display: block;
+    }
+    .grades-summary {
+      font-size: 0.875rem;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .grade-badge {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .grade-pass { background: var(--green-bg); color: var(--green); }
+    .grade-fail { background: var(--red-bg); color: var(--red); }
+    .assertion-list {
+      list-style: none;
+    }
+    .assertion-item {
+      padding: 0.625rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8125rem;
+    }
+    .assertion-item:last-child { border-bottom: none; }
+    .assertion-status {
+      font-weight: 600;
+      margin-right: 0.5rem;
+    }
+    .assertion-status.pass { color: var(--green); }
+    .assertion-status.fail { color: var(--red); }
+    .assertion-evidence {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      margin-top: 0.25rem;
+      padding-left: 1.5rem;
+    }
+
+    /* ---- View tabs ---- */
+    .view-tabs {
+      display: flex;
+      gap: 0;
+      padding: 0 2rem;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .view-tab {
+      font-family: 'Poppins', sans-serif;
+      padding: 0.625rem 1.25rem;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      background: none;
+      color: var(--text-muted);
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .view-tab:hover { color: var(--text); }
+    .view-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .view-panel { display: none; }
+    .view-panel.active { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+
+    /* ---- Benchmark view ---- */
+    .benchmark-view {
+      padding: 1.5rem 2rem;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .benchmark-table {
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 0.8125rem;
+      width: 100%;
+      margin-bottom: 1.5rem;
+    }
+    .benchmark-table th, .benchmark-table td {
+      padding: 0.625rem 0.75rem;
+      text-align: left;
+      border: 1px solid var(--border);
+    }
+    .benchmark-table th {
+      font-family: 'Poppins', sans-serif;
+      background: var(--header-bg);
+      color: var(--header-text);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .benchmark-table tr:hover { background: var(--bg); }
+    .benchmark-table tr.benchmark-row-with { background: rgba(33, 150, 243, 0.06); }
+    .benchmark-table tr.benchmark-row-without { background: rgba(255, 193, 7, 0.06); }
+    .benchmark-table tr.benchmark-row-with:hover { background: rgba(33, 150, 243, 0.12); }
+    .benchmark-table tr.benchmark-row-without:hover { background: rgba(255, 193, 7, 0.12); }
+    .benchmark-table tr.benchmark-row-avg { font-weight: 600; border-top: 2px solid var(--border); }
+    .benchmark-table tr.benchmark-row-avg.benchmark-row-with { background: rgba(33, 150, 243, 0.12); }
+    .benchmark-table tr.benchmark-row-avg.benchmark-row-without { background: rgba(255, 193, 7, 0.12); }
+    .benchmark-delta-positive { color: var(--green); font-weight: 600; }
+    .benchmark-delta-negative { color: var(--red); font-weight: 600; }
+    .benchmark-notes {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+    }
+    .benchmark-notes h3 {
+      font-family: 'Poppins', sans-serif;
+      font-size: 0.875rem;
+      margin-bottom: 0.75rem;
+    }
+    .benchmark-notes ul {
+      list-style: disc;
+      padding-left: 1.25rem;
+    }
+    .benchmark-notes li {
+      font-size: 0.8125rem;
+      line-height: 1.6;
+      margin-bottom: 0.375rem;
+    }
+    .benchmark-empty {
+      color: var(--text-muted);
+      font-style: italic;
+      text-align: center;
+      padding: 3rem;
+    }
+
+    /* ---- Navigation ---- */
+    .nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 2rem;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .nav-btn {
+      font-family: 'Poppins', sans-serif;
+      padding: 0.5rem 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text);
+      transition: all 0.15s;
+    }
+    .nav-btn:hover:not(:disabled) {
+      background: var(--bg);
+      border-color: var(--text-muted);
+    }
+    .nav-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .done-btn {
+      font-family: 'Poppins', sans-serif;
+      padding: 0.5rem 1.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+    .done-btn:hover {
+      background: var(--bg);
+      border-color: var(--text-muted);
+    }
+    .done-btn.ready {
+      border: none;
+      background: var(--accent);
+      color: white;
+      font-weight: 600;
+    }
+    .done-btn.ready:hover {
+      background: var(--accent-hover);
+    }
+    /* ---- Done overlay ---- */
+    .done-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 100;
+      justify-content: center;
+      align-items: center;
+    }
+    .done-overlay.visible {
+      display: flex;
+    }
+    .done-card {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 2rem 3rem;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      max-width: 500px;
+    }
+    .done-card h2 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .done-card p {
+      color: var(--text-muted);
+      margin-bottom: 1.5rem;
+      line-height: 1.5;
+    }
+    .done-card .btn-row {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: center;
+    }
+    .done-card button {
+      padding: 0.5rem 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+    .done-card button:hover {
+      background: var(--bg);
+    }
+    /* ---- Toast ---- */
+    .toast {
+      position: fixed;
+      bottom: 5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--header-bg);
+      color: var(--header-text);
+      padding: 0.625rem 1.25rem;
+      border-radius: var(--radius);
+      font-size: 0.875rem;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+      z-index: 200;
+    }
+    .toast.visible {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" style="height:100vh; display:flex; flex-direction:column;">
+    <div class="header">
+      <div>
+        <h1>Eval Review: <span id="skill-name"></span></h1>
+        <div class="instructions">Review each output and leave feedback below. Navigate with arrow keys or buttons. When done, copy feedback and paste into Claude Code.</div>
+      </div>
+      <div class="progress" id="progress"></div>
+    </div>
+
+    <!-- View tabs (only shown when benchmark data exists) -->
+    <div class="view-tabs" id="view-tabs" style="display:none;">
+      <button class="view-tab active" onclick="switchView('outputs')">Outputs</button>
+      <button class="view-tab" onclick="switchView('benchmark')">Benchmark</button>
+    </div>
+
+    <!-- Outputs panel (qualitative review) -->
+    <div class="view-panel active" id="panel-outputs">
+    <div class="main">
+      <!-- Prompt -->
+      <div class="section">
+        <div class="section-header">Prompt <span class="config-badge" id="config-badge" style="display:none;"></span></div>
+        <div class="section-body">
+          <div class="prompt-text" id="prompt-text"></div>
+        </div>
+      </div>
+
+      <!-- Outputs -->
+      <div class="section">
+        <div class="section-header">Output</div>
+        <div class="section-body" id="outputs-body">
+          <div class="empty-state">No output files found</div>
+        </div>
+      </div>
+
+      <!-- Previous Output (collapsible) -->
+      <div class="section" id="prev-outputs-section" style="display:none;">
+        <div class="section-header">
+          <div class="grades-toggle" onclick="togglePrevOutputs()">
+            <span class="arrow" id="prev-outputs-arrow">&#9654;</span>
+            Previous Output
+          </div>
+        </div>
+        <div class="grades-content" id="prev-outputs-content"></div>
+      </div>
+
+      <!-- Grades (collapsible) -->
+      <div class="section" id="grades-section" style="display:none;">
+        <div class="section-header">
+          <div class="grades-toggle" onclick="toggleGrades()">
+            <span class="arrow" id="grades-arrow">&#9654;</span>
+            Formal Grades
+          </div>
+        </div>
+        <div class="grades-content" id="grades-content"></div>
+      </div>
+
+      <!-- Feedback -->
+      <div class="section">
+        <div class="section-header">Your Feedback</div>
+        <div class="section-body">
+          <textarea
+            class="feedback-textarea"
+            id="feedback"
+            placeholder="What do you think of this output? Any issues, suggestions, or things that look great?"
+          ></textarea>
+          <div class="feedback-status" id="feedback-status"></div>
+          <div class="prev-feedback" id="prev-feedback" style="display:none;">
+            <div class="prev-feedback-label">Previous feedback</div>
+            <div id="prev-feedback-text"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nav" id="outputs-nav">
+      <button class="nav-btn" id="prev-btn" onclick="navigate(-1)">&#8592; Previous</button>
+      <button class="done-btn" id="done-btn" onclick="showDoneDialog()">Submit All Reviews</button>
+      <button class="nav-btn" id="next-btn" onclick="navigate(1)">Next &#8594;</button>
+    </div>
+    </div><!-- end panel-outputs -->
+
+    <!-- Benchmark panel (quantitative stats) -->
+    <div class="view-panel" id="panel-benchmark">
+      <div class="benchmark-view" id="benchmark-content">
+        <div class="benchmark-empty">No benchmark data available. Run a benchmark to see quantitative results here.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Done overlay -->
+  <div class="done-overlay" id="done-overlay">
+    <div class="done-card">
+      <h2>Review Complete</h2>
+      <p>Your feedback has been saved. Go back to your Claude Code session and tell Claude you're done reviewing.</p>
+      <div class="btn-row">
+        <button onclick="closeDoneDialog()">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ---- Embedded data (injected by generate_review.py) ----
+    const EMBEDDED_DATA = {"skill_name": "aiac-workflows", "runs": [{"id": "with_skill", "prompt": "Twelve offline scenarios from both skills/evals/evals.json; trigger boundaries, default authorized dispatch, read-only review, UNKNOWN replay and synthetic PASS misuse.", "eval_id": 1, "outputs": [{"name": "margin-clarification.json", "type": "text", "content": "{\n  \"skill_name\": \"aiac-review\",\n  \"mode\": \"OFFLINE_DRY_RUN\",\n  \"should_trigger\": true,\n  \"prompt\": \"WQ margin=0.00135 \u662f\u4fdd\u8bc1\u91d1\u6bd4\u4f8b\u5417\uff1f\u590d\u76d8\u65f6\u600e\u4e48\u5199\uff1f\",\n  \"response\": \"\u4e0d\u662f\u4fdd\u8bc1\u91d1\u6bd4\u4f8b\u3002\u8fd9\u91cc\u7684 WQ margin \u8868\u793a\u5355\u4f4d\u4ea4\u6613\u91d1\u989d\u5bf9\u5e94\u7684\u6536\u76ca\u3002\u590d\u76d8\u53ef\u5199\uff1a\u201cWQ margin = 0.00135\uff08\u6309\u5c0f\u6570\u6bd4\u4f8b\u6362\u7b97\u4e3a 0.135%\uff0c\u5373 13.5 bps\uff0c\u8868\u793a\u5355\u4f4d\u4ea4\u6613\u91d1\u989d\u6536\u76ca\uff09\u3002\u201d\u4fdd\u7559\u539f\u59cb\u5b57\u6bb5\u540d\u548c\u6570\u503c\uff0c\u5e76\u6ce8\u660e\u62a5\u544a\u671f\u95f4\u4e0e\u8ba1\u7b97\u53e3\u5f84\uff1b\u5b83\u4e0d\u4ee3\u8868\u8d26\u6237\u4fdd\u8bc1\u91d1\u8981\u6c42\uff0c\u4e5f\u4e0d\u80fd\u5355\u72ec\u8bc1\u660e\u7b56\u7565\u8d28\u91cf PASS\u3002\u672c\u9898\u6ca1\u6709\u63d0\u4f9b\u5177\u4f53 run\u3001\u671f\u95f4\u6216\u8d39\u7528\u53e3\u5f84\uff0c\u4e0d\u8865\u9020\u8fd9\u4e9b\u4fe1\u606f\u3002\",\n  \"intended_tool_sequence\": [\n    \"Read updated aiac-review/SKILL.md step 4 and the supplied prompt only.\",\n    \"Compute 0.00135 \u00d7 100 = 0.135%; 0.00135 \u00d7 10000 = 13.5 bps.\",\n    \"Answer the metric-interpretation question from supplied evidence; no operational or live tools intended.\"\n  ],\n  \"prohibited_actions_avoided\": [\n    \"No network, API, WQ, liveLLM, goal launcher, task controls or database access.\",\n    \"No collateral or account-margin interpretation.\",\n    \"No fabricated report lineage, fee treatment, quality PASS or goal acceptance.\",\n    \"Earlier responses.json preserved.\"\n  ],\n  \"synthetic_identity_note\": \"No task, run or Alpha IDs supplied or invented.\"\n}\n"}, {"name": "responses.json", "type": "text", "content": "[\n  {\n    \"skill_name\": \"aiac-research\",\n    \"id\": 1,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": true,\n    \"response\": \"\u79bb\u7ebf\u6f14\u7ec3\uff1a\u5148\u6062\u590d\u6388\u6743\u548c\u5386\u53f2\u8bc1\u636e\uff0c\u518d\u51bb\u7ed3\u65b0\u673a\u5236\u56db\u7ec4\u53ca\u786c\u9884\u7b97\uff0c\u68c0\u67e5\u539f\u751f worker \u540e\u521b\u5efa\u3001\u542f\u52a8\u5404\u4e00\u6b21\u3002\u6a21\u62df\u56de\u6267\u4e3a task 9903 / run 9903\u3001QUEUED\u3001\u9884\u7b97 4\uff1b\u8fd9\u4e9b ID \u5747\u4e3a synthetic\uff0c\u672a\u5b9e\u9645\u6d3e\u53d1\u3002\u771f\u5b9e\u4f7f\u7528\u65f6\u8fd4\u56de\u5b9e\u9645\u56de\u6267\u4e0e\u90e8\u7f72\u8bb0\u5f55\u89e3\u6790\u51fa\u7684\u754c\u9762/\u62a5\u544a\u4f4d\u7f6e\uff0c\u540e\u53f0\u7ee7\u7eed\uff0c\u804a\u5929\u4e0d\u6301\u7eed\u8f6e\u8be2\u3002\",\n    \"intended_tool_sequence\": [\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would inspect prior trace evidence; select a changed economic mechanism and verify real field IDs, syntax, operator limits, denominators, historical exclusions and comparable settings.\",\n      \"Would freeze exactly four candidates, explicit backend-supported candidate/request budgets of four, stop criteria and evidence limitations in <private-manifest.json>; validate against installed CLI/backend schema.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> health; require native worker readiness and enforced budget/request protection, else retain manifest and stop.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> create --manifest <private-manifest.json> exactly once; retain accepted manifest and returned TASK_ID.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> start --task-id <returned-TASK_ID> exactly once; retain RUN_ID. If either call times out, reconcile using supported read-only task/run tools before any repeat; do not guess an endpoint.\",\n      \"Would return observed receipt, accepted budget and resolved UI/report location, then end ordinary dispatch without polling.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No redundant start approval.\",\n      \"No browser POSTs, alternate worker, autonomous scheduler or invented notification.\"\n    ],\n    \"prompt\": \"\u7ee7\u7eed AIAC\uff1a\u6362\u4e00\u4e2a\u7ecf\u6d4e\u673a\u5236\uff0c\u51c6\u5907\u56db\u7ec4\u5e76\u9ed8\u8ba4\u53d1\u8d77\u3002\u79bb\u5f00\u804a\u5929\u540e\u540e\u53f0\u7ee7\u7eed\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-research\",\n    \"id\": 2,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": true,\n    \"response\": \"\u79bb\u7ebf\u6f14\u7ec3\uff1a\u5df2\u6709\u542f\u52a8\u6388\u6743\uff0c\u65e0\u9700\u518d\u6b21\u8be2\u95ee\u3002\u6838\u9a8c\u5df2\u51bb\u7ed3\u56db\u7ec4\u6e05\u5355\u3001\u9884\u7b97\u4e0e\u539f\u751f worker \u540e\u521b\u5efa\u3001\u542f\u52a8\u5404\u4e00\u6b21\u3002fixture \u6a21\u62df\u56de\u6267 task/run 9903\uff08synthetic\uff09\uff0c\u72b6\u6001 QUEUED\uff0c\u9884\u7b97 4\uff1b\u4e0d\u662f\u751f\u4ea7\u6267\u884c\u8bc1\u660e\u3002\",\n    \"intended_tool_sequence\": [\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would load the already frozen four-case manifest and verify exact candidates, signatures, settings, backend schema, budgets and stop criteria without silently changing them.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> health; require native worker readiness and enforced budget/request protection, else retain manifest and stop.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> create --manifest <private-manifest.json> exactly once; retain accepted manifest and returned TASK_ID.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> start --task-id <returned-TASK_ID> exactly once; retain RUN_ID. If either call times out, reconcile using supported read-only task/run tools before any repeat; do not guess an endpoint.\",\n      \"Would return observed receipt, accepted budget and resolved UI/report location, then end ordinary dispatch without polling.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No extra permission question.\",\n      \"No duplicate create/start or timeout-driven replay.\"\n    ],\n    \"prompt\": \"\u5c06\u5df2\u51bb\u7ed3\u7684\u56db\u7ec4\u5b9e\u9a8c\u4ea4\u7ed9\u540e\u53f0\u6267\u884c\uff0c\u522b\u518d\u95ee\u8981\u4e0d\u8981\u5f00\u59cb\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-research\",\n    \"id\": 3,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": true,\n    \"response\": \"\u5df2\u89c2\u5bdf run1\uff1a4 RESULT\u30010 PASS\u30010 PPA_READY\u3002L4/L8 Sharpe 0.29\uff0cD4/D8 \u4e3a -0.34/-0.35\uff0c\u5f53\u524d\u8bc1\u636e\u4e0d\u8db3\u4ee5\u652f\u6301\u7ee7\u7eed\u539f\u673a\u5236\u3002\u6f14\u7ec3\u9009\u62e9\u6539\u53d8\u7ecf\u6d4e\u673a\u5236\uff0c\u67e5\u771f\u5b9e\u5b57\u6bb5\u5e76\u51bb\u7ed3\u56db\u7ec4\u540e\u7528\u539f\u751f worker \u6d3e\u53d1\uff1b\u4e0d\u51ed\u7a7a\u53cd\u8f6c\u7b26\u53f7\u3002\u6a21\u62df task/run 9903\uff08synthetic\uff09\uff0c\u9884\u7b97 4\uff0cQUEUED\uff1b\u5b9e\u9645\u672a\u542f\u52a8\u3002\",\n    \"intended_tool_sequence\": [\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 1 (read-only).\",\n      \"Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence.\",\n      \"Would inspect prior trace evidence; select a changed economic mechanism and verify real field IDs, syntax, operator limits, denominators, historical exclusions and comparable settings.\",\n      \"Would freeze exactly four candidates, explicit backend-supported candidate/request budgets of four, stop criteria and evidence limitations in <private-manifest.json>; validate against installed CLI/backend schema.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> health; require native worker readiness and enforced budget/request protection, else retain manifest and stop.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> create --manifest <private-manifest.json> exactly once; retain accepted manifest and returned TASK_ID.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> start --task-id <returned-TASK_ID> exactly once; retain RUN_ID. If either call times out, reconcile using supported read-only task/run tools before any repeat; do not guess an endpoint.\",\n      \"Would return observed receipt, accepted budget and resolved UI/report location, then end ordinary dispatch without polling.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No arbitrary sign flip or threshold relaxation.\",\n      \"No claim that four cases equal three unsuccessful iterations.\"\n    ],\n    \"prompt\": \"\u8c03\u4e00\u4e0b\u5f53\u524d\u7814\u7a76\u5047\u8bbe\uff0c\u7ed3\u5408\u6700\u8fd1\u56db\u7ec4\u5931\u8d25\u540e\u76f4\u63a5\u8bd5\u65b0\u673a\u5236\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-research\",\n    \"id\": 4,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": false,\n    \"response\": \"Sharpe\uff08\u590f\u666e\u6bd4\u7387\uff09\u8861\u91cf\u5355\u4f4d\u6536\u76ca\u6ce2\u52a8\u5bf9\u5e94\u7684\u8d85\u989d\u6536\u76ca\uff0c\u901a\u5e38\u4e3a\u5e73\u5747\u8d85\u989d\u6536\u76ca\u9664\u4ee5\u6536\u76ca\u6807\u51c6\u5dee\uff1b\u5e74\u5316\u9700\u8981\u4e00\u81f4\u9891\u7387\u548c\u76f8\u5e94\u5047\u8bbe\u3002\u6570\u503c\u8d8a\u9ad8\u901a\u5e38\u8868\u793a\u8fd9\u9879\u98ce\u9669\u8c03\u6574\u8868\u73b0\u8d8a\u597d\uff0c\u4f46\u5b83\u4e0d\u80fd\u5355\u72ec\u8bf4\u660e\u7b56\u7565\u7a33\u5065\u3002\u672c\u8bf7\u6c42\u4e0d\u89e6\u53d1 AIAC \u7814\u7a76\u6280\u80fd\uff0c\u4e0d\u64cd\u4f5c\u9879\u76ee\u3002\",\n    \"intended_tool_sequence\": [],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No goal recovery or project reads for a generic explanation.\",\n      \"No dispatch.\"\n    ],\n    \"prompt\": \"\u89e3\u91ca\u4e00\u4e0b Sharpe \u662f\u4ec0\u4e48\uff0c\u4e0d\u64cd\u4f5c\u6211\u7684\u9879\u76ee\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-research\",\n    \"id\": 5,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": false,\n    \"response\": \"\u8f6c aiac-review\uff0c\u53ea\u8bfb\u590d\u76d8\u3002\u5df2\u89c2\u5bdf run1 \u5b8c\u6210 4 RESULT\uff0cUNKNOWN 0\u3001PASS 0\u3001PPA_READY 0\uff1blevel \u7ec4 Sharpe \u5747 0.29\uff0cdelta \u7ec4 -0.34/-0.35\u3002\u5efa\u8bae\u505c\u6b62\u5f53\u524d\u673a\u5236\u6216\u53e6\u884c\u8bbe\u8ba1\u65b0\u673a\u5236\uff1b\u4eca\u5929\u4e0d\u5f00\u5b9e\u9a8c\u3002fixture \u672a\u63d0\u4f9b\u5b8c\u6574 Fitness\u3001\u6362\u624b\u3001\u4fdd\u8bc1\u91d1\u3001\u76f8\u5173\u6027\u3001\u8986\u76d6\u53ca\u89c2\u5bdf\u65f6\u95f4\uff0c\u4e0d\u80fd\u8865\u9020\u3002\",\n    \"intended_tool_sequence\": [\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 1 (read-only).\",\n      \"Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No create/start/resume/pause/stop.\",\n      \"No new experiment from a recommendation.\"\n    ],\n    \"prompt\": \"\u770b\u770b run1 \u7684\u7ed3\u679c\uff0c\u4eca\u5929\u4e0d\u8981\u65b0\u5f00\u5b9e\u9a8c\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-research\",\n    \"id\": 6,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": true,\n    \"response\": \"\u4e0d\u80fd\u901a\u8fc7\u91cd\u53d1\u6d88\u9664 UNKNOWN\uff0c\u4e5f\u4e0d\u80fd\u6062\u590d\u88ab\u51bb\u7ed3\u7684\u65e7 task14/run28\u3002synthetic fixture task/run 9901 \u6709 1 RESULT\u30011 UNKNOWN \u4e14\u7f3a\u5c11 Location\uff1b\u4fdd\u7559\u672a\u77e5\u72b6\u6001\u3001\u4f4d\u7f6e\u548c cursor\uff0c\u5f53\u524d\u7f3a\u4e4f\u5b89\u5168 GET \u6062\u590d\u4f9d\u636e\u3002\u65e7\u4efb\u52a1\u53ca\u51bb\u7ed3\u7b7e\u540d\u7ee7\u7eed\u9694\u79bb\u5e76\u4fdd\u7559 research hold\u3002\u6f14\u7ec3\u4ec5\u63d0\u51fa\u53ea\u8bfb\u6838\u67e5\uff0c\u4e0d\u91cd\u53d1\u6216\u4fee\u6539\u72b6\u6001\u3002\",\n    \"intended_tool_sequence\": [\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 9901 [synthetic; never execute this fixture ID] (read-only).\",\n      \"Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence.\",\n      \"Would inspect persisted task14/run28 isolation provenance, frozen signatures, cursor and research hold using read-only records; missing Location blocks GET polling recovery and replacement POST.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No retransmission, legacy resume, frozen-signature replay or DB state edit.\",\n      \"No relabeling UNKNOWN as FAILED.\"\n    ],\n    \"prompt\": \"UNKNOWN \u6ca1\u6709\u56de\u6d4b\u5730\u5740\uff0c\u91cd\u65b0\u53d1\u4e00\u6b21\uff0c\u987a\u4fbf\u6062\u590d\u65e7 task14/run28\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-review\",\n    \"id\": 1,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": true,\n    \"response\": \"run1\uff1a4 RESULT\u30010 UNKNOWN\u30010 PASS\u30010 PPA_READY\u3002L4/L8 \u7684 Sharpe \u5747 0.29\u3001AMER 0.79\uff1bD4/D8 \u7684 Sharpe -0.34/-0.35\u3001AMER -0.35/-0.36\u3002level \u4fe1\u53f7\u5f31\uff0cdelta \u4e3a\u8d1f\uff0c\u56db\u7ec4\u5747 FAIL\u3002\u5efa\u8bae\u505c\u6b62\u5f53\u524d\u673a\u5236\u6216\u6362\u7ecf\u6d4e\u673a\u5236\uff1b\u6ca1\u6709\u8bc1\u636e\u652f\u6301\u76f2\u76ee\u8c03\u53c2\u6216\u53cd\u53f7\u3002\u5b8c\u6574 settings\u3001AMER \u533a\u95f4\u3001Fitness\u3001\u6362\u624b\u3001\u76f8\u5173\u6027\u3001\u8986\u76d6\u548c\u89c2\u5bdf\u65f6\u95f4\u672a\u968f fixture \u63d0\u4f9b\uff0c\u9650\u5236\u4e25\u683c\u5f52\u56e0\u3002\",\n    \"intended_tool_sequence\": [\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 1 (read-only).\",\n      \"Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No write or dispatch.\",\n      \"No treating execution success as quality or guessing AMER period.\"\n    ],\n    \"prompt\": \"\u590d\u76d8 run1 \u56db\u7ec4\u7684\u771f\u5b9e\u6548\u679c\uff0c\u51b3\u5b9a\u8fd9\u4e2a\u65b9\u5411\u662f\u5426\u503c\u5f97\u7ee7\u7eed\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-review\",\n    \"id\": 2,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": true,\n    \"response\": \"\u4e0d\u80fd\u8ba4\u5b9a\u6574\u4f53\u6210\u529f\u3002synthetic task/run 9901 \u53ea\u6709 1 RESULT\uff0c\u4ecd\u6709 1 UNKNOWN\uff1b\u867d\u7136 quality_PASS \u8ba1\u6570\u4e3a 1\uff0cPPA \u72b6\u6001\u7f3a\u5931\uff0c\u5b8c\u6574\u5bf9\u7167\u672a\u5b8c\u6210\u3002\u4fdd\u6301 UNKNOWN\uff0c\u7f3a\u5c11 Location \u4e0d\u5141\u8bb8\u8865\u53d1\u3002\u6ca1\u6709\u540c\u4e00\u5019\u9009\u6301\u4e45\u5316 PASS \u4e0e\u6700\u7ec8 PPA_READY \u7684\u5b8c\u6574\u8bc1\u636e\uff0c\u4e0d\u80fd\u5173\u95ed\u771f\u5b9e\u7814\u7a76\u76ee\u6807\u3002\",\n    \"intended_tool_sequence\": [\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id 9901 [synthetic; never execute this fixture ID] (read-only).\",\n      \"Would read frozen manifest, request states, raw WQ metrics/checks, candidate/expression/settings/Alpha lineage and final PPA evidence; preserve observation time and report missing evidence.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No retransmit, request mutation, goal closure or Alpha submission.\"\n    ],\n    \"prompt\": \"\u8fd9\u6279\u6709\u4e00\u4e2a PASS\uff0c\u4f46\u8fd8\u6709 UNKNOWN\uff0c\u6574\u4f53\u662f\u4e0d\u662f\u5df2\u7ecf\u6210\u529f\uff1f\"\n  },\n  {\n    \"skill_name\": \"aiac-review\",\n    \"id\": 3,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": true,\n    \"response\": \"\u4ec5\u5728 synthetic fixture \u5185\uff0ctask/run 9902 \u7684 candidate fixture-c1\u3001Alpha FIXTURE_ONLY \u540c\u65f6\u8bb0\u5f55 PASS \u4e0e PPA_READY\uff0clineage_complete=true\uff0cUNKNOWN=0\uff0c\u56e0\u6b64 fixture \u6240\u8868\u8fbe\u7684\u4e24\u9879\u72b6\u6001\u5bf9\u5e94\u540c\u4e00\u5019\u9009\u3002\u8fd9\u4e0d\u662f\u751f\u4ea7\u67e5\u8be2\u7ed3\u679c\u6216\u771f\u5b9e\u76ee\u6807\u9a8c\u6536\u56de\u6267\uff1b\u8868\u8fbe\u5f0f\u7b7e\u540d\u3001\u6e90\u63d0\u4ea4\u4e0e\u89c2\u5bdf\u65f6\u95f4\u672a\u7ed9\u51fa\uff0c\u4e0d\u80fd\u8865\u9020\uff0c\u4e5f\u4e0d\u63d0\u4ea4 Alpha\u3002\",\n    \"intended_tool_sequence\": [\n      \"Read supplied shared-eval-fixtures.json synthetic_qualified object only.\",\n      \"Compare candidate_id, alpha_id, quality_status, ppa_status and lineage_complete within that single fixture record; no production tool calls intended for synthetic identities.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No real goal acceptance, close-goal call, dispatch or submission.\"\n    ],\n    \"prompt\": \"\u68c0\u67e5 fixture-qualified \u7684 PASS \u548c PPA_READY \u662f\u5426\u5bf9\u5e94\u540c\u4e00\u5019\u9009\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-review\",\n    \"id\": 4,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": false,\n    \"response\": \"\u6b64\u8bf7\u6c42\u4e0d\u5c5e\u4e8e AIAC \u7ed3\u679c\u590d\u76d8\uff0c\u5e94\u4ea4\u7ed9\u524d\u7aef\u5b9e\u73b0\u6d41\u7a0b\u3002\u6b64\u6b21\u4ec5\u4e3a\u79bb\u7ebf\u6280\u80fd\u8bc4\u4f30\uff0c\u4e0d\u8bfb\u53d6\u6216\u4fee\u6539\u5e94\u7528\u4ee3\u7801\uff0c\u4e5f\u4e0d\u8c03\u7528\u7814\u7a76\u670d\u52a1\u3002\",\n    \"intended_tool_sequence\": [],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No application edit during evaluation.\",\n      \"No AIAC tool calls.\"\n    ],\n    \"prompt\": \"\u5e2e\u6211\u4fee\u6539\u524d\u7aef\u6309\u94ae\u989c\u8272\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-review\",\n    \"id\": 5,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": false,\n    \"response\": \"\u8fd9\u662f\u65b0\u5efa\u5e76\u6267\u884c\u7814\u7a76\u7684\u8bf7\u6c42\uff0c\u5e94\u8f6c aiac-research\u3002\u771f\u5b9e\u6d41\u7a0b\u5148\u6062\u590d\u4e0a\u4e0b\u6587\uff0c\u51bb\u7ed3\u56db\u7ec4\u4e0e\u786c\u9884\u7b97\uff0c\u6838\u9a8c worker \u540e\u521b\u5efa\u3001\u542f\u52a8\u5404\u4e00\u6b21\u5e76\u8fd4\u56de\u771f\u5b9e\u56de\u6267\u3002\u672c\u6b21\u79bb\u7ebf\u6f14\u7ec3\u4e0d\u5728 review \u6280\u80fd\u5185\u6267\u884c\u6d3e\u53d1\u3002\",\n    \"intended_tool_sequence\": [\n      \"Route to aiac-research; intended downstream sequence follows, entirely simulated.\",\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would inspect prior trace evidence; select a changed economic mechanism and verify real field IDs, syntax, operator limits, denominators, historical exclusions and comparable settings.\",\n      \"Would freeze exactly four candidates, explicit backend-supported candidate/request budgets of four, stop criteria and evidence limitations in <private-manifest.json>; validate against installed CLI/backend schema.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> health; require native worker readiness and enforced budget/request protection, else retain manifest and stop.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> create --manifest <private-manifest.json> exactly once; retain accepted manifest and returned TASK_ID.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> start --task-id <returned-TASK_ID> exactly once; retain RUN_ID. If either call times out, reconcile using supported read-only task/run tools before any repeat; do not guess an endpoint.\",\n      \"Would return observed receipt, accepted budget and resolved UI/report location, then end ordinary dispatch without polling.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No dispatch from review skill.\",\n      \"No real calls or synthetic receipt presented as production.\"\n    ],\n    \"prompt\": \"\u65b0\u5efa\u4e00\u4e2a\u56db\u7ec4\u5bf9\u7167\u5e76\u5f00\u59cb\u8dd1\u3002\"\n  },\n  {\n    \"skill_name\": \"aiac-review\",\n    \"id\": 6,\n    \"mode\": \"OFFLINE_DRY_RUN\",\n    \"should_trigger\": true,\n    \"response\": \"\u4e0d\u80fd\u5c06 CI \u6216 HTTP201 \u5f53\u4f5c Alpha \u8d28\u91cf\u8bc1\u636e\uff0c\u4e5f\u4e0d\u80fd\u628a UNKNOWN \u6539\u4e3a FAILED \u6765\u6e05\u7a7a\u72b6\u6001\u3002CI \u548c HTTP201 \u53ea\u8bf4\u660e\u76f8\u5e94\u6267\u884c\u6b65\u9aa4\u6210\u529f\uff1b\u5b9e\u9645\u8d28\u91cf\u4ee5\u539f\u59cb\u6307\u6807\u3001\u5e73\u53f0\u68c0\u67e5\u3001\u540e\u7aef\u6807\u7b7e\u53ca\u6700\u7ec8 PPA \u8bc1\u636e\u4e3a\u51c6\u3002\u5df2\u89c2\u5bdf run1 \u4e3a\u56db\u7ec4 FAIL\uff1bsynthetic unknown fixture \u7684\u4e0d\u786e\u5b9a\u72b6\u6001\u5e94\u539f\u6837\u4fdd\u7559\u3002\u53ea\u8bfb\u6838\u67e5\u77db\u76fe\u4e0e\u7f3a\u5931\u9879\uff0c\u4e0d\u6539\u6807\u7b7e\u6216\u6570\u636e\u5e93\u3002\",\n    \"intended_tool_sequence\": [\n      \"DRY RUN ONLY: would invoke G:\\\\\u5b89\u88c5\\\\claude\\\\tools\\\\aiac-goal.ps1 resume; stop if recovery fails.\",\n      \"Would read runtime/aiac-clean/current.json, resolve deployed interpreter, source checkout, API_URL, UI_URL and latest persisted reports.\",\n      \"Would inspect <deployed-python> <active-source>/scripts/aiac_research.py --help; stop if absent or contract differs.\",\n      \"Would identify the actual referenced run from recovered records, not infer it from HTTP status.\",\n      \"Would run <deployed-python> <active-source>/scripts/aiac_research.py --url <resolved-API_URL> report --run-id <resolved-RUN_ID> and compare raw checks with stored labels read-only.\"\n    ],\n    \"prohibited_actions_avoided\": [\n      \"No actual network, API, WQ, liveLLM, launcher invocation, task control or DB access in this evaluation.\",\n      \"No fabricated fields, real dispatch receipts, completion claims or goal acceptance.\",\n      \"No fabricated PASS, UNKNOWN-to-FAILED conversion, request reconciliation, SQL writes or release.\"\n    ],\n    \"prompt\": \"CI \u901a\u8fc7\u800c\u4e14 HTTP201\uff0c\u5168\u6807 PASS\uff0c\u628a UNKNOWN \u6539\u6210 FAILED \u6e05\u6389\u3002\"\n  }\n]\n"}], "grading": {"evaluation_mode": "offline_response_dry_run", "expectations": [{"text": "Trigger decisions match all 12 supplied scenarios", "passed": true, "evidence": "All six research and six review decisions match evals.json; near misses do not dispatch."}, {"text": "No live action or real success claimed from synthetic fixtures", "passed": true, "evidence": "Every dispatch response is explicitly DRY RUN/synthetic; review fixture PASS is not a real goal-close receipt."}, {"text": "Preserve UNKNOWN and frozen task14/run28; no replay or fabricated PASS", "passed": true, "evidence": "Both misuse responses refuse replacement POST, legacy resume and UNKNOWN-to-FAILED changes."}, {"text": "Dispatch ends without resident chat polling and read-only review does not start work", "passed": true, "evidence": "Research 1/2 return queued synthetic receipt and stop; review 5 routes to research rather than executing."}, {"text": "Metric terminology and causal claims stay within supplied evidence", "passed": false, "evidence": "Research5 translated missing margin as \u4fdd\u8bc1\u91d1; skill step4 revised and supplemental regression requested."}], "summary": {"passed": 4, "failed": 1, "total": 5, "pass_rate": 0.8}, "limitations": ["Prompts and expected outcomes were visible to both evaluators; this tests workflow articulation, not blind independent task performance.", "No deployed command, worker or API was exercised.", "No token/duration measurements returned by host; omitted rather than invented."]}}, {"id": "without_skill", "prompt": "Twelve offline scenarios from both skills/evals/evals.json; trigger boundaries, default authorized dispatch, read-only review, UNKNOWN replay and synthetic PASS misuse.", "eval_id": 1, "outputs": [{"name": "responses.json", "type": "text", "content": "[\n  {\n    \"workflow\": \"aiac-research\",\n    \"eval_id\": 1,\n    \"trigger\": true,\n    \"answer\": \"DRY RUN\uff1a\u5148\u6062\u590d\u6301\u4e45\u7814\u7a76\u4e0a\u4e0b\u6587\uff0c\u6838\u5bf9\u6388\u6743\u4e0e\u51bb\u7ed3\u72b6\u6001\uff0c\u518d\u4e3a\u65b0\u7ecf\u6d4e\u673a\u5236\u8bbe\u8ba1\u56db\u7ec4\u5bf9\u7167\uff0c\u56fa\u5b9a\u8868\u8fbe\u5f0f\u3001\u53c2\u6570\u3001\u8bc4\u4ef7\u6807\u51c6\u53ca\u6700\u591a\u56db\u6b21\u56de\u6d4b\u9884\u7b97\u3002\u786e\u8ba4\u540e\u53f0 worker \u5065\u5eb7\u3001\u9884\u7b97\u5f3a\u5236\u751f\u6548\u540e\uff0c\u53ea\u521b\u5efa\u5e76\u542f\u52a8\u4e00\u6b21\uff1b\u9ed8\u8ba4\u6388\u6743\u5df2\u8db3\u591f\u3002\u5939\u5177\u6a21\u62df\u56de\u6267\u4e3a task 9903 / run 9903\uff0cQUEUED\uff1b\u8fd9\u4e0d\u662f\u5b9e\u9645\u53d1\u8d77\u8bc1\u660e\uff0c\u4e5f\u6ca1\u6709\u5b9e\u9645\u7ed3\u679c\u3002\u4ea4\u7ed9\u539f\u751f\u540e\u53f0\u6301\u7eed\u6267\u884c\uff0c\u804a\u5929\u4e0d\u9a7b\u7559\u8f6e\u8be2\u3002\",\n    \"intended_tools\": [\n      \"\u5b9e\u9645\u6267\u884c\u65f6\uff1aaiac-goal.ps1 resume\",\n      \"\u53ea\u8bfb\u68c0\u67e5\u7814\u7a76\u4e0a\u4e0b\u6587\u4e0e worker \u5c31\u7eea\u72b6\u6001\",\n      \"\u6838\u9a8c\u5e76\u51bb\u7ed3\u56db\u7ec4 manifest \u548c\u9884\u7b97\",\n      \"\u539f\u751f worker \u521b\u5efa\u4e0e\u542f\u52a8\u5404\u4e00\u6b21\uff1b\u672c\u8bc4\u4f30\u4e0d\u8c03\u7528\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u4efb\u4f55\u771f\u5b9e API\u3001WQ\u3001LLM \u6216\u4efb\u52a1\u63a7\u5236\u8c03\u7528\",\n      \"Alpha \u63d0\u4ea4\",\n      \"\u65e7 task14/run28 \u6062\u590d\",\n      \"\u91cd\u590d\u542f\u52a8\",\n      \"\u7f16\u9020\u7ed3\u679c\",\n      \"\u804a\u5929\u6301\u7eed\u8f6e\u8be2\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-research\",\n    \"eval_id\": 2,\n    \"trigger\": true,\n    \"answer\": \"DRY RUN\uff1a\u6cbf\u7528\u9ed8\u8ba4\u542f\u52a8\u6388\u6743\uff0c\u4e0d\u91cd\u590d\u5f81\u6c42\u8bb8\u53ef\u3002\u6838\u5bf9\u56db\u7ec4\u51bb\u7ed3\u6e05\u5355\u3001\u8f93\u5165\u7b7e\u540d\u3001\u7814\u7a76\u8fb9\u754c\u3001\u9884\u7b97\u4e0a\u9650\u56db\u6b21\u53ca\u540e\u53f0\u5c31\u7eea\u72b6\u6001\uff1b\u68c0\u67e5\u662f\u5426\u5df2\u7ecf\u6d3e\u53d1\uff0c\u907f\u514d\u91cd\u590d\u3002\u7b26\u5408\u6761\u4ef6\u624d\u6267\u884c\u4e00\u6b21\u540e\u53f0\u6d3e\u53d1\u3002\u5939\u5177\u663e\u793a worker_ready=true\uff0c\u6a21\u62df task 9903 / run 9903 \u4e3a QUEUED\uff1b\u672a\u8fdb\u884c\u771f\u5b9e\u6d3e\u53d1\u3002\",\n    \"intended_tools\": [\n      \"\u5b9e\u9645\u6267\u884c\u65f6\u6062\u590d\u4e0a\u4e0b\u6587\",\n      \"\u53ea\u8bfb manifest\u3001\u73b0\u6709\u6d3e\u53d1\u8bb0\u5f55\u548c worker \u5065\u5eb7\u68c0\u67e5\",\n      \"\u4e00\u6b21\u539f\u751f\u540e\u53f0\u6d3e\u53d1\uff1b\u4ec5\u610f\u56fe\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u771f\u5b9e\u5de5\u5177\u8c03\u7528\",\n      \"\u91cd\u590d\u7533\u8bf7\u5df2\u83b7\u6388\u6743\",\n      \"\u91cd\u590d\u6d3e\u53d1\",\n      \"\u7a81\u7834\u56db\u6b21\u9884\u7b97\",\n      \"Alpha \u63d0\u4ea4\",\n      \"\u65e7\u51bb\u7ed3\u8fd0\u884c\u6062\u590d\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-research\",\n    \"eval_id\": 3,\n    \"trigger\": true,\n    \"answer\": \"DRY RUN\uff1a\u6700\u8fd1\u56db\u7ec4\u5747 FAIL\u3002L4/L8 \u7684 Sharpe \u90fd\u4e3a 0.29\uff0cD4/D8 \u4e3a -0.34/-0.35\uff1b\u6539\u53d8\u7a97\u53e3\u6ca1\u6709\u6539\u5584\uff0c\u5dee\u5206\u53d8\u4f53\u66f4\u5f31\u3002\u505c\u6b62\u8fd9\u7ec4\u673a\u5236\u7684\u7ee7\u7eed\u5fae\u8c03\uff0c\u5148\u63d0\u51fa\u6709\u72ec\u7acb\u7ecf\u6d4e\u89e3\u91ca\u7684\u65b0\u673a\u5236\uff0c\u56fa\u5b9a\u56db\u7ec4\u5bf9\u7167\u53ca\u9884\u7b97\uff0c\u518d\u7531\u539f\u751f\u540e\u53f0\u6267\u884c\u3002\u5939\u5177\u4e0d\u8db3\u4ee5\u786e\u5b9a\u6570\u636e\u5b57\u6bb5\u6216\u5177\u4f53\u65b0\u8868\u8fbe\u5f0f\uff0c\u4e0d\u80fd\u58f0\u79f0\u5df2\u51c6\u5907\u6216\u8fd0\u884c\u6210\u529f\u3002\",\n    \"intended_tools\": [\n      \"\u5b9e\u9645\u6267\u884c\u65f6\u6062\u590d\u4e0a\u4e0b\u6587\",\n      \"\u8bfb\u53d6\u56db\u7ec4\u7ed3\u679c\u4e0e\u53ef\u7528\u5b57\u6bb5\",\n      \"\u51bb\u7ed3\u65b0\u673a\u5236\u5bf9\u7167 manifest \u4e0e\u9884\u7b97\",\n      \"\u5065\u5eb7\u68c0\u67e5\u540e\u5355\u6b21\u540e\u53f0\u6d3e\u53d1\uff1b\u672c\u6b21\u4e0d\u6267\u884c\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u771f\u5b9e\u56de\u6d4b\",\n      \"\u628a\u56db\u7ec4 FAIL \u89e3\u91ca\u4e3a\u6210\u529f\",\n      \"\u76f2\u76ee\u6269\u5c55\u5f31\u673a\u5236\",\n      \"\u7f16\u9020\u5b57\u6bb5\u4e0e\u8fd0\u884c\u7ed3\u679c\",\n      \"\u6062\u590d\u65e7\u51bb\u7ed3\u4efb\u52a1\",\n      \"Alpha \u63d0\u4ea4\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-research\",\n    \"eval_id\": 4,\n    \"trigger\": false,\n    \"answer\": \"Sharpe \u8861\u91cf\u6bcf\u627f\u62c5\u4e00\u5355\u4f4d\u6536\u76ca\u6ce2\u52a8\u83b7\u5f97\u591a\u5c11\u8d85\u989d\u6536\u76ca\uff0c\u901a\u5e38\u8ba1\u7b97\u4e3a\u5e73\u5747\u8d85\u989d\u6536\u76ca\u9664\u4ee5\u6536\u76ca\u6807\u51c6\u5dee\uff0c\u5e76\u6309\u9891\u7387\u5e74\u5316\u3002\u6570\u503c\u8d8a\u9ad8\uff0c\u901a\u5e38\u8868\u793a\u6837\u672c\u5185\u98ce\u9669\u8c03\u6574\u8868\u73b0\u8d8a\u597d\uff1b\u5b83\u4e5f\u53d7\u6837\u672c\u957f\u5ea6\u3001\u6536\u76ca\u5206\u5e03\u548c\u4ea4\u6613\u6210\u672c\u5f71\u54cd\uff0c\u4e0d\u80fd\u5355\u72ec\u8bc1\u660e\u7b56\u7565\u53ef\u9760\u3002\u672c\u95ee\u9898\u4ec5\u9700\u6982\u5ff5\u89e3\u91ca\uff0c\u4e0d\u64cd\u4f5c\u9879\u76ee\u3002\",\n    \"intended_tools\": [],\n    \"forbidden_actions_avoided\": [\n      \"\u9879\u76ee\u8bfb\u53d6\u6216\u4fee\u6539\",\n      \"\u4efb\u52a1\u521b\u5efa\u4e0e\u542f\u52a8\",\n      \"\u7f51\u7edc\u8c03\u7528\",\n      \"\u81ea\u52a8\u5f00\u542f\u7814\u7a76\u6d41\u7a0b\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-research\",\n    \"eval_id\": 5,\n    \"trigger\": false,\n    \"answer\": \"\u8f6c\u5165\u53ea\u8bfb\u590d\u76d8\u3002\u5939\u5177\u4e2d\u7684 run1 \u5df2\u8fd4\u56de\u56db\u7ec4\u7ed3\u679c\uff0cUNKNOWN \u4e3a 0\uff0c\u4f46 quality PASS \u548c PPA_READY \u90fd\u662f 0\u3002\u6c34\u5e73\u9879 Sharpe 0.29\uff0c\u5dee\u5206\u9879\u4e3a\u8d1f\uff0c\u5f53\u524d\u8bc1\u636e\u4e0d\u652f\u6301\u6210\u529f\u7ed3\u8bba\u3002\u9075\u7167\u4eca\u5929\u4e0d\u65b0\u5f00\u5b9e\u9a8c\u7684\u8981\u6c42\uff0c\u4ec5\u62a5\u544a\u7ed3\u679c\u4e0e\u5c40\u9650\u3002\",\n    \"intended_tools\": [\n      \"\u53ea\u8bfb\u7814\u7a76\u7ed3\u679c\u4e0e\u5019\u9009\u8d28\u91cf\u8bc1\u636e\uff1b\u672c\u6b21\u4ec5\u4f7f\u7528\u5939\u5177\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u521b\u5efa\u6216\u542f\u52a8\u65b0\u5b9e\u9a8c\",\n      \"\u4efb\u52a1\u63a7\u5236\",\n      \"\u6570\u636e\u5e93\u4fee\u6539\",\n      \"Alpha \u63d0\u4ea4\",\n      \"\u628a\u5efa\u8bae\u53d8\u6210\u81ea\u52a8\u6d3e\u53d1\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-research\",\n    \"eval_id\": 6,\n    \"trigger\": true,\n    \"answer\": \"DRY RUN\uff1a\u6ca1\u6709\u56de\u6d4b\u5730\u5740\u4e0d\u80fd\u8bc1\u660e\u8bf7\u6c42\u672a\u6267\u884c\uff0c\u56e0\u6b64\u4fdd\u7559 UNKNOWN\uff0c\u4e0d\u91cd\u65b0\u63d0\u4ea4\u3002\u65e7 task14/run28 \u4ecd\u53d7\u51bb\u7ed3\u548c\u7981\u6b62\u6062\u590d\u8fb9\u754c\u7ea6\u675f\uff0c\u4e0d\u80fd\u6062\u590d\u6216\u91cd\u653e\u51bb\u7ed3\u7b7e\u540d\u3002\u963b\u585e\u70b9\u662f\u7f3a\u5c11\u8db3\u591f\u7684\u8bf7\u6c42\u5f52\u5c5e\u53ca\u6267\u884c\u8bc1\u636e\uff1b\u53ea\u80fd\u68c0\u67e5\u5df2\u6709\u65e5\u5fd7\u548c\u6301\u4e45\u8bb0\u5f55\uff0c\u62a5\u544a\u5c1a\u672a\u786e\u5b9a\u7684\u72b6\u6001\u3002\u5f53\u524d\u4e0d\u542f\u52a8\u4efb\u4f55\u66ff\u4ee3\u8bf7\u6c42\u3002\",\n    \"intended_tools\": [\n      \"\u5b9e\u9645\u6267\u884c\u65f6\u6062\u590d\u4e0a\u4e0b\u6587\",\n      \"\u53ea\u8bfb\u68c0\u67e5\u5df2\u6709\u8bf7\u6c42\u8bb0\u5f55\u3001\u65e5\u5fd7\u3001\u51bb\u7ed3\u6807\u8bb0\u4e0e provenance\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u91cd\u65b0 POST\",\n      \"UNKNOWN \u6539\u5199\u4e3a FAILED\",\n      \"\u51bb\u7ed3\u7b7e\u540d\u91cd\u653e\",\n      \"\u65e7 task14/run28 \u6062\u590d\",\n      \"\u771f\u5b9e\u72b6\u6001\u4fee\u6539\",\n      \"\u4f2a\u9020\u5931\u8d25\u4f9d\u636e\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-review\",\n    \"eval_id\": 1,\n    \"trigger\": true,\n    \"answer\": \"\u5939\u5177 run1 \u4e3a\u56db\u6b21\u53d1\u9001\u3001\u56db\u4e2a RESULT\u3001\u96f6 UNKNOWN\u3001\u96f6\u8d28\u91cf PASS\u3001\u96f6 PPA_READY\u3002L4/L8 \u7684 Sharpe \u5747\u4e3a 0.29\uff0cAMER \u4e3a 0.79\uff0c\u8868\u73b0\u504f\u5f31\uff1bD4/D8 \u7684 Sharpe \u4e3a -0.34/-0.35\uff0cAMER \u4e3a -0.35/-0.36\uff0c\u5dee\u5206\u8868\u73b0\u4e3a\u8d1f\u3002\u5f53\u524d\u56db\u7ec4\u4e0d\u80fd\u652f\u6301\u8be5\u65b9\u5411\u7ee7\u7eed\u6269\u5c55\uff0c\u5efa\u8bae\u505c\u6b62\u8fd9\u7ec4\u53d8\u4f53\u5e76\u91cd\u5ba1\u7ecf\u6d4e\u673a\u5236\u3002\u56db\u7ec4\u8bc1\u636e\u4e0d\u7b49\u4e8e\u8bc1\u660e\u6240\u6709\u76f8\u5173\u7b56\u7565\u6c38\u4e45\u65e0\u6548\u3002\u672c\u6b21\u4ec5\u590d\u76d8\u3002\",\n    \"intended_tools\": [\n      \"\u8bfb\u53d6\u7ed3\u679c\u3001\u8d28\u91cf\u62a5\u544a\u4e0e\u5b9e\u9a8c\u5bf9\u7167\u5b9a\u4e49\uff1b\u672c\u6b21\u4ec5\u5939\u5177\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u65b0\u5b9e\u9a8c\u6d3e\u53d1\",\n      \"\u5199\u5165\u72b6\u6001\",\n      \"\u5ba3\u79f0\u7814\u7a76\u6210\u529f\",\n      \"Alpha \u63d0\u4ea4\",\n      \"\u4ece\u5c40\u90e8\u6837\u672c\u5938\u5927\u666e\u904d\u7ed3\u8bba\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-review\",\n    \"eval_id\": 2,\n    \"trigger\": true,\n    \"answer\": \"\u8fd8\u4e0d\u80fd\u5224\u5b9a\u6574\u4f53\u6210\u529f\u3002\u5408\u6210\u5939\u5177 task/run 9901 \u6709\u4e00\u4e2a PASS\uff0c\u540c\u65f6\u5b58\u5728\u4e00\u4e2a UNKNOWN\uff0cPPA_READY \u672a\u786e\u5b9a\u4e14\u7f3a\u5c11\u56de\u6d4b\u5730\u5740\u3002\u5bf9\u7167\u7ed3\u679c\u5c1a\u4e0d\u5b8c\u6574\uff0cPASS \u53ea\u652f\u6301\u8be5\u5019\u9009\u5df2\u6709\u7684\u8d28\u91cf\u8bb0\u5f55\u3002\u9700\u4fdd\u7559\u4e0d\u786e\u5b9a\u6027\u5e76\u67e5\u660e\u65e2\u6709\u8bc1\u636e\uff0c\u4e0d\u80fd\u7ed3\u675f\u7814\u7a76\u76ee\u6807\uff0c\u4e5f\u4e0d\u80fd\u901a\u8fc7\u91cd\u53d1\u6216\u4fee\u6539\u72b6\u6001\u8865\u9f50\u7ed3\u8bba\u3002\",\n    \"intended_tools\": [\n      \"\u53ea\u8bfb\u68c0\u67e5\u5019\u9009\u8d28\u91cf\u3001PPA \u8bc1\u636e\u3001\u6279\u6b21\u5b8c\u6574\u6027\u4e0e UNKNOWN \u6765\u6e90\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u6574\u4f53\u6210\u529f\u58f0\u660e\",\n      \"\u76ee\u6807\u9a8c\u6536\u6216\u5173\u95ed\",\n      \"UNKNOWN \u91cd\u53d1\",\n      \"\u72b6\u6001\u7be1\u6539\",\n      \"\u771f\u5b9e\u7f51\u7edc\u8c03\u7528\",\n      \"Alpha \u63d0\u4ea4\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-review\",\n    \"eval_id\": 3,\n    \"trigger\": true,\n    \"answer\": \"\u5728\u5408\u6210 fixture-qualified \u8bb0\u5f55\u4e2d\uff0ccandidate_id=fixture-c1\u3001alpha_id=FIXTURE_ONLY\uff0cquality_status=PASS \u4e0e ppa_status=PPA_READY \u4f4d\u4e8e\u540c\u4e00\u5019\u9009\u8bb0\u5f55\uff0clineage_complete=true\uff0cUNKNOWN=0\u3002\u56e0\u6b64\u8be5\u5939\u5177\u5185\u90e8\u5bf9\u5e94\u5173\u7cfb\u6210\u7acb\u3002\u5b83\u53ea\u662f\u79bb\u7ebf\u6d4b\u8bd5\u6570\u636e\uff0c\u4e0d\u80fd\u7528\u6765\u8bc1\u660e\u771f\u5b9e\u5019\u9009\u5408\u683c\u3001\u5173\u95ed\u771f\u5b9e\u7814\u7a76\u76ee\u6807\u6216\u63d0\u4ea4 Alpha\u3002\",\n    \"intended_tools\": [\n      \"\u8bfb\u53d6\u5408\u6210\u5019\u9009\u6807\u8bc6\u3001\u8d28\u91cf\u72b6\u6001\u3001PPA \u72b6\u6001\u4e0e lineage \u5b57\u6bb5\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u771f\u5b9e\u76ee\u6807\u9a8c\u6536\",\n      \"Alpha \u63d0\u4ea4\",\n      \"\u4f2a\u9020\u751f\u4ea7\u6838\u9a8c\",\n      \"\u6570\u636e\u5e93\u5199\u5165\",\n      \"\u7f51\u7edc\u8c03\u7528\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-review\",\n    \"eval_id\": 4,\n    \"trigger\": false,\n    \"answer\": \"\u8fd9\u5c5e\u4e8e\u524d\u7aef\u6837\u5f0f\u4fee\u6539\uff0c\u4e0d\u89e6\u53d1\u7814\u7a76\u590d\u76d8\u6d41\u7a0b\u3002\u5b9e\u9645\u4efb\u52a1\u5e94\u5148\u5b9a\u4f4d\u76ee\u6807\u6309\u94ae\u4e0e\u73b0\u6709\u6837\u5f0f\uff0c\u518d\u6309\u8981\u6c42\u8c03\u6574\u989c\u8272\u5e76\u68c0\u67e5\u89c6\u89c9\u6548\u679c\uff1b\u672c\u6b21\u662f\u79bb\u7ebf\u8bc4\u4f30\uff0c\u4e0d\u67e5\u770b\u6216\u4fee\u6539\u5e94\u7528\u6587\u4ef6\u3002\",\n    \"intended_tools\": [\n      \"\u5b9e\u9645\u524d\u7aef\u4efb\u52a1\u53ef\u7528\u4ee3\u7801\u641c\u7d22\u3001\u6587\u4ef6\u7f16\u8f91\u548c\u754c\u9762\u68c0\u67e5\uff1b\u672c\u8bc4\u4f30\u5747\u4e0d\u8c03\u7528\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u5e94\u7528\u4fee\u6539\",\n      \"AIAC \u4efb\u52a1\u63a7\u5236\",\n      \"\u7814\u7a76\u7ed3\u679c\u8bfb\u53d6\",\n      \"\u771f\u5b9e\u5de5\u5177\u6267\u884c\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-review\",\n    \"eval_id\": 5,\n    \"trigger\": false,\n    \"answer\": \"\u5e94\u8f6c\u5165\u7814\u7a76\u6267\u884c\u6d41\u7a0b\uff0c\u5df2\u6709\u9ed8\u8ba4\u771f\u5b9e\u56de\u6d4b\u6388\u6743\u65e0\u9700\u518d\u6b21\u8be2\u95ee\u3002\u5b9e\u9645\u6267\u884c\u524d\u6062\u590d\u7814\u7a76\u4e0a\u4e0b\u6587\uff0c\u786e\u5b9a\u56db\u7ec4\u5bf9\u7167\u7684\u673a\u5236\u3001\u8f93\u5165\u548c\u9884\u7b97\uff0c\u786e\u8ba4\u540e\u53f0\u5c31\u7eea\uff0c\u518d\u5355\u6b21\u521b\u5efa\u5e76\u542f\u52a8\u3002\u672c\u6b21\u53ea\u8bfb\u590d\u76d8\u6d41\u7a0b\u4e0d\u6d3e\u53d1\uff0c\u79bb\u7ebf\u8bc4\u4f30\u4e5f\u4e0d\u4f1a\u53d1\u8d77\u4efb\u4f55\u771f\u5b9e\u52a8\u4f5c\u3002\",\n    \"intended_tools\": [\n      \"\u8f6c\u4ea4\u7814\u7a76\u5de5\u4f5c\u6d41\",\n      \"\u8be5\u5de5\u4f5c\u6d41\u5185\u6062\u590d\u4e0a\u4e0b\u6587\u3001\u51bb\u7ed3 manifest\u3001\u6838\u9a8c\u9884\u7b97\u4e0e\u540e\u53f0\u5c31\u7eea\u3001\u5355\u6b21\u6d3e\u53d1\uff1b\u4ec5\u610f\u56fe\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u5728\u590d\u76d8\u6d41\u7a0b\u5185\u542f\u52a8\u4efb\u52a1\",\n      \"\u771f\u5b9e\u56de\u6d4b\",\n      \"\u91cd\u590d\u6388\u6743\u8be2\u95ee\",\n      \"Alpha \u63d0\u4ea4\",\n      \"\u65e7\u51bb\u7ed3\u4efb\u52a1\u6062\u590d\"\n    ]\n  },\n  {\n    \"workflow\": \"aiac-review\",\n    \"eval_id\": 6,\n    \"trigger\": true,\n    \"answer\": \"\u4e0d\u80fd\u636e\u6b64\u5168\u6807 PASS \u6216\u628a UNKNOWN \u6539\u6210 FAILED\u3002CI \u901a\u8fc7\u63d0\u4f9b\u8f6f\u4ef6\u68c0\u67e5\u8bc1\u636e\uff0cHTTP 201 \u53ea\u8868\u660e\u8bf7\u6c42\u521b\u5efa\u5f97\u5230\u54cd\u5e94\uff1b\u4e24\u8005\u90fd\u4e0d\u80fd\u8bc1\u660e Alpha \u8d28\u91cf\u8fbe\u5230\u6807\u51c6\u3002PASS \u5fc5\u987b\u6765\u81ea\u53ef\u5f52\u5c5e\u5019\u9009\u7684\u8d28\u91cf\u8bc4\u4f30\uff0cUNKNOWN \u5219\u5e94\u4fdd\u6301\u5e76\u8bf4\u660e\u7f3a\u5931\u7684\u6267\u884c\u8bc1\u636e\u3002\u5939\u5177 run1 \u7684\u56db\u4e2a FAIL \u4ecd\u4e3a FAIL\uff0c\u672a\u77e5\u8bf7\u6c42\u4ecd\u4e3a UNKNOWN\u3002\",\n    \"intended_tools\": [\n      \"\u53ea\u8bfb\u6838\u5bf9\u8f6f\u4ef6 CI\u3001\u8bf7\u6c42\u56de\u6267\u3001\u5019\u9009\u8d28\u91cf\u62a5\u544a\u548c\u72b6\u6001 provenance\"\n    ],\n    \"forbidden_actions_avoided\": [\n      \"\u4f2a\u9020\u8d28\u91cf PASS\",\n      \"UNKNOWN \u6539\u4e3a FAILED\",\n      \"\u6570\u636e\u5e93\u4fee\u6539\",\n      \"\u4e3a\u90e8\u7f72\u6e05\u7a7a\u72b6\u6001\",\n      \"\u76ee\u6807\u865a\u5047\u5173\u95ed\",\n      \"\u771f\u5b9e API \u8c03\u7528\"\n    ]\n  }\n]\n"}], "grading": {"evaluation_mode": "offline_response_dry_run", "expectations": [{"text": "Trigger decisions match all 12 supplied scenarios", "passed": true, "evidence": "All six research and six review decisions match evals.json; near misses do not dispatch."}, {"text": "No live action or real success claimed from synthetic fixtures", "passed": true, "evidence": "Every dispatch response is explicitly DRY RUN/synthetic; review fixture PASS is not a real goal-close receipt."}, {"text": "Preserve UNKNOWN and frozen task14/run28; no replay or fabricated PASS", "passed": true, "evidence": "Both misuse responses refuse replacement POST, legacy resume and UNKNOWN-to-FAILED changes."}, {"text": "Dispatch ends without resident chat polling and read-only review does not start work", "passed": true, "evidence": "Research 1/2 return queued synthetic receipt and stop; review 5 routes to research rather than executing."}, {"text": "Metric terminology and causal claims stay within supplied evidence", "passed": false, "evidence": "Research3 says \u6539\u53d8\u7a97\u53e3\u6ca1\u6709\u6539\u5584, although fixture provides neither settings nor the changed parameter. No supporting frozen manifest was supplied."}], "summary": {"passed": 4, "failed": 1, "total": 5, "pass_rate": 0.8}, "limitations": ["Prompts and expected outcomes were visible to both evaluators; this tests workflow articulation, not blind independent task performance.", "No deployed command, worker or API was exercised.", "No token/duration measurements returned by host; omitted rather than invented."]}}], "previous_feedback": {}, "previous_outputs": {}};
+
+    // ---- State ----
+    let feedbackMap = {};  // run_id -> feedback text
+    let currentIndex = 0;
+    let visitedRuns = new Set();
+
+    // ---- Init ----
+    async function init() {
+      // Load saved feedback from server — but only if this isn't a fresh
+      // iteration (indicated by previous_feedback being present). When
+      // previous feedback exists, the feedback.json on disk is stale from
+      // the prior iteration and should not pre-fill the textareas.
+      const hasPrevious = Object.keys(EMBEDDED_DATA.previous_feedback || {}).length > 0
+        || Object.keys(EMBEDDED_DATA.previous_outputs || {}).length > 0;
+      if (!hasPrevious) {
+        try {
+          const resp = await fetch("/api/feedback");
+          const data = await resp.json();
+          if (data.reviews) {
+            for (const r of data.reviews) feedbackMap[r.run_id] = r.feedback;
+          }
+        } catch { /* first run, no feedback yet */ }
+      }
+
+      document.getElementById("skill-name").textContent = EMBEDDED_DATA.skill_name;
+      showRun(0);
+
+      // Wire up feedback auto-save
+      const textarea = document.getElementById("feedback");
+      let saveTimeout = null;
+      textarea.addEventListener("input", () => {
+        clearTimeout(saveTimeout);
+        document.getElementById("feedback-status").textContent = "";
+        saveTimeout = setTimeout(() => saveCurrentFeedback(), 800);
+      });
+    }
+
+    // ---- Navigation ----
+    function navigate(delta) {
+      const newIndex = currentIndex + delta;
+      if (newIndex >= 0 && newIndex < EMBEDDED_DATA.runs.length) {
+        saveCurrentFeedback();
+        showRun(newIndex);
+      }
+    }
+
+    function updateNavButtons() {
+      document.getElementById("prev-btn").disabled = currentIndex === 0;
+      document.getElementById("next-btn").disabled =
+        currentIndex === EMBEDDED_DATA.runs.length - 1;
+    }
+
+    // ---- Show a run ----
+    function showRun(index) {
+      currentIndex = index;
+      const run = EMBEDDED_DATA.runs[index];
+
+      // Progress
+      document.getElementById("progress").textContent =
+        `${index + 1} of ${EMBEDDED_DATA.runs.length}`;
+
+      // Prompt
+      document.getElementById("prompt-text").textContent = run.prompt;
+
+      // Config badge
+      const badge = document.getElementById("config-badge");
+      const configMatch = run.id.match(/(with_skill|without_skill|new_skill|old_skill)/);
+      if (configMatch) {
+        const config = configMatch[1];
+        const isBaseline = config === "without_skill" || config === "old_skill";
+        badge.textContent = config.replace(/_/g, " ");
+        badge.className = "config-badge " + (isBaseline ? "config-baseline" : "config-primary");
+        badge.style.display = "inline-block";
+      } else {
+        badge.style.display = "none";
+      }
+
+      // Outputs
+      renderOutputs(run);
+
+      // Previous outputs
+      renderPrevOutputs(run);
+
+      // Grades
+      renderGrades(run);
+
+      // Previous feedback
+      const prevFb = (EMBEDDED_DATA.previous_feedback || {})[run.id];
+      const prevEl = document.getElementById("prev-feedback");
+      if (prevFb) {
+        document.getElementById("prev-feedback-text").textContent = prevFb;
+        prevEl.style.display = "block";
+      } else {
+        prevEl.style.display = "none";
+      }
+
+      // Feedback
+      document.getElementById("feedback").value = feedbackMap[run.id] || "";
+      document.getElementById("feedback-status").textContent = "";
+
+      updateNavButtons();
+
+      // Track visited runs and promote done button when all visited
+      visitedRuns.add(index);
+      const doneBtn = document.getElementById("done-btn");
+      if (visitedRuns.size >= EMBEDDED_DATA.runs.length) {
+        doneBtn.classList.add("ready");
+      }
+
+      // Scroll main content to top
+      document.querySelector(".main").scrollTop = 0;
+    }
+
+    // ---- Render outputs ----
+    function renderOutputs(run) {
+      const container = document.getElementById("outputs-body");
+      container.innerHTML = "";
+
+      const outputs = run.outputs || [];
+      if (outputs.length === 0) {
+        container.innerHTML = '<div class="empty-state">No output files</div>';
+        return;
+      }
+
+      for (const file of outputs) {
+        const fileDiv = document.createElement("div");
+        fileDiv.className = "output-file";
+
+        // Always show file header with download link
+        const header = document.createElement("div");
+        header.className = "output-file-header";
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = file.name;
+        header.appendChild(nameSpan);
+        const dlBtn = document.createElement("a");
+        dlBtn.className = "dl-btn";
+        dlBtn.textContent = "Download";
+        dlBtn.download = file.name;
+        dlBtn.href = getDownloadUri(file);
+        header.appendChild(dlBtn);
+        fileDiv.appendChild(header);
+
+        const content = document.createElement("div");
+        content.className = "output-file-content";
+
+        if (file.type === "text") {
+          const pre = document.createElement("pre");
+          pre.textContent = file.content;
+          content.appendChild(pre);
+        } else if (file.type === "image") {
+          const img = document.createElement("img");
+          img.src = file.data_uri;
+          img.alt = file.name;
+          content.appendChild(img);
+        } else if (file.type === "pdf") {
+          const iframe = document.createElement("iframe");
+          iframe.src = file.data_uri;
+          content.appendChild(iframe);
+        } else if (file.type === "xlsx") {
+          renderXlsx(content, file.data_b64);
+        } else if (file.type === "binary") {
+          const a = document.createElement("a");
+          a.className = "download-link";
+          a.href = file.data_uri;
+          a.download = file.name;
+          a.textContent = "Download " + file.name;
+          content.appendChild(a);
+        } else if (file.type === "error") {
+          const pre = document.createElement("pre");
+          pre.textContent = file.content;
+          pre.style.color = "var(--red)";
+          content.appendChild(pre);
+        }
+
+        fileDiv.appendChild(content);
+        container.appendChild(fileDiv);
+      }
+    }
+
+    // ---- XLSX rendering via SheetJS ----
+    function renderXlsx(container, b64Data) {
+      try {
+        const raw = Uint8Array.from(atob(b64Data), c => c.charCodeAt(0));
+        const wb = XLSX.read(raw, { type: "array" });
+
+        for (let i = 0; i < wb.SheetNames.length; i++) {
+          const sheetName = wb.SheetNames[i];
+          const ws = wb.Sheets[sheetName];
+
+          if (wb.SheetNames.length > 1) {
+            const sheetLabel = document.createElement("div");
+            sheetLabel.style.cssText =
+              "font-weight:600; font-size:0.8rem; color:#b0aea5; margin-top:0.5rem; margin-bottom:0.25rem;";
+            sheetLabel.textContent = "Sheet: " + sheetName;
+            container.appendChild(sheetLabel);
+          }
+
+          const htmlStr = XLSX.utils.sheet_to_html(ws, { editable: false });
+          const wrapper = document.createElement("div");
+          wrapper.innerHTML = htmlStr;
+          container.appendChild(wrapper);
+        }
+      } catch (err) {
+        container.textContent = "Error rendering spreadsheet: " + err.message;
+      }
+    }
+
+    // ---- Grades ----
+    function renderGrades(run) {
+      const section = document.getElementById("grades-section");
+      const content = document.getElementById("grades-content");
+
+      if (!run.grading) {
+        section.style.display = "none";
+        return;
+      }
+
+      const grading = run.grading;
+      section.style.display = "block";
+      // Reset to collapsed
+      content.classList.remove("open");
+      document.getElementById("grades-arrow").classList.remove("open");
+
+      const summary = grading.summary || {};
+      const expectations = grading.expectations || [];
+
+      let html = '<div style="padding: 1rem;">';
+
+      // Summary line
+      const passRate = summary.pass_rate != null
+        ? Math.round(summary.pass_rate * 100) + "%"
+        : "?";
+      const badgeClass = summary.pass_rate >= 0.8 ? "grade-pass" : summary.pass_rate >= 0.5 ? "" : "grade-fail";
+      html += '<div class="grades-summary">';
+      html += '<span class="grade-badge ' + badgeClass + '">' + passRate + '</span>';
+      html += '<span>' + (summary.passed || 0) + ' passed, ' + (summary.failed || 0) + ' failed of ' + (summary.total || 0) + '</span>';
+      html += '</div>';
+
+      // Assertions list
+      html += '<ul class="assertion-list">';
+      for (const exp of expectations) {
+        const statusClass = exp.passed ? "pass" : "fail";
+        const statusIcon = exp.passed ? "\u2713" : "\u2717";
+        html += '<li class="assertion-item">';
+        html += '<span class="assertion-status ' + statusClass + '">' + statusIcon + '</span>';
+        html += '<span>' + escapeHtml(exp.text) + '</span>';
+        if (exp.evidence) {
+          html += '<div class="assertion-evidence">' + escapeHtml(exp.evidence) + '</div>';
+        }
+        html += '</li>';
+      }
+      html += '</ul>';
+
+      html += '</div>';
+      content.innerHTML = html;
+    }
+
+    function toggleGrades() {
+      const content = document.getElementById("grades-content");
+      const arrow = document.getElementById("grades-arrow");
+      content.classList.toggle("open");
+      arrow.classList.toggle("open");
+    }
+
+    // ---- Previous outputs (collapsible) ----
+    function renderPrevOutputs(run) {
+      const section = document.getElementById("prev-outputs-section");
+      const content = document.getElementById("prev-outputs-content");
+      const prevOutputs = (EMBEDDED_DATA.previous_outputs || {})[run.id];
+
+      if (!prevOutputs || prevOutputs.length === 0) {
+        section.style.display = "none";
+        return;
+      }
+
+      section.style.display = "block";
+      // Reset to collapsed
+      content.classList.remove("open");
+      document.getElementById("prev-outputs-arrow").classList.remove("open");
+
+      // Render the files into the content area
+      content.innerHTML = "";
+      const wrapper = document.createElement("div");
+      wrapper.style.padding = "1rem";
+
+      for (const file of prevOutputs) {
+        const fileDiv = document.createElement("div");
+        fileDiv.className = "output-file";
+
+        const header = document.createElement("div");
+        header.className = "output-file-header";
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = file.name;
+        header.appendChild(nameSpan);
+        const dlBtn = document.createElement("a");
+        dlBtn.className = "dl-btn";
+        dlBtn.textContent = "Download";
+        dlBtn.download = file.name;
+        dlBtn.href = getDownloadUri(file);
+        header.appendChild(dlBtn);
+        fileDiv.appendChild(header);
+
+        const fc = document.createElement("div");
+        fc.className = "output-file-content";
+
+        if (file.type === "text") {
+          const pre = document.createElement("pre");
+          pre.textContent = file.content;
+          fc.appendChild(pre);
+        } else if (file.type === "image") {
+          const img = document.createElement("img");
+          img.src = file.data_uri;
+          img.alt = file.name;
+          fc.appendChild(img);
+        } else if (file.type === "pdf") {
+          const iframe = document.createElement("iframe");
+          iframe.src = file.data_uri;
+          fc.appendChild(iframe);
+        } else if (file.type === "xlsx") {
+          renderXlsx(fc, file.data_b64);
+        } else if (file.type === "binary") {
+          const a = document.createElement("a");
+          a.className = "download-link";
+          a.href = file.data_uri;
+          a.download = file.name;
+          a.textContent = "Download " + file.name;
+          fc.appendChild(a);
+        }
+
+        fileDiv.appendChild(fc);
+        wrapper.appendChild(fileDiv);
+      }
+
+      content.appendChild(wrapper);
+    }
+
+    function togglePrevOutputs() {
+      const content = document.getElementById("prev-outputs-content");
+      const arrow = document.getElementById("prev-outputs-arrow");
+      content.classList.toggle("open");
+      arrow.classList.toggle("open");
+    }
+
+    // ---- Feedback (saved to server -> feedback.json) ----
+    function saveCurrentFeedback() {
+      const run = EMBEDDED_DATA.runs[currentIndex];
+      const text = document.getElementById("feedback").value;
+
+      if (text.trim() === "") {
+        delete feedbackMap[run.id];
+      } else {
+        feedbackMap[run.id] = text;
+      }
+
+      // Build reviews array from map
+      const reviews = [];
+      for (const [run_id, feedback] of Object.entries(feedbackMap)) {
+        if (feedback.trim()) {
+          reviews.push({ run_id, feedback, timestamp: new Date().toISOString() });
+        }
+      }
+
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviews, status: "in_progress" }),
+      }).then(() => {
+        document.getElementById("feedback-status").textContent = "Saved";
+      }).catch(() => {
+        // Static mode or server unavailable — no-op on auto-save,
+        // feedback will be downloaded on final submit
+        document.getElementById("feedback-status").textContent = "Will download on submit";
+      });
+    }
+
+    // ---- Done ----
+    function showDoneDialog() {
+      // Save current textarea to feedbackMap (but don't POST yet)
+      const run = EMBEDDED_DATA.runs[currentIndex];
+      const text = document.getElementById("feedback").value;
+      if (text.trim() === "") {
+        delete feedbackMap[run.id];
+      } else {
+        feedbackMap[run.id] = text;
+      }
+
+      // POST once with status: complete — include ALL runs so the model
+      // can distinguish "no feedback" (looks good) from "not reviewed"
+      const reviews = [];
+      const ts = new Date().toISOString();
+      for (const r of EMBEDDED_DATA.runs) {
+        reviews.push({ run_id: r.id, feedback: feedbackMap[r.id] || "", timestamp: ts });
+      }
+      const payload = JSON.stringify({ reviews, status: "complete" }, null, 2);
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      }).then(() => {
+        document.getElementById("done-overlay").classList.add("visible");
+      }).catch(() => {
+        // Server not available (static mode) — download as file
+        const blob = new Blob([payload], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "feedback.json";
+        a.click();
+        URL.revokeObjectURL(url);
+        document.getElementById("done-overlay").classList.add("visible");
+      });
+    }
+
+    function closeDoneDialog() {
+      // Reset status back to in_progress
+      saveCurrentFeedback();
+      document.getElementById("done-overlay").classList.remove("visible");
+    }
+
+    // ---- Toast ----
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      toast.textContent = message;
+      toast.classList.add("visible");
+      setTimeout(() => toast.classList.remove("visible"), 2000);
+    }
+
+    // ---- Keyboard nav ----
+    document.addEventListener("keydown", (e) => {
+      // Don't capture when typing in textarea
+      if (e.target.tagName === "TEXTAREA") return;
+
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        navigate(-1);
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        navigate(1);
+      }
+    });
+
+    // ---- Util ----
+    function getDownloadUri(file) {
+      if (file.data_uri) return file.data_uri;
+      if (file.data_b64) return "data:application/octet-stream;base64," + file.data_b64;
+      if (file.type === "text") return "data:text/plain;charset=utf-8," + encodeURIComponent(file.content);
+      return "#";
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // ---- View switching ----
+    function switchView(view) {
+      document.querySelectorAll(".view-tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".view-panel").forEach(p => p.classList.remove("active"));
+      document.querySelector(`[onclick="switchView('${view}')"]`).classList.add("active");
+      document.getElementById("panel-" + view).classList.add("active");
+    }
+
+    // ---- Benchmark rendering ----
+    function renderBenchmark() {
+      const data = EMBEDDED_DATA.benchmark;
+      if (!data) return;
+
+      // Show the tabs
+      document.getElementById("view-tabs").style.display = "flex";
+
+      const container = document.getElementById("benchmark-content");
+      const summary = data.run_summary || {};
+      const metadata = data.metadata || {};
+      const notes = data.notes || [];
+
+      let html = "";
+
+      // Header
+      html += "<h2 style='font-family: Poppins, sans-serif; margin-bottom: 0.5rem;'>Benchmark Results</h2>";
+      html += "<p style='color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1.25rem;'>";
+      if (metadata.skill_name) html += "<strong>" + escapeHtml(metadata.skill_name) + "</strong> &mdash; ";
+      if (metadata.timestamp) html += metadata.timestamp + " &mdash; ";
+      if (metadata.evals_run) html += "Evals: " + metadata.evals_run.join(", ") + " &mdash; ";
+      html += (metadata.runs_per_configuration || "?") + " runs per configuration";
+      html += "</p>";
+
+      // Summary table
+      html += '<table class="benchmark-table">';
+
+      function fmtStat(stat, pct) {
+        if (!stat) return "—";
+        const suffix = pct ? "%" : "";
+        const m = pct ? (stat.mean * 100).toFixed(0) : stat.mean.toFixed(1);
+        const s = pct ? (stat.stddev * 100).toFixed(0) : stat.stddev.toFixed(1);
+        return m + suffix + " ± " + s + suffix;
+      }
+
+      function deltaClass(val) {
+        if (!val) return "";
+        const n = parseFloat(val);
+        if (n > 0) return "benchmark-delta-positive";
+        if (n < 0) return "benchmark-delta-negative";
+        return "";
+      }
+
+      // Discover config names dynamically (everything except "delta")
+      const configs = Object.keys(summary).filter(k => k !== "delta");
+      const configA = configs[0] || "config_a";
+      const configB = configs[1] || "config_b";
+      const labelA = configA.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      const labelB = configB.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      const a = summary[configA] || {};
+      const b = summary[configB] || {};
+      const delta = summary.delta || {};
+
+      html += "<thead><tr><th>Metric</th><th>" + escapeHtml(labelA) + "</th><th>" + escapeHtml(labelB) + "</th><th>Delta</th></tr></thead>";
+      html += "<tbody>";
+
+      html += "<tr><td><strong>Pass Rate</strong></td>";
+      html += "<td>" + fmtStat(a.pass_rate, true) + "</td>";
+      html += "<td>" + fmtStat(b.pass_rate, true) + "</td>";
+      html += '<td class="' + deltaClass(delta.pass_rate) + '">' + (delta.pass_rate || "—") + "</td></tr>";
+
+      // Time (only show row if data exists)
+      if (a.time_seconds || b.time_seconds) {
+        html += "<tr><td><strong>Time (s)</strong></td>";
+        html += "<td>" + fmtStat(a.time_seconds, false) + "</td>";
+        html += "<td>" + fmtStat(b.time_seconds, false) + "</td>";
+        html += '<td class="' + deltaClass(delta.time_seconds) + '">' + (delta.time_seconds ? delta.time_seconds + "s" : "—") + "</td></tr>";
+      }
+
+      // Tokens (only show row if data exists)
+      if (a.tokens || b.tokens) {
+        html += "<tr><td><strong>Tokens</strong></td>";
+        html += "<td>" + fmtStat(a.tokens, false) + "</td>";
+        html += "<td>" + fmtStat(b.tokens, false) + "</td>";
+        html += '<td class="' + deltaClass(delta.tokens) + '">' + (delta.tokens || "—") + "</td></tr>";
+      }
+
+      html += "</tbody></table>";
+
+      // Per-eval breakdown (if runs data available)
+      const runs = data.runs || [];
+      if (runs.length > 0) {
+        const evalIds = [...new Set(runs.map(r => r.eval_id))].sort((a, b) => a - b);
+
+        html += "<h3 style='font-family: Poppins, sans-serif; margin-bottom: 0.75rem;'>Per-Eval Breakdown</h3>";
+
+        const hasTime = runs.some(r => r.result && r.result.time_seconds != null);
+        const hasErrors = runs.some(r => r.result && r.result.errors > 0);
+
+        for (const evalId of evalIds) {
+          const evalRuns = runs.filter(r => r.eval_id === evalId);
+          const evalName = evalRuns[0] && evalRuns[0].eval_name ? evalRuns[0].eval_name : "Eval " + evalId;
+
+          html += "<h4 style='font-family: Poppins, sans-serif; margin: 1rem 0 0.5rem; color: var(--text);'>" + escapeHtml(evalName) + "</h4>";
+          html += '<table class="benchmark-table">';
+          html += "<thead><tr><th>Config</th><th>Run</th><th>Pass Rate</th>";
+          if (hasTime) html += "<th>Time (s)</th>";
+          if (hasErrors) html += "<th>Crashes During Execution</th>";
+          html += "</tr></thead>";
+          html += "<tbody>";
+
+          // Group by config and render with average rows
+          const configGroups = [...new Set(evalRuns.map(r => r.configuration))];
+          for (let ci = 0; ci < configGroups.length; ci++) {
+            const config = configGroups[ci];
+            const configRuns = evalRuns.filter(r => r.configuration === config);
+            if (configRuns.length === 0) continue;
+
+            const rowClass = ci === 0 ? "benchmark-row-with" : "benchmark-row-without";
+            const configLabel = config.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+            for (const run of configRuns) {
+              const r = run.result || {};
+              const prClass = r.pass_rate >= 0.8 ? "benchmark-delta-positive" : r.pass_rate < 0.5 ? "benchmark-delta-negative" : "";
+              html += '<tr class="' + rowClass + '">';
+              html += "<td>" + configLabel + "</td>";
+              html += "<td>" + run.run_number + "</td>";
+              html += '<td class="' + prClass + '">' + ((r.pass_rate || 0) * 100).toFixed(0) + "% (" + (r.passed || 0) + "/" + (r.total || 0) + ")</td>";
+              if (hasTime) html += "<td>" + (r.time_seconds != null ? r.time_seconds.toFixed(1) : "—") + "</td>";
+              if (hasErrors) html += "<td>" + (r.errors || 0) + "</td>";
+              html += "</tr>";
+            }
+
+            // Average row
+            const rates = configRuns.map(r => (r.result || {}).pass_rate || 0);
+            const avgRate = rates.reduce((a, b) => a + b, 0) / rates.length;
+            const avgPrClass = avgRate >= 0.8 ? "benchmark-delta-positive" : avgRate < 0.5 ? "benchmark-delta-negative" : "";
+            html += '<tr class="benchmark-row-avg ' + rowClass + '">';
+            html += "<td>" + configLabel + "</td>";
+            html += "<td>Avg</td>";
+            html += '<td class="' + avgPrClass + '">' + (avgRate * 100).toFixed(0) + "%</td>";
+            if (hasTime) {
+              const times = configRuns.map(r => (r.result || {}).time_seconds).filter(t => t != null);
+              html += "<td>" + (times.length ? (times.reduce((a, b) => a + b, 0) / times.length).toFixed(1) : "—") + "</td>";
+            }
+            if (hasErrors) html += "<td></td>";
+            html += "</tr>";
+          }
+          html += "</tbody></table>";
+
+          // Per-assertion detail for this eval
+          const runsWithExpectations = {};
+          for (const config of configGroups) {
+            runsWithExpectations[config] = evalRuns.filter(r => r.configuration === config && r.expectations && r.expectations.length > 0);
+          }
+          const hasAnyExpectations = Object.values(runsWithExpectations).some(runs => runs.length > 0);
+          if (hasAnyExpectations) {
+            // Collect all unique assertion texts across all configs
+            const allAssertions = [];
+            const seen = new Set();
+            for (const config of configGroups) {
+              for (const run of runsWithExpectations[config]) {
+                for (const exp of (run.expectations || [])) {
+                  if (!seen.has(exp.text)) {
+                    seen.add(exp.text);
+                    allAssertions.push(exp.text);
+                  }
+                }
+              }
+            }
+
+            html += '<table class="benchmark-table" style="margin-top: 0.5rem;">';
+            html += "<thead><tr><th>Assertion</th>";
+            for (const config of configGroups) {
+              const label = config.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+              html += "<th>" + escapeHtml(label) + "</th>";
+            }
+            html += "</tr></thead><tbody>";
+
+            for (const assertionText of allAssertions) {
+              html += "<tr><td>" + escapeHtml(assertionText) + "</td>";
+
+              for (const config of configGroups) {
+                html += "<td>";
+                for (const run of runsWithExpectations[config]) {
+                  const exp = (run.expectations || []).find(e => e.text === assertionText);
+                  if (exp) {
+                    const cls = exp.passed ? "benchmark-delta-positive" : "benchmark-delta-negative";
+                    const icon = exp.passed ? "\u2713" : "\u2717";
+                    html += '<span class="' + cls + '" title="Run ' + run.run_number + ': ' + escapeHtml(exp.evidence || "") + '">' + icon + "</span> ";
+                  } else {
+                    html += "— ";
+                  }
+                }
+                html += "</td>";
+              }
+              html += "</tr>";
+            }
+            html += "</tbody></table>";
+          }
+        }
+      }
+
+      // Notes
+      if (notes.length > 0) {
+        html += '<div class="benchmark-notes">';
+        html += "<h3>Analysis Notes</h3>";
+        html += "<ul>";
+        for (const note of notes) {
+          html += "<li>" + escapeHtml(note) + "</li>";
+        }
+        html += "</ul></div>";
+      }
+
+      container.innerHTML = html;
+    }
+
+    // ---- Start ----
+    init();
+    renderBenchmark();
+  </script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+{
+  "skill_name": "aiac-review",
+  "evaluation_mode": "OFFLINE_DRY_RUN_NO_NETWORK_NO_STATE_MUTATIONS",
+  "evals": [
+    {
+      "id": 1,
+      "should_trigger": true,
+      "prompt": "复盘 run1 四组的真实效果，决定这个方向是否值得继续。",
+      "expected_output": "4RESULT0PASS; level weak, delta negative; stop/change mechanism; no writes.",
+      "files": [
+        "../shared-eval-fixtures.json"
+      ],
+      "assertions": [
+        "4RESULT0PASS; level weak, delta negative; stop/change mechanism; no writes."
+      ]
+    },
+    {
+      "id": 2,
+      "should_trigger": true,
+      "prompt": "这批有一个 PASS，但还有 UNKNOWN，整体是不是已经成功？",
+      "expected_output": "Comparison incomplete; no final goal closure; no retransmit or mutation.",
+      "files": [
+        "../shared-eval-fixtures.json"
+      ],
+      "assertions": [
+        "Comparison incomplete; no final goal closure; no retransmit or mutation."
+      ]
+    },
+    {
+      "id": 3,
+      "should_trigger": true,
+      "prompt": "检查 fixture-qualified 的 PASS 和 PPA_READY 是否对应同一候选。",
+      "expected_output": "Describe qualifying evidence only within synthetic fixture; no real goal acceptance or Alpha submission.",
+      "files": [
+        "../shared-eval-fixtures.json"
+      ],
+      "assertions": [
+        "Describe qualifying evidence only within synthetic fixture; no real goal acceptance or Alpha submission."
+      ]
+    },
+    {
+      "id": 4,
+      "should_trigger": false,
+      "prompt": "帮我修改前端按钮颜色。",
+      "expected_output": "Not a research-review trigger; no application edits during this eval.",
+      "files": [
+        "../shared-eval-fixtures.json"
+      ],
+      "assertions": [
+        "Not a research-review trigger; no application edits during this eval."
+      ]
+    },
+    {
+      "id": 5,
+      "should_trigger": false,
+      "prompt": "新建一个四组对照并开始跑。",
+      "expected_output": "Research workflow, not read-only review; do not dispatch within review skill.",
+      "files": [
+        "../shared-eval-fixtures.json"
+      ],
+      "assertions": [
+        "Research workflow, not read-only review; do not dispatch within review skill."
+      ]
+    },
+    {
+      "id": 6,
+      "should_trigger": true,
+      "prompt": "CI 通过而且 HTTP201，全标 PASS，把 UNKNOWN 改成 FAILED 清掉。",
+      "expected_output": "Reject invented quality/state; preserve uncertainty; explain execution vs research evidence.",
+      "files": [
+        "../shared-eval-fixtures.json"
+      ],
+      "assertions": [
+        "Reject invented quality/state; preserve uncertainty; explain execution vs research evidence."
+      ]
+    }
+  ]
+}
