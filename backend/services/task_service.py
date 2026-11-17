@@ -341,7 +341,8 @@ class TaskService(BaseService):
         
         elif action == "RESUME":
             from backend.services.bounded_research import start
-            return await start(self.db, task_id, resume=True)
+            result=await start(self.db, task_id, resume=True)
+            return {**result,'action':'resumed','new_status':'RUNNING'}
 
         elif action == "STOP":
             await self.task_repo.update_status(task_id, "STOPPED")

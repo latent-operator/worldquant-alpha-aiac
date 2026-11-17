@@ -68,6 +68,70 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(again['status'],'COMPLETED')
         self.assertEqual(sum(x.startswith('POST') for x in self.calls),1)
 
+    async def test_poll_slice_yields_and_resumes_without_reposting(self):
+        task_id,run_id=await self.create()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(self.transport)) as client:
+            waiting=await self.b.run(task_id,run_id,client=client,max_seconds=0)
+            self.assertEqual(waiting['status'],'WAITING')
+            async with self.sessions() as db:
+                receipt=await self.b.report(db,run_id)
+                self.assertEqual(receipt['status'],'RUNNING')
+                self.assertEqual(receipt['requests'],{'ACCEPTED':1})
+            completed=await self.b.run(task_id,run_id,client=client,poll_interval=0)
+        self.assertEqual(completed['requests'],{'RESULT':1})
+        self.assertEqual(sum(x.startswith('POST') for x in self.calls),1)
+
+    async def test_owner_pause_wins_at_poll_slice_boundary(self):
+        from backend.models import MiningTask
+        task_id,run_id=await self.create()
+        async def pause_after_receipt(step):
+            async with self.sessions() as db:
+                task=await db.get(MiningTask,task_id);task.status='PAUSED';await db.commit()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(self.transport)) as client:
+            result=await self.b.run(task_id,run_id,client=client,max_seconds=0,after_receipt=pause_after_receipt)
+        self.assertEqual(result['status'],'PAUSED')
+
+    async def test_native_poll_retry_has_no_retry_count_cap(self):
+        from backend.tasks.mining_tasks import run_mining_task
+        from celery.exceptions import Retry
+        with patch.object(self.b,'execute',AsyncMock(return_value={'status':'WAITING','run_id':42})), patch.object(run_mining_task,'retry',side_effect=Retry()) as retry:
+            with self.assertRaises(Retry):await asyncio.to_thread(run_mining_task.run,8,42)
+            retry.assert_called_once_with(countdown=5)
+            self.assertIsNone(run_mining_task.max_retries)
+
+    async def test_resume_response_keeps_intervention_contract(self):
+        from backend.models import MiningTask,ExperimentRun
+        from backend.services.task_service import TaskService
+        task_id,run_id=await self.create()
+        async with self.sessions() as db:
+            task=await db.get(MiningTask,task_id);run=await db.get(ExperimentRun,run_id)
+            task.status='PAUSED';run.status='PAUSED';await db.commit()
+            with patch('backend.tasks.run_mining_task.delay',return_value=type('Job',(),{'id':'resume-job'})()):
+                response=await TaskService(db).intervene_task(task_id,'RESUME')
+            self.assertEqual(response['action'],'resumed')
+            self.assertEqual(response['new_status'],'RUNNING')
+            self.assertEqual(response['run_id'],run_id)
+
+    async def test_failed_mechanism_is_replanned_before_enqueue(self):
+        from backend.services import continuous_research as c
+        from backend.models import MiningTask,TraceStep,ExperimentRun
+        from sqlalchemy import select
+        task_id,run_id=await self.create()
+        async with self.sessions() as db:
+            task=await db.get(MiningTask,task_id);task.config={**task.config,'continuous':True,'verified_fields':['close']};await db.commit()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(self.transport)) as client:
+            await self.b.run(task_id,run_id,client=client,poll_interval=0)
+        async with self.sessions() as db:
+            db.add(TraceStep(task_id=task_id,run_id=run_id,step_type='REVIEW',step_order=3,status='SUCCESS',output_data={'analysis_status':'COMPLETED','analysis':{'decision':'CONTINUE'}}));await db.commit()
+        first={'family':'unspecified','hypothesis':'must reject failed mechanism','fields':['close'],'candidates':[{'id':'a','expression':'ts_mean(close,14)'}]}
+        second={**first,'family':'different-economic-mechanism','hypothesis':'new mechanism'}
+        with patch.object(c,'propose',AsyncMock(side_effect=[first,second])) as planner,patch.object(c,'verify_fields',AsyncMock()),patch('backend.tasks.run_mining_task.delay',return_value=type('Job',(),{'id':'next'})()) as queue:
+            await c.advance(task_id,run_id)
+            self.assertEqual(planner.await_count,2);queue.assert_called_once()
+        async with self.sessions() as db:
+            latest=(await db.execute(select(ExperimentRun).where(ExperimentRun.task_id==task_id).order_by(ExperimentRun.id.desc()).limit(1))).scalar_one()
+            self.assertEqual(latest.config_snapshot['bounded_manifest']['family'],'different-economic-mechanism')
+
     async def test_completion_review_is_once_and_never_changes_quality(self):
         from backend.services import completion_review as c
         from backend.models import TraceStep

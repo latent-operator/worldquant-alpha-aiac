@@ -33,7 +33,7 @@ async def propose(context):
                 '严格生成 batch_size 个不同候选，FASTEXPR；每式最多5个算子，不用trade_when，不事后翻转失败信号的符号。'
                 '使用 catalog 内字段以及分组变量industry/sector/subindustry；不凭空编造字段。'
                 '同批保持一致的经济机制和方向，预先说明对照设计；每个候选须有经济理由，不做无依据的全窗口穷举。'
-                'STOP的机制和失败三轮的机制必须换机制；禁止旧 receivables/revenue 家族与 returns-volume相关性反转家族。'
+                '全批FAIL、STOP或excluded_families中的机制必须换经济机制，不能仅改family名称；禁止旧 receivables/revenue 家族与 returns-volume相关性反转家族。'
                 '避免 excluded_expressions，不把更多回测或HTTP成功当作质量。无总批次数上限，但不得绕过限流、重复提交或提交Alpha。'),
             user_prompt=json.dumps(context,ensure_ascii=False),temperature=.5,json_mode=True,max_tokens=6000),timeout=90)
         if not response.success or not isinstance(response.parsed,dict):raise ValueError('Planner returned no valid JSON')
@@ -61,32 +61,62 @@ async def advance(task_id, previous_run_id):
             if not review or review.get('analysis_status')!='COMPLETED':raise ValueError('Review unavailable; continuation paused')
             catalog=task.config.get('verified_fields',[])
             if not catalog:raise ValueError('No verified field catalog')
-            summaries=[]; failed_families={}
+            summaries=[]; failed_families={}; excluded_families=set()
             for run in runs:
                 manifest=run.config_snapshot.get('bounded_manifest',{})
                 results=(await db.execute(select(Alpha).where(Alpha.run_id==run.id))).scalars().all()
                 family=manifest.get('family','unspecified')
                 passed=sum(a.quality_status=='PASS' for a in results)
-                if results and not passed:failed_families[family]=failed_families.get(family,0)+1
+                if (run.status=='COMPLETED' and len(results)==len(manifest.get('cases',[])) and
+                    results and all(a.quality_status=='FAIL' for a in results)):
+                    failed_families[family]=failed_families.get(family,0)+1
+                    excluded_families.add(family.strip().casefold())
                 if len(summaries)<12:
                     summaries.append({'run_id':run.id,'family':family,'hypothesis':manifest.get('hypothesis'),
                         'alphas':[{'expression':a.expression,'quality':a.quality_status,'sharpe':a.is_sharpe,
                                    'fitness':a.is_fitness,'failures':(a.metrics or {}).get('failures',[])} for a in results]})
+            old_family=previous.config_snapshot['bounded_manifest'].get('family','unspecified')
+            if review['analysis']['decision'] in ('STOP','CHANGE_MECHANISM'):
+                excluded_families.add(old_family.strip().casefold())
             context={'catalog':catalog,'region':task.region,'universe':task.universe,'batch_size':task.config['max_create_requests'],
                      'recent_batches':summaries,'review':review['analysis'],'failed_family_counts':failed_families,
+                     'excluded_families':sorted(excluded_families),
                      'excluded_expressions':(await db.execute(select(Alpha.expression).order_by(Alpha.id.desc()).limit(250))).scalars().all()}
-            plan=await propose(context)
-            if not isinstance(plan.get('family'),str) or not plan['family'].strip():raise ValueError('Missing stable mechanism name')
-            if len(plan.get('candidates',[]))!=task.config['max_create_requests']:raise ValueError('Wrong batch size')
-            if not set(plan.get('fields',[])).issubset(catalog):raise ValueError('Unverified fields')
-            if failed_families.get(plan['family'],0)>=3:raise ValueError('Failed family exhausted')
-            old_family=previous.config_snapshot['bounded_manifest'].get('family')
-            if review['analysis']['decision']=='STOP' and plan['family']==old_family:raise ValueError('Stopped mechanism must change')
+            excluded=bounded.exclusions()
+            excluded.update(bounded.normalized(x) for x in (await db.execute(select(Alpha.expression))).scalars())
+            for entry in (await db.execute(select(TraceStep.input_data).where(TraceStep.step_type=='SIMULATE'))).scalars():
+                if entry and entry.get('payload'):excluded.add(bounded.normalized(entry['payload'].get('regular')))
+            from validator import ExpressionValidator
+            validator=ExpressionValidator()
+            for attempt in range(3):
+                plan=await propose(context)
+                await db.refresh(task)
+                if task.status!='RUNNING':return
+                try:
+                    if not isinstance(plan.get('family'),str) or not plan['family'].strip():raise ValueError('Missing stable mechanism name')
+                    if plan['family'].strip().casefold() in excluded_families:raise ValueError('Failed/stopped mechanism must change; do not merely rename it')
+                    if len(plan.get('candidates',[]))!=task.config['max_create_requests']:raise ValueError('Wrong batch size')
+                    if not set(plan.get('fields',[])).issubset(catalog):raise ValueError('Unverified fields')
+                    config={**task.config,**{k:plan[k] for k in ('hypothesis','family','fields','candidates')}}
+                    manifest=bounded.freeze(config,task.region,task.universe,excluded)
+                    for case in manifest['cases']:
+                        expression=case['payload']['regular']
+                        checked=validator.check_expression(expression,allowed_fields=plan['fields']+['NaN'])
+                        if not checked.get('valid') or 'trade_when(' in bounded.normalized(expression):
+                            raise ValueError('Invalid or excluded expression: '+expression[:150])
+                    break
+                except (ValueError,TypeError,KeyError) as exc:
+                    context['validation_feedback']=str(exc)[:500]
+                    context['rejected_plan']=plan
+            else:raise ValueError('Planner could not produce a valid new mechanism after 3 attempts')
             await verify_fields(plan['fields'],task.region,task.universe)
             # Explicit owner controls beat model output. No total request/iteration limit.
-            config={**task.config,**{k:plan[k] for k in ('hypothesis','family','fields','candidates')}}
             await db.refresh(task)
             if task.status!='RUNNING':return
+            task.config={k:v for k,v in task.config.items() if k!='continuation_error'}
+            db.add(TraceStep(task_id=task_id,run_id=previous_run_id,step_type='PLAN',step_order=100,status='SUCCESS',
+                output_data={'previous_family':old_family,'selected_family':plan['family'],
+                             'excluded_families':sorted(excluded_families),'planner_attempts':attempt+1}))
             return await bounded.start(db,task_id,next_config=config,previous_run_id=previous_run_id)
         except Exception as exc:
             await db.rollback()

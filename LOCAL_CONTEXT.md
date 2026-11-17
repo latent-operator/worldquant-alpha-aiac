@@ -43,6 +43,11 @@ continuous=true chains native runs under one task after saved reviews; max_concu
 up to 10 simultaneous single simulations within the one account-locked worker. The plan is
 generated with the existing LLM, restricted to verified fields and excluded/failed families.
 Pause/stop applies between and during batches; planner failure, UNKNOWN, 429 or auth failure pauses.
+Polling budget exhaustion is only a native worker time slice: keep RUNNING and the saved
+Locations, retry the same Celery task after five seconds without a retry-count cap.
+Completed full batches with every Alpha FAIL, plus review STOP/CHANGE_MECHANISM, exclude
+that family from subsequent planning. Up to three local proposal repairs precede a planning
+pause; invalid candidates never reach WQ. Manual pauses and uncertainty still block execution.
 Resume a paused continuous task between completed runs to plan its next run; never replay a completed one.
 Before each POST the trace is REQUESTED; a durable Location becomes ACCEPTED and allows GET-only
 recovery. An interrupted REQUESTED becomes UNKNOWN and is never automatically resent.

@@ -357,7 +357,17 @@ async def run(task_id, run_id, client=None, poll_interval=5, max_seconds=1800, a
                             await asyncio.sleep(wait)
                         except (httpx.RequestError,ValueError):
                             await heartbeat(); await asyncio.sleep(poll_interval)
-                    if alpha is None: return await pause('POLL_TIME_BUDGET: known Location retained for GET-only resume')
+                    if alpha is None:
+                        await db.refresh(task)
+                        if settle or task.status!='RUNNING':
+                            return await pause('Owner intervention or explicit collection boundary; Location retained')
+                        # This is a worker time slice, not a failed experiment or owner pause.
+                        # Keep the accepted Location and native RUNNING state for queue recovery.
+                        experiment.error_message=None
+                        experiment.strategy_snapshot={'worker_heartbeat':now(),'pid':os.getpid(),
+                            'execution_mode':MODE,'poll_waiting':True,'retry_after_seconds':5}
+                        await db.commit()
+                        return {'status':'WAITING','task_id':task_id,'run_id':run_id}
                     if normalized((alpha.get('regular') or {}).get('code'))!=normalized(case['payload']['regular']):
                         return await pause('Alpha expression mismatch')
                     for key,value in case['payload']['settings'].items():

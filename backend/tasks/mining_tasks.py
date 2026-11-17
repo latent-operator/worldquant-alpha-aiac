@@ -18,13 +18,15 @@ from backend.models import MiningTask, DatasetMetadata, Operator, DataField, Exp
 from backend.tasks import run_async
 
 
-@celery_app.task(bind=True, name="backend.tasks.run_mining_task")
+@celery_app.task(bind=True, name="backend.tasks.run_mining_task", max_retries=None)
 def run_mining_task(self, task_id: int, run_id: int | None = None):
     """Execute a frozen run. A queue retry never retries a simulation POST."""
     from backend.services.bounded_research import execute
     result = run_async(execute(task_id, run_id))
     if result.get("status") == "BUSY":
         raise self.retry(countdown=15, max_retries=12)
+    if result.get('status') == 'WAITING':
+        raise self.retry(countdown=5)
     if result.get("status") == "COMPLETED":
         # A review failure must never rewrite a completed research run.
         try:
