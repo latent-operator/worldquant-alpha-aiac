@@ -18,38 +18,207 @@ from backend.models import MiningTask, DatasetMetadata, Operator, DataField, Exp
 from backend.tasks import run_async
 
 
-@celery_app.task(bind=True, name="backend.tasks.run_mining_task", max_retries=None)
+@celery_app.task(bind=True, name="backend.tasks.run_mining_task")
 def run_mining_task(self, task_id: int, run_id: int | None = None):
-    """Execute a frozen run. A queue retry never retries a simulation POST."""
-    from backend.services.bounded_research import execute
-    result = run_async(execute(task_id, run_id))
-    if result.get("status") == "BUSY":
-        raise self.retry(countdown=15, max_retries=12)
-    if result.get('status') == 'WAITING':
-        raise self.retry(countdown=5)
-    if result.get("status") == "COMPLETED":
-        # A review failure must never rewrite a completed research run.
-        try:
-            from backend.services.completion_review import complete
-            run_async(complete(run_id))
-        except Exception as exc:
-            logger.error("Completion review deferred to worker recovery: {}", type(exc).__name__)
-        if result.get('continuous'):
-            continue_research.delay(task_id,run_id)
-    return {key: result.get(key) for key in ("status", "run_id", "reason", "error_type")}
+    """
+    Run a complete mining task.
+    Called when a task is started via API.
 
+    Args:
+        task_id: The mining task ID
+        run_id: Optional experiment run ID
+    """
+    logger.info(f"Starting mining task {task_id} (run_id={run_id})")
 
-@celery_app.task(name="backend.tasks.review_completed_run")
-def review_completed_run(run_id: int, retry_desktop: bool = False):
-    from backend.services.completion_review import complete
-    result=run_async(complete(run_id,retry_desktop=retry_desktop))
-    return {'run_id':run_id,'analysis_status':result.get('analysis_status') if result else 'SKIPPED'}
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            run: ExperimentRun | None = None
 
+            # Get task
+            query = select(MiningTask).where(MiningTask.id == task_id)
+            result = await db.execute(query)
+            task = result.scalar_one_or_none()
 
-@celery_app.task(name="backend.tasks.continue_research")
-def continue_research(task_id: int, previous_run_id: int):
-    from backend.services.continuous_research import advance
-    return run_async(advance(task_id,previous_run_id))
+            if not task:
+                logger.error(f"Task {task_id} not found")
+                return {"error": "Task not found"}
+
+            if (task.config or {}).get('execution_mode') == 'bounded':
+                return {'error': 'Bounded task is retired; no native replay'}
+
+            # Update status to RUNNING
+            await db.execute(
+                update(MiningTask)
+                .where(MiningTask.id == task_id)
+                .values(status="RUNNING")
+            )
+            await db.commit()
+
+            # Create or attach ExperimentRun
+            run = await _get_or_create_run(db, task, run_id, self.request.id)
+
+            try:
+                try:
+                    from backend.alpha_semantic_validator import load_operators_from_db
+                    operators_loaded = await load_operators_from_db(db)
+                    logger.info(f"Operator registry loaded in worker: {len(operators_loaded)} operators")
+                except Exception as e:
+                    logger.warning(f"Failed to load operator registry in worker: {e}")
+
+                async with MCPBrainAdapter() as brain:
+                    mining_agent = MiningAgent(db, brain)
+
+                    # Get datasets to mine
+                    datasets = await _get_datasets_to_mine(db, task)
+
+                    if not datasets:
+                        logger.warning(f"No datasets found for mining in {task.region}/{task.universe}")
+                        await _mark_mining_task_failed(
+                            db,
+                            task_id=task_id,
+                            run_id=run.id if run is not None else None,
+                            celery_task_id=self.request.id,
+                            error_message="No datasets found",
+                        )
+                        return {"warning": "No datasets found"}
+
+                    # Get operators
+                    operators = await _get_operators(db)
+
+                    # Mine each dataset
+                    total_alphas = 0
+                    target_reached = task.progress_current >= task.daily_goal
+                    incomplete_reasons = []
+                    for dataset_id in datasets:
+                        # Check if task should continue
+                        await db.refresh(task)
+                        if task.status in ["STOPPED", "PAUSED"]:
+                            logger.info(f"Task {task_id} {task.status}, stopping")
+                            break
+
+                        if task.progress_current >= task.daily_goal:
+                            logger.info(f"Task {task_id} reached goal")
+                            break
+
+                        # Get fields
+                        fields = await _get_dataset_fields(db, dataset_id, task.region, task.universe)
+
+                        if not fields:
+                            logger.warning(f"No fields found for dataset {dataset_id}, skipping")
+                            continue
+
+                        # Calculate remaining alphas needed
+                        remaining_goal = task.daily_goal - task.progress_current
+                        if remaining_goal <= 0:
+                            logger.info(f"Task {task_id} already reached goal, stopping")
+                            break
+
+                        # Run evolution loop
+                        try:
+                            result = await mining_agent.run_evolution_loop(
+                                task=task,
+                                dataset_id=dataset_id,
+                                fields=fields,
+                                operators=operators,
+                                max_iterations=task.max_iterations or 10,
+                                target_alphas=remaining_goal,
+                                num_alphas_per_round=4,
+                                run_id=run.id
+                            )
+
+                            # Update progress
+                            task.progress_current += result.get("total_success", 0)
+                            await db.commit()
+
+                            total_alphas += len(result.get("all_alphas", []))
+                            target_reached = task.progress_current >= task.daily_goal
+
+                            if not result.get("target_reached"):
+                                incomplete_reasons.append(
+                                    (
+                                        f"{dataset_id}: target not reached "
+                                        f"({result.get('total_success', 0)}/{remaining_goal}) "
+                                        f"after {result.get('iterations_completed', 0)}/"
+                                        f"{task.max_iterations or 10} iterations"
+                                    )
+                                )
+                                if result.get("dataset_stop_reason"):
+                                    incomplete_reasons[-1] += (
+                                        f"; stop_reason={result.get('dataset_stop_reason')}"
+                                    )
+
+                            logger.info(
+                                f"Evolution loop for {dataset_id} complete | "
+                                f"iterations={result.get('iterations_completed')} "
+                                f"success={result.get('total_success')}"
+                            )
+
+                            if target_reached:
+                                logger.info(f"Task {task_id} reached goal via evolution loop")
+                                break
+
+                        except Exception as e:
+                            logger.error(f"Evolution loop failed for {dataset_id}: {e}")
+                            # Rollback any failed transaction before continuing
+                            await db.rollback()
+                            continue
+
+                # Preserve user intervention state. A STOP/PAUSE can arrive
+                # while a BRAIN multi-simulation is still polling; once that
+                # call returns, this task must not overwrite it as COMPLETED.
+                await db.refresh(task)
+                error_message = None
+                if task.status in ["STOPPED", "PAUSED"]:
+                    final_status = task.status
+                    logger.info(f"Task {task_id} ended with intervention status {final_status}")
+                else:
+                    final_status, error_message = _resolve_final_status(
+                        target_reached=target_reached,
+                        incomplete_reasons=incomplete_reasons,
+                        progress_current=task.progress_current,
+                        daily_goal=task.daily_goal,
+                    )
+                    if final_status == "COMPLETED" and error_message:
+                        logger.warning(
+                            f"Task {task_id} completed all configured mining work "
+                            f"without reaching target: {error_message}"
+                        )
+
+                    await db.execute(
+                        update(MiningTask)
+                        .where(MiningTask.id == task_id)
+                        .values(status=final_status, updated_at=datetime.utcnow())
+                    )
+
+                if run is not None:
+                    run.status = final_status
+                    run.finished_at = datetime.utcnow()
+                    if error_message:
+                        run.error_message = error_message
+                await db.commit()
+
+                logger.info(f"Task {task_id} finished as {final_status}: {total_alphas} alphas mined")
+                return {"success": True, "alphas_mined": total_alphas}
+
+            except Exception as e:
+                logger.error(f"Task {task_id} failed: {e}")
+                # Rollback any failed transaction before updating status
+                await db.rollback()
+
+                try:
+                    await _mark_mining_task_failed(
+                        db,
+                        task_id=task_id,
+                        run_id=run.id if run is not None else run_id,
+                        celery_task_id=self.request.id,
+                        error_message=str(e)[:500],
+                    )
+                except Exception as db_err:
+                    logger.error(f"Failed to update task status: {db_err}")
+                    await db.rollback()
+                raise
+
+    return run_async(_run())
 
 
 def _resolve_final_status(
@@ -87,22 +256,25 @@ def _sync_mining_task_failure_state(sender=None, task_id=None, exception=None, a
         logger.error(f"Mining task failure signal missing task id | celery_task_id={task_id}")
         return
 
-    from backend.services.bounded_research import interrupted
+    error_message = f"{type(exception).__name__}: {exception}"[:500]
+
+    async def _mark_failed_from_signal():
+        async with AsyncSessionLocal() as db:
+            await _mark_mining_task_failed(
+                db,
+                task_id=int(mining_task_id),
+                run_id=int(run_id) if run_id is not None else None,
+                celery_task_id=task_id,
+                error_message=error_message,
+            )
+
     try:
-        run_async(interrupted(mining_task_id, run_id, "CELERY_FAILURE: " + type(exception).__name__))
+        run_async(_mark_failed_from_signal())
     except Exception as err:
-        logger.error("Could not persist worker interruption: {}", type(err).__name__)
-
-
-from celery.signals import worker_ready
-@worker_ready.connect
-def recover_bounded_runs(**kwargs):
-    from backend.services.bounded_research import recover
-    run_async(recover())
-    from backend.services.completion_review import recover as recover_reviews
-    run_async(recover_reviews())
-    from backend.services.continuous_research import recover as recover_continuous
-    run_async(recover_continuous())
+        logger.error(
+            "Failed to sync mining task failure state from Celery signal | "
+            f"task_id={mining_task_id} run_id={run_id} celery_task_id={task_id}: {err}"
+        )
 
 
 async def _mark_mining_task_failed(

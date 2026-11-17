@@ -36,7 +36,7 @@ async def bounded_health():
 
 @router.get("/bounded/notifications")
 async def completion_notifications(db: AsyncSession = Depends(get_db)):
-    from backend.services.completion_review import notifications
+    from backend.services.bounded_research import notifications
     return await notifications(db)
 
 # =============================================================================

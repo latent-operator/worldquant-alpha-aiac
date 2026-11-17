@@ -27,12 +27,18 @@ def main():
     if not base.startswith(('http://127.0.0.1:','http://localhost:')): raise ValueError('Use a local AIAC API')
     if args.command=='create':
         manifest=json.loads(args.manifest.read_text(encoding='utf-8-sig'))
-        if manifest.get('config',{}).get('execution_mode')!='bounded': raise ValueError('Manifest config.execution_mode must be bounded')
+        if manifest.get('config',{}).get('execution_mode')=='bounded': raise ValueError('Bounded execution is retired')
         result=request(base+'/api/v1/tasks','POST',manifest)
     elif args.command=='start': result=request(base+f'/api/v1/tasks/{args.task_id}/start','POST',{})
     elif args.command in ('pause','resume','stop'):
         result=request(base+f'/api/v1/tasks/{args.task_id}/intervene','POST',{'action':args.command.upper()})
-    elif args.command=='report': result=request(base+f'/api/v1/runs/{args.run_id}/bounded')
+    elif args.command=='report':
+        run=request(base+f'/api/v1/runs/{args.run_id}')
+        if run.get('config_snapshot',{}).get('bounded_manifest'):
+            result=request(base+f'/api/v1/runs/{args.run_id}/bounded')
+        else:
+            result={'run':run,'alphas':request(base+f'/api/v1/runs/{args.run_id}/alphas?limit=100'),
+                    'trace':request(base+f'/api/v1/runs/{args.run_id}/trace')}
     else: result=request(base+'/api/v1/runs/bounded/health')
     print(json.dumps(result,ensure_ascii=False,indent=2))
 

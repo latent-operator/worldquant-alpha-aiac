@@ -111,10 +111,8 @@ try {
             }
             $next=[pscustomobject]@{source=$source;commit=$sha;python_executable=$old.python_executable;ui_dist=(Join-Path $source 'frontend/dist');api_port=$old.api_port;ui_port=$old.ui_port;worker_enabled=$false;research_hold=$true;delivery='local-verified-ci-asynchronous'}
             if($EnableWorker -or $old.worker_enabled){
-                if(-not (Test-Path -LiteralPath (Join-Path $source 'backend/services/bounded_research.py'))){throw 'This release has no bounded executor'}
-                $history=Join-Path $root 'research-20261116-fundamental72/history-exclusions.json'
                 $next.worker_enabled=$true
-                $next | Add-Member -NotePropertyMembers @{execution_mode='bounded';history_exclusions=$history;history_exclusions_sha256=(Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash.ToLower()}
+                $next | Add-Member -NotePropertyMembers @{execution_mode='native'}
             }
         } else { $next=Get-Content -LiteralPath (Join-Path $root 'previous.json') -Raw | ConvertFrom-Json }
         $record=[ordered]@{at=(Get-Date).ToUniversalTime().ToString('o');action=$Action;before=$old;after=$next;database_restore=$false;status='PREPARING'}

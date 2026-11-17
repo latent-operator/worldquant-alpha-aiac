@@ -12,7 +12,8 @@ def git(source,*args):
 
 def validate_release(release):
     if release.get('worker_enabled'):
-        if release.get('execution_mode')!='bounded': raise ValueError('Only bounded execution is supported')
+        if release.get('execution_mode') not in ('native','bounded'): raise ValueError('Unknown execution mode')
+    if release.get('worker_enabled') and release.get('execution_mode')=='bounded':
         path=Path(release.get('history_exclusions',''))
         if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=release.get('history_exclusions_sha256'):
             raise ValueError('Historical exclusion manifest missing or changed')

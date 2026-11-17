@@ -302,9 +302,66 @@ class TaskService(BaseService):
     # =========================================================================
     
     async def start_task(self, task_id: int) -> Dict[str, Any]:
-        """Freeze and enqueue bounded research through the native task entrypoint."""
-        from backend.services.bounded_research import start
-        return await start(self.db, task_id)
+        """
+        Start a mining task.
+
+        Args:
+            task_id: Task ID
+
+        Returns:
+            Dict with run_id and celery_task_id
+
+        Raises:
+            ValueError if task not found or invalid status
+        """
+        task = await self.task_repo.get_by_id(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not found")
+
+        if (task.config or {}).get('execution_mode') == 'bounded':
+            raise ValueError('Bounded task is retired; retain history and create a native task')
+
+        valid_start_statuses = ["PENDING", "PAUSED", "STOPPED", "FAILED", "COMPLETED"]
+        if task.status not in valid_start_statuses:
+            raise ValueError(f"Cannot start task in {task.status} status")
+
+        # Update status
+        await self.task_repo.update_status(task_id, "RUNNING")
+
+        # Create experiment run
+        run = ExperimentRun(
+            task_id=task_id,
+            status="RUNNING",
+            trigger_source="API",
+            celery_task_id=None,
+            config_snapshot={
+                "task": {
+                    "region": task.region,
+                    "universe": task.universe,
+                    "dataset_strategy": task.dataset_strategy,
+                    "target_datasets": task.target_datasets,
+                    "daily_goal": task.daily_goal,
+                    "config": task.config,
+                },
+            },
+            strategy_snapshot={},
+        )
+        created_run = await self.run_repo.create(run)
+        await self.commit()
+
+        # Trigger Celery task
+        from backend.tasks import run_mining_task
+        celery_task = run_mining_task.delay(task_id, created_run.id)
+
+        # Update run with celery task ID
+        created_run.celery_task_id = celery_task.id
+        await self.commit()
+
+        return {
+            "task_id": task_id,
+            "run_id": created_run.id,
+            "celery_task_id": celery_task.id,
+        }
 
     async def intervene_task(
         self,
@@ -331,6 +388,8 @@ class TaskService(BaseService):
             raise ValueError(f"Task {task_id} not found")
         
         action = action.upper()
+        if (task.config or {}).get('execution_mode') == 'bounded' and action not in ('PAUSE', 'STOP'):
+            raise ValueError('Bounded task is retired; historical configuration is read-only')
         
         if action == "PAUSE":
             if task.status != "RUNNING":
@@ -340,9 +399,11 @@ class TaskService(BaseService):
             return {"action": "paused", "new_status": "PAUSED"}
         
         elif action == "RESUME":
-            from backend.services.bounded_research import start
-            result=await start(self.db, task_id, resume=True)
-            return {**result,'action':'resumed','new_status':'RUNNING'}
+            if task.status != "PAUSED":
+                raise ValueError("Can only resume paused tasks")
+            await self.task_repo.update_status(task_id, "RUNNING")
+            await self.commit()
+            return {"action": "resumed", "new_status": "RUNNING"}
 
         elif action == "STOP":
             await self.task_repo.update_status(task_id, "STOPPED")
@@ -354,7 +415,12 @@ class TaskService(BaseService):
             return {"action": "skip_signal_sent"}
         
         elif action == "ADJUST":
-            raise ValueError("Freeze a new task instead of changing an executing manifest")
+            if not parameters:
+                raise ValueError("ADJUST action requires parameters")
+            new_config = {**(task.config or {}), **parameters}
+            await self.task_repo.update_by_id(task_id, {"config": new_config})
+            await self.commit()
+            return {"action": "adjusted", "new_config": new_config}
 
         else:
             raise ValueError(f"Unknown action: {action}")

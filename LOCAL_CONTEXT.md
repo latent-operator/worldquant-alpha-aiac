@@ -1,63 +1,34 @@
 # Current local AIAC
 
-Single development entry: `G:\安装\claude\work\aiac`.
-Writable remote: `latent-operator/worldquant-alpha-aiac`; upstream application
-baseline: `lavender1203/worldquant-alpha-aiac` at `8ffda431d08703b7f6ae13c8287806fd76eb63e0`.
-Application code follows that reinstalled version, not the retired fork's research framework.
+Development: `G:\安装\claude\work\aiac`.
+Runtime: `G:\安装\claude\runtime\aiac-clean`; `current.json` records the actual release.
+API http://127.0.0.1:8003; UI http://127.0.0.1:5174.
+Accounts and PostgreSQL/Redis volumes are unchanged. Never restore a database on code rollback.
+Local relevant verification is sufficient; remote CI is asynchronous.
+Use `ops/local.ps1 -Action Start|Stop|Status|Update|Rollback` for existing services.
 
-Runtime: `G:\安装\claude\runtime\aiac-clean`. Read `current.json` for the actual
-source commit and interpreter; `previous.json` is the immediate code rollback.
-UI http://127.0.0.1:5174; API http://127.0.0.1:8003. Existing PostgreSQL
-`aiac-clean-db` and Redis `aiac-clean-redis` remain in place. The release pointer controls
-one bounded native worker; beat remains off. Read the pointer/health for actual enablement.
+Owner decision 2026-11-17: restore upstream `8ffda431` task service and mining worker.
+Use existing MiningAgent evolution, strategy agent and batch adapter. The locally added
+bounded executor, continuous planner and completion-review writer were removed.
+No new scheduler, automatic cross-run chain, or chat-resident poller.
+Small retirement guards prevent old bounded tasks being replayed by the native worker.
+`bounded_research.py` now contains only read-only historical reports and worker health.
+Task UI is upstream again; added AIAC/Windows completion notifications are no longer generated.
 
-Private configuration stays in runtime `.env` and encrypted database records.
-The original Python environment is retained while referenced by current/rollback pointers.
-The local MCP exposes native read APIs. Bounded create/start/report controls use
-`<current.source>/ops/research.py` with the pointer's interpreter. No new orchestration service.
+Use `.agents/skills/aiac-research/SKILL.md` for native task creation and prompt fields;
+`.agents/skills/aiac-review/SKILL.md` for persisted evidence. Skills do not run in the background.
+Native evolution adjusts strategy within its configured loop, has iteration/time/dataset
+stopping conditions, and uses multi-simulation by default. Do not promise unlimited
+cross-run continuation or account batch permissions without evidence.
+No adapter or MiningAgent rewrite was added during restoration.
 
-Research goal AIAC-PPA-QUALIFIED-ALPHA remains OPEN. Current task1/run1 produced
-four actual WQ results, zero quality PASS, zero PPA_READY; task PAUSED, run COMPLETED.
-Stop the receivables/revenue family. The next price-volume contrast manifest and its
-dispatch/result receipts are kept in `runtime/aiac-clean/research-20261116-pv-crowding`;
-read those receipts and the current report for its actual execution state.
-Prior receipts and exclusion manifest are in `research-20261116-fundamental72`.
+Historical tasks 1-4 and runs 1-5 retain original settings, results and labels.
+At retirement run5 had 10 RESULT; task4 was PAUSED and no requests remained pending.
+Private receipts are under runtime/aiac-clean/continuous-runner and research-* directories.
+Retired reports remain at GET /api/v1/runs/{id}/bounded; native reports use run, trace and alphas.
+Legacy task12/task14/run28 remain frozen in archive_production/archive_lab and private archives.
+Historical exclusions: runtime/aiac-clean/research-20261116-fundamental72/history-exclusions.json.
+Do not restart archived tasks or replay UNKNOWN; consult receipts before starting native tasks.
 
-Frozen historical evidence stays in read-only `archive_production`/`archive_lab`
-and private `runtime/aiac-clean/archive-20261116`. Legacy task12 is paused;
-task14/run28 is isolated and cannot resume; unresolved requests are not resolved by cleanup.
-Full old Git history, dirty worktrees and exported Beads context are archived in
-`G:\安装\claude\backups\aiac-cleanup-20261116`. The retired goal tools are not required
-to start work. PR77 remains closed; only its bounded core was adapted directly into
-the original application, without restoring generated builds or governance layers.
-
-Use `ops/local.ps1 -Action Status|Start|Stop|Update|Rollback`. Update delivers committed
-code after relevant local verification; remote CI is asynchronous. Data migrations are separate:
-first obtain and restore-test a private backup. Code rollback never restores a database.
-Only update this concise handoff when active runtime or research facts change; results stay in AIAC.
-
-For first bounded activation, use Update -EnableWorker. Subsequent updates retain the flag.
-Each batch freezes at most 16 candidates within its declared create-request budget.
-Owner now authorizes continuous research with no total count limit and confirms a 10-slot WQ allowance.
-continuous=true chains native runs under one task after saved reviews; max_concurrent controls
-up to 10 simultaneous single simulations within the one account-locked worker. The plan is
-generated with the existing LLM, restricted to verified fields and excluded/failed families.
-Pause/stop applies between and during batches; planner failure, UNKNOWN, 429 or auth failure pauses.
-Polling budget exhaustion is only a native worker time slice: keep RUNNING and the saved
-Locations, retry the same Celery task after five seconds without a retry-count cap.
-Completed full batches with every Alpha FAIL, plus review STOP/CHANGE_MECHANISM, exclude
-that family from subsequent planning. Up to three local proposal repairs precede a planning
-pause; invalid candidates never reach WQ. Manual pauses and uncertainty still block execution.
-Resume a paused continuous task between completed runs to plan its next run; never replay a completed one.
-Before each POST the trace is REQUESTED; a durable Location becomes ACCEPTED and allows GET-only
-recovery. An interrupted REQUESTED becomes UNKNOWN and is never automatically resent.
-Worker startup only recovers RUNNING bounded runs, never old/paused runs. Quality and PPA remain
-separate; final PPA evaluation is not implemented here. On completion the same worker runs
-one advisory review through the existing LLM service (60-second cap), stores a REVIEW trace
-and emits an in-app/Windows notification. Failed review preserves the batch and quality labels.
-Worker startup recovers missing completed bounded reviews, without repeating WQ requests.
-Desktop delivery is at most one attempt; ATTEMPTED after interruption means delivery uncertain.
-Notifications are read at /api/v1/runs/bounded/notifications; report includes the saved review.
-This does not wake a Codex chat. Next runs require continuous=true; ordinary bounded batches stop.
-Windows settings may suppress toasts. Current continuous dispatch receipts live under runtime/aiac-clean/continuous-runner.
-Two thin project skills live in `.agents/skills`; ordinary dispatch returns IDs and ends the chat wait.
+Research goal remains OPEN: persisted quality PASS and final PPA_READY must refer to the
+same Alpha. Execution completion or HTTP success is not quality success. No Alpha submission.
