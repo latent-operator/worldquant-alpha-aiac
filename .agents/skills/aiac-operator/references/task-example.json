@@ -1,0 +1,27 @@
+{
+  "name": "示例：成交量冲击后的价格压力研究",
+  "region": "GLB",
+  "universe": "TOP3000",
+  "dataset_strategy": "SPECIFIC",
+  "target_datasets": ["pricevolume6"],
+  "agent_mode": "AUTONOMOUS",
+  "daily_goal": 1,
+  "max_iterations": 10,
+  "config": {
+    "delay": 1,
+    "simulation_batch_size": 4,
+    "target_hypothesis": "验证异常成交量后的短期价格压力是否消退；本示例尚未验证社区依据与当前账号字段。",
+    "constraints": [
+      "以真实 WQ 结果判断，不将执行完成视为质量通过。",
+      "对照使用一致的地区、股票池和回测设置。",
+      "机制重复失败时调整经济解释或数据，不仅改名或扫描参数。"
+    ],
+    "preferred_fields": ["close", "volume"],
+    "attempted_expressions": [],
+    "research_context": {
+      "community_evidence": [],
+      "previous_run_ids": [],
+      "evidence_gaps": ["示例尚未进行社区查询和字段核验"]
+    }
+  }
+}

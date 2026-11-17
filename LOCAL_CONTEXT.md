@@ -15,8 +15,13 @@ Small retirement guards prevent old bounded tasks being replayed by the native w
 `bounded_research.py` now contains only read-only historical reports and worker health.
 Task UI is upstream again; added AIAC/Windows completion notifications are no longer generated.
 
-Use `.agents/skills/aiac-research/SKILL.md` for native task creation and prompt fields;
-`.agents/skills/aiac-review/SKILL.md` for persisted evidence. Skills do not run in the background.
+Use `.agents/skills/aiac-operator/SKILL.md` for native task operations, research dialogue,
+Playwright community research and trace review. The workspace entry references this source.
+The former aiac-research/aiac-review skills are retired. Skills do not run in the background.
+Clarify missing requirements, then dispatch without a second approval. Reuse the existing Worker;
+hand off within 60 seconds, return task/run IDs and end the chat wait. Review on the user's
+next request, not through automatic chat wakeups. Community login failures require the user
+to log in through the browser before dependent research dispatch; never request cookies.
 Native evolution adjusts strategy within its configured loop, has iteration/time/dataset
 stopping conditions, and uses multi-simulation by default. Do not promise unlimited
 cross-run continuation or account batch permissions without evidence.

@@ -1,0 +1,6 @@
+interface:
+  display_name: "AIAC 操作与研究"
+  short_description: "问清因子研究要求，查 WQ 社区，交给原生后台执行，回来后按 trace 复盘"
+  default_prompt: "使用 $aiac-operator 帮我开展因子回测，先问清缺失要求，交给现有后台运行后返回任务链接。"
+policy:
+  allow_implicit_invocation: true
